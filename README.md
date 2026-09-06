@@ -187,9 +187,15 @@ pnpm test        # vitest run (unit + composition suites)
 pnpm build       # tsc + tsdown → lib/index.js (host) + lib/client.js (browser)
 ```
 
-## Known limitations
+## Acknowledgements
 
-OAuth 2.0 / per-client credentials, gRPC binding, push notifications, `INPUT_REQUIRED` ↔ approval, and passive outbound result injection are listed as P1 or explicitly-not-doing in [docs/architecture.md](docs/architecture.md). They are documented gaps, not a roadmap.
+This plugin was inspired by and developed alongside
+[ryubyte/dsh-a2a](https://github.com/ryubyte/dsh-a2a), an earlier A2A plugin
+for DeepSeek Harness. That project's design — dual-end scope, AgentCard
+derivation from the tool registry, and the settings-dashboard pattern — set
+the direction this implementation follows. Our protocol layer, task store,
+and executor seam are independent implementations; the GUI management model
+owes a direct debt to ryubyte's connection dashboard.
 
 ## License
 

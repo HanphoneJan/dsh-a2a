@@ -186,9 +186,9 @@ pnpm test        # vitest run（单元 + 组合套件）
 pnpm build       # tsc + tsdown → lib/index.js（host）+ lib/client.js（浏览器）
 ```
 
-## 已知限制
+## 致谢
 
-OAuth 2.0 / 每客户端凭据、gRPC 绑定、push notifications、`INPUT_REQUIRED` ↔ 审批、被动出站结果注入，在 [docs/architecture.md](docs/architecture.md) 中列为 P1 或明确不做。它们是已记录的空缺，不是路线图。
+本项目受 [ryubyte/dsh-a2a](https://github.com/ryubyte/dsh-a2a) 启发并与其并行开发——那是 DeepSeek Harness 上更早的 A2A 插件。其设计——双端范围、从工具注册表派生 AgentCard、设置面板模式——为本文实现指明了方向。我们的协议层、任务存储与执行器接缝均为独立实现；GUI 管理模型则直接承袭了 ryubyte 的连接面板。
 
 ## 许可证
 
