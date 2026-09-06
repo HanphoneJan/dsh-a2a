@@ -2,16 +2,16 @@
 
 Agent2Agent（A2A）v1.0.1 双端插件，用于 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) — [English](README.md) · **中文**
 
-`@hanphone/dsh-a2a` 是一个独立开源的 A2A 插件，把 DeepSeek Harness profile 变成多面手 A2A 一等公民：能**同时对外发布多个入站 A2A server**，每个绑定一个自己的 agent preset、拥有独立端点 / AgentCard / 技能宣告 / 鉴权；也能**同时接入多个出站 A2A server**，每个独立 preset，远端技能映射为模型工具。所有 server 实例的创建、启停、编辑、删除全部在 GUI 完成——无需改任何配置文件。
+`@hanphone/dsh-a2a` 是一个独立开源的 A2A 插件，把 DeepSeek Harness profile 变成多面手 A2A 一等公民：能**同时对外发布多个入站 A2A server**，每个绑定一个自己的 agent preset、拥有独立端点 / AgentCard / 派生技能 / 鉴权；也能**同时接入多个出站 A2A server**，每个独立 preset，远端技能映射为模型工具。所有 server 实例的创建、启停、编辑、删除全部在 GUI 完成——无需改任何配置文件。
 
 架构与设计决策：[docs/architecture.md](docs/architecture.md)。
 
 ## 功能
 
 - **A2A v1.0.1 协议面，对齐官方规范** — JSON-RPC 上的 `SendMessage`、`SendStreamingMessage`、`GetTask`、`ListTasks`、`CancelTask`、`GetExtendedAgentCard`、`SubscribeToTask`；SSE 流式带补发帧；官方 `TASK_STATE_*` / `ROLE_*` 枚举与 AgentCard 结构（含 `supportedInterfaces`、`capabilities`、完整错误码表）。
-- **多入站 server** — 每实例一个"人格"：独立端点（`/a2a/<id>`）、AgentCard 路由、鉴权 env、技能宣告。
-- **每实例 agent preset** — 每个入站 server 绑定一个 agent preset（如 `ptc`、`standard`、`minimal`、…）；入站任务在按该 preset 组装的会话中执行（标准 `agentPresets` resolve+mount 路径）。
-- **创建者输入技能宣告** — AgentCard 技能即创建者输入的文字（每个技能 id/name/description）；创建留空时默认取所绑 preset 展示名（否则内置 `chat`）。v0.2 工具白名单派生机制已删除。
+- **多入站 server** — 每实例一个"人格"：独立端点（`/a2a/<id>`）、AgentCard 路由、鉴权 env、派生技能。
+- **每实例 agent preset** — 每个入站 server 绑定一个具体 agent preset（如 `ptc`、`standard`、`minimal`、…）；选择器只列 roster 真实预设（与应用内选择器一致）并默认选中部署默认。入站任务在按该 preset 组装的会话中执行（标准 `agentPresets` resolve+mount 路径）。
+- **技能宣告从 preset 派生** — AgentCard 技能 = 所绑 preset 技能目录中模型可调条目（`agentPresets.standingKeyFor` + `ctx.skills.list`），纯自动派生——"preset 确定、技能确定，一切皆插件"。无需手写技能表单；skills 服务缺失时兜底内置 `chat`。远端用 `metadata.skill` 调技能，由该 preset 会话经其 `tool-skill` 装载执行。
 - **多出站 server** — 每个连接独立远端 URL、鉴权 env、超时与可选 preset；启用实例把远端技能映射为 `a2a__<name>__<skill>` 模型工具。
 - **持久化任务存储** — 任务存于 `a2a` 存储域（默认 json 后端，可按部署切 SQLite）；服务端生成 id 跨重启存活，每个任务记录来源入站实例。
 - **执行器** — `session`（每个 `contextId` 一个 DSH 会话）与 `subagent`（委托 `ctx.subagents`，工具调用过程流式回传）。
@@ -47,7 +47,7 @@ dsh plugin --profile <name> add <path-to>/hanphone-dsh-a2a-<version>.tgz
 
 1. **安装** — `dsh plugin --profile web add @hanphone/dsh-a2a`。
 2. **重启 GUI** — 浏览器端插件表在 host 启动时扫描，装完请重启一次（`pnpm dsh web` 或对应 profile 启动命令）。
-3. **打开 设置 → A2A 连接** — 创建第一个入站 server（选 preset、填技能宣告、可选鉴权 env）。创建即时启用并发布自己的端点与 AgentCard。
+3. **打开 设置 → A2A 连接** — 创建第一个入站 server（选 preset——技能自动派生——可选鉴权 env）。创建即时启用并发布自己的端点与 AgentCard。
 
 每个入站 server 监听在 profile 的 webServer 上：
 
@@ -68,7 +68,7 @@ curl -X POST http://127.0.0.1:3080/a2a/<id> \
 
 浏览器端在设置中注册 **A2A 连接** 页。无需改文件即可：
 
-- **入站 Servers** — 创建入站 server（名称/描述/版本、agent preset 选择器、鉴权 env、技能宣告表单），启停、编辑、删除；每行显示端点、preset、宣告技能与实时 AgentCard URL。
+- **入站 Servers** — 创建入站 server（名称/描述/版本、agent preset 选择器——只列真实 roster 预设并预选部署默认、鉴权 env），启停、编辑、删除；每行显示端点、preset、preset 派生的技能与实时 AgentCard URL。
 - **出站 Servers** — 添加出站连接（名称、远端 AgentCard URL、preset 选择器、Bearer env、超时），启停、刷新、删除；每行显示连接状态与工具注册数。
 - **任务** — 查看与取消入站任务（每个任务携带来源 server）。
 - **入站连接** — 查看哪些远程对端在调用各实例，可关闭某个对端。

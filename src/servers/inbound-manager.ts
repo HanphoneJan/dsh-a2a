@@ -1,16 +1,20 @@
 /**
  * Inbound server manager: owns every inbound A2A server instance. Each
- * instance binds one agent preset (its session pool is composed from that
- * preset), advertises creator-declared skills, and serves its own endpoint and
- * AgentCard route. Instances are persisted in the `inbound_servers` domain
- * table and assembled on boot; the manager owns route registration and the
- * full lifecycle (add/enable/disable/update/remove) driven from the GUI and
- * facade, and disposes every instance's environment on teardown.
+ * instance binds one concrete agent preset (its session pool is composed from
+ * that preset) and serves its own endpoint and AgentCard route. Instances are
+ * persisted in the `inbound_servers` domain table and assembled on boot; the
+ * manager owns route registration and the full lifecycle
+ * (add/enable/disable/update/remove) driven from the GUI and facade, and
+ * disposes every instance's environment on teardown.
  *
- * Skill declaration: the stored `skills` list is exactly what the creator
- * declared. When a creator leaves it empty at creation time, the default skill
- * derives from the bound preset's display name (else the built-in `chat`
- * skill), per the v1.0 design — the v0.2 tool white-list derivation is gone.
+ * Skill declaration is DERIVED, never typed: "the preset decides its skills;
+ * everything is a plugin." An instance's AgentCard skills are the
+ * model-invocable entries of its preset's skill directory — the preset's
+ * standing scope key (`agentPresets.standingKeyFor`) plus
+ * `ctx.skills.list({ scope })` — resolved automatically at add/update/boot
+ * and cached on the live instance; the creator types no skill text. A missing
+ * skills service or standing mount falls back to a built-in `chat` skill so
+ * minimal compositions stay exercisable.
  * @module dsh-a2a/servers/inbound-manager
  */
 
@@ -18,7 +22,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { buildCard } from '../server/card.ts'
 import { A2AServer } from '../server/a2a-server.ts'
 import { A2aRoutes } from '../server/routes.ts'
-import { ContextSessionPool, type AgentPresetsLike, type AgentRegistryLike } from '../server/exec/agent-runtime.ts'
+import { ContextSessionPool, type AgentPresetsLike, type AgentRegistryLike, type SkillsLike } from '../server/exec/agent-runtime.ts'
 import { createSessionExecutor } from '../server/exec/session.ts'
 import { createSubagentExecutor, type SubagentsLike } from '../server/exec/subagent.ts'
 import { ExecutorSet } from '../server/executor.ts'
@@ -45,10 +49,13 @@ export interface InboundManagerHost {
   readonly logger: { info(message: string): void; warn(message: string): void; error(message: string): void }
   readonly agents?: AgentRegistryLike
   readonly agentPresets?: AgentPresetsLike
+  readonly skills?: SkillsLike
   readonly subagents?: SubagentsLike
   readonly sessionCwd: string
   readonly defaultBaseUrl: string
   readonly subagentProvider: string
+  /** Deployment default preset id (from `agentPresets.defaultId`), when known. */
+  readonly defaultPresetId?: string
   /** Resolve the deployment's default model options (may be undefined). */
   readonly resolveDefaultModel?: () => { readonly provider?: string; readonly model?: string } | undefined
   /** Allocate a fresh stable instance id. */
@@ -59,6 +66,10 @@ export interface InboundManagerHost {
 export interface LiveInboundServer {
   readonly id: string
   readonly record: InboundServerRecord
+  /** Effective preset id (record's or the deployment default). */
+  readonly preset: string | undefined
+  /** Derived skill declarations (cached at assemble time). */
+  readonly skills: readonly AgentSkill[]
   readonly card: ReturnType<typeof buildCard>
   readonly server: A2AServer
   readonly routes: A2aRoutes
@@ -75,10 +86,9 @@ export interface InboundCreateInput {
   readonly description: string
   readonly version: string
   readonly endpointPath?: string
+  /** Preset id; absent = the deployment default preset. */
   readonly preset?: string
   readonly authTokenEnv?: string
-  /** Declared skills; empty defaults to the preset name (or `chat`). */
-  readonly skills?: readonly AgentSkill[]
   readonly enabled?: boolean
 }
 
@@ -96,23 +106,52 @@ function refuseExecutor(reason: string) {
   }
 }
 
-/** Default skkill when a creator declares none: the preset display name. */
-export function defaultSkillFor(
-  skills: readonly AgentSkill[] | undefined,
-  presetName: string | undefined,
-): readonly AgentSkill[] {
-  if (skills !== undefined && skills.length > 0) return skills
-  if (presetName !== undefined && presetName.length > 0) {
-    return [{ id: 'chat', name: presetName, description: `Compose inbound sessions from the "${presetName}" agent preset.`, tags: ['preset'] }]
-  }
+/** Built-in fallback skill when no skills service / standing mount exists. */
+export function chatFallbackSkills(): readonly AgentSkill[] {
   return [{ id: 'chat', name: 'chat', description: 'Conversational assistance over a DSH agent session.', tags: ['chat'] }]
 }
 
-/** Assemble one live instance from a persisted record. */
-function assemble(record: InboundServerRecord, host: InboundManagerHost): LiveInboundServer {
-  const skills: readonly AgentSkill[] = record.skills
+/**
+ * Derive an instance's AgentCard skills from its preset's skill directory.
+ *
+ * `agentPresets.standingKeyFor(preset)` yields the preset's standing scope
+ * key (no agent required); `ctx.skills.list({ scope })` returns the catalogue
+ * that preset agent actually sees (its layer + the deployment global). Only
+ * model-invocable entries are advertised, mapped to `AgentSkill` (id = name,
+ * name = name). Any missing service, failed mount, or empty catalogue falls
+ * back to the built-in `chat` skill.
+ *
+ * @param agentPresets - the preset roster, or undefined.
+ * @param skills - the skill registry, or undefined.
+ * @param preset - the instance's preset id; undefined = deployment default.
+ */
+export async function derivePresetSkills(
+  agentPresets: AgentPresetsLike | undefined,
+  skills: SkillsLike | undefined,
+  preset: string | undefined,
+): Promise<readonly AgentSkill[]> {
+  if (agentPresets?.standingKeyFor === undefined || skills === undefined) return chatFallbackSkills()
+  try {
+    const scope = await agentPresets.standingKeyFor(preset)
+    const rows = await skills.list({ scope })
+    const advertised: AgentSkill[] = rows
+      .filter((row) => row.invocation?.modelInvocable !== false)
+      .map((row) => ({
+        id: row.name,
+        name: row.name,
+        ...(row.description !== undefined && row.description.length > 0 ? { description: row.description } : {}),
+      }))
+    return advertised.length > 0 ? advertised : chatFallbackSkills()
+  } catch {
+    return chatFallbackSkills()
+  }
+}
+
+/** Assemble one live instance (skills already derived from the preset). */
+function assemble(record: InboundServerRecord, skills: readonly AgentSkill[], host: InboundManagerHost): LiveInboundServer {
   const endpointPath = record.endpointPath
   const cardPath = `${endpointPath.replace(/\/$/, '')}/agent-card.json`
+  const preset = record.preset ?? host.defaultPresetId
   const card = buildCard({
     baseUrl: host.defaultBaseUrl,
     endpointPath,
@@ -130,7 +169,7 @@ function assemble(record: InboundServerRecord, host: InboundManagerHost): LiveIn
     ? new ContextSessionPool(host.agents, {
       cwd: host.sessionCwd,
       ...(host.agentPresets !== undefined ? { agentPresets: host.agentPresets } : {}),
-      ...(record.preset !== undefined ? { presetId: () => record.preset } : {}),
+      ...(preset !== undefined ? { presetId: () => preset } : {}),
       // `?.()` yields `{ provider?, model? } | undefined`, matching the
       // AgentRuntimeOptions.resolveAgentOptions signature under
       // exactOptionalPropertyTypes.
@@ -184,6 +223,8 @@ function assemble(record: InboundServerRecord, host: InboundManagerHost): LiveIn
   return {
     id: record.id,
     record,
+    preset,
+    skills,
     card,
     server,
     routes,
@@ -242,7 +283,7 @@ export class DomainInboundStore {
 function safeParse(raw: string): InboundServerRecord | undefined {
   try {
     const parsed = JSON.parse(raw) as InboundServerRecord
-    if (typeof parsed.id !== 'string' || typeof parsed.name !== 'string' || !Array.isArray(parsed.skills)) return undefined
+    if (typeof parsed.id !== 'string' || typeof parsed.name !== 'string') return undefined
     return parsed
   } catch {
     return undefined
@@ -258,11 +299,12 @@ export class InboundServerManager {
     private readonly store: DomainInboundStore,
   ) {}
 
-  /** Assemble every persisted enabled instance (boot). */
-  boot(): void {
+  /** Assemble every persisted instance (skills derived per preset). */
+  async boot(): Promise<void> {
     for (const record of this.store.list()) {
       try {
-        const live = assemble(record, this.host)
+        const skills = await derivePresetSkills(this.host.agentPresets, this.host.skills, record.preset ?? this.host.defaultPresetId)
+        const live = assemble(record, skills, this.host)
         this.live.set(record.id, live)
         if (record.enabled) live.routes.enable()
       } catch (err) {
@@ -279,35 +321,24 @@ export class InboundServerManager {
     return this.live.get(id)
   }
 
-  /** Resolve the display name of a preset id (undefined when unnamed/absent). */
-  private async presetDisplayName(preset: string | undefined): Promise<string | undefined> {
-    if (preset === undefined || this.host.agentPresets === undefined) return undefined
-    try {
-      const resolved = await this.host.agentPresets.resolve(preset)
-      return resolved.name ?? resolved.id
-    } catch {
-      return undefined
-    }
-  }
-
   /** Create, persist, and assemble a new inbound instance. */
   async add(input: InboundCreateInput): Promise<OpResult & { readonly id?: string }> {
     const id = this.newId(input.name)
     if (this.live.has(id)) return { ok: false, message: `inbound server ${id} already exists` }
-    const presetName = await this.presetDisplayName(input.preset)
+    const preset = input.preset ?? this.host.defaultPresetId
     const record: InboundServerRecord = {
       id,
       name: input.name,
       description: input.description,
       version: input.version,
       endpointPath: input.endpointPath ?? `/a2a/${id}`,
-      ...(input.preset !== undefined ? { preset: input.preset } : {}),
+      ...(preset !== undefined ? { preset } : {}),
       ...(input.authTokenEnv !== undefined ? { authTokenEnv: input.authTokenEnv } : {}),
-      skills: [...defaultSkillFor(input.skills, presetName)],
       enabled: input.enabled ?? true,
     }
     try {
-      const live = assemble(record, this.host)
+      const skills = await derivePresetSkills(this.host.agentPresets, this.host.skills, preset)
+      const live = assemble(record, skills, this.host)
       await this.store.save(record)
       this.live.set(id, live)
       if (record.enabled) live.routes.enable()
@@ -317,8 +348,8 @@ export class InboundServerManager {
     }
   }
 
-  /** Persist, rebuild, and apply a patch onto a live instance. */
-  async update(id: string, patch: Partial<Pick<InboundServerRecord, 'name' | 'description' | 'version' | 'endpointPath' | 'preset' | 'authTokenEnv' | 'skills'>>): Promise<OpResult> {
+  /** Persist, rebuild (re-deriving skills), and apply a patch onto a live instance. */
+  async update(id: string, patch: Partial<Pick<InboundServerRecord, 'name' | 'description' | 'version' | 'endpointPath' | 'preset' | 'authTokenEnv'>>): Promise<OpResult> {
     const live = this.live.get(id)
     const stored = this.store.get(id)
     if (live === undefined || stored === undefined) return { ok: false, message: `inbound server ${id} not found` }
@@ -330,12 +361,12 @@ export class InboundServerManager {
       endpointPath: patch.endpointPath ?? stored.endpointPath,
       ...(patch.preset !== undefined ? { preset: patch.preset } : {}),
       ...(patch.authTokenEnv !== undefined ? { authTokenEnv: patch.authTokenEnv } : {}),
-      skills: patch.skills ?? stored.skills,
       enabled: stored.enabled,
     }
     try {
       await this.store.save(next)
-      const replaced = assemble(next, this.host)
+      const skills = await derivePresetSkills(this.host.agentPresets, this.host.skills, next.preset ?? this.host.defaultPresetId)
+      const replaced = assemble(next, skills, this.host)
       // Preserve the route registration state while swapping runtime halves.
       const wasEnabled = live.routes.active
       live.dispose()

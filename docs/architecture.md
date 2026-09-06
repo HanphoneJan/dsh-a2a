@@ -51,11 +51,18 @@ connection.
    instance's preset names the composition DSH would give its local hand-off
    session when driving that remote (the runtime hand-off seam is a documented
    extension point at P0; the value is persisted metadata surfaced to the
-   GUI).
-5. **Skill declaration replaces tool white-listing (confirmed)** — the
-   AgentCard's skills are exactly what the creator declared; empty at creation
-   defaults to the bound preset's display name (or the built-in `chat`). The
-   v0.2 `deriveSkills` mechanism is removed.
+   GUI). Every instance is bound to one concrete preset — the GUI lists only
+   real roster presets (id/name/description, matching the in-app picker) and
+   defaults the selection to the deployment default (`agentPresets.defaultId`).
+5. **Skill declarations derive from the preset (confirmed)** — an inbound
+   instance's AgentCard skills are the model-invocable entries of that
+   preset's skill directory: `agentPresets.standingKeyFor(preset)` gives the
+   preset's standing scope key, and `ctx.skills.list({ scope })` returns the
+   catalogue that preset agent actually sees (preset layer + deployment
+   global). `invocation.modelInvocable === false` entries are filtered.
+   Derivation is fully automatic — the v0.2 tool white-listing and the
+   creator-typed skill form are both removed; a missing skills service falls
+   back to a built-in `chat` skill so minimal compositions stay exercisable.
 6. **Old config is deleted, not migrated (confirmed)** — `server.enabled` /
    `client.agents` etc. are no longer read.
 
@@ -79,8 +86,7 @@ Serialization follows ADR-001 ProtoJSON (`TASK_STATE_*` /
 (`inbound_servers` table) becomes one live instance at boot:
 
 - a preset-bound `ContextSessionPool` (when `agents` is mounted) — sessions
-  are composed from `record.preset` via `agentPresets.resolve` + `mount`,
-  else the deployment default;
+  are composed from `record.preset` via `agentPresets.resolve` + `mount`;
 - an `A2AServer` on the shared `TaskStore`, with its own endpoint
   (`/a2a/<id>`) and card route (`/a2a/<id>/agent-card.json`);
 - an `A2aRoutes` registration (enable/disable), an `ExecutorSet`
@@ -88,9 +94,11 @@ Serialization follows ADR-001 ProtoJSON (`TASK_STATE_*` /
 
 The manager owns the full lifecycle: `add` (persist + assemble + enable),
 `update` (persist + rebuild card + swap), `setEnabled` (route enable/disable),
-`remove` (dispose + unpersist). Skill defaults (`defaultSkillFor`) apply at
-creation: declared skills verbatim, else the preset display name, else
-`chat`.
+`remove` (dispose + unpersist). Skills are derived per instance from its
+preset's skill directory (see Design decisions §5); the built-in `chat`
+fallback keeps minimal compositions exercisable. The gate's declared-skill
+allow list is exactly that derived list, so remote skill calls always resolve
+inside the instance's preset session.
 
 ### Task lifecycle
 
@@ -156,8 +164,9 @@ composition is the documented extension point.
 - **Browser half** (`src/client/`) — a React plugin registered as a
   `settings.section` ("A2A 连接") through `ctx.slots.inject`, loaded by the
   DSH web shell via the client bundle. It renders the inbound/outbound server
-  lists (with preset pickers, skill-declaration textarea, auth env inputs) and
-  task/peer views.
+  lists (with preset pickers that only list real roster presets and default to
+  the deployment default, auth env inputs) and task/peer views; each inbound
+  row shows its preset-derived skill list instead of a skill-declaration form.
 - **Loopback API** (`/a2a/api`) — GET returns a snapshot (inbound/outbound
   server views, tasks, peers); `GET /a2a/api/presets` returns the agent-preset
   roster for the pickers; POST dispatches control actions

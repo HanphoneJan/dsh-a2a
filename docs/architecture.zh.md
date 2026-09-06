@@ -32,8 +32,8 @@ Agent2Agent（A2A）v1.0.1 双端插件，用于 DeepSeek Harness。
 1. **协议层直接实现** — JSON-RPC/SSE 手写，对齐官方 A2A v1.0.1 规范（以 `.research/A2A` 为权威）：PascalCase 方法（`SendMessage` 等）、`TASK_STATE_*` / `ROLE_*` 枚举、完整 `AgentCard` 结构（`supportedInterfaces`、`capabilities`、`securitySchemes`、`skills`）、规范错误码表。
 2. **包身份** — `@hanphone/dsh-a2a`，经 `dsh plugin add` 安装（npm 或本地 tarball）。
 3. **多实例、GUI 管理（v1.0）** — 实例在设置面板创建、编辑、启停，持久化于 `a2a` 域而非插件配置。插件 `Config` 只承载宿主级默认值（`baseUrl`、`subagentProvider`、`defaultTimeoutMs`）。
-4. **preset 绑定实例（语义已确认）** — 入站实例的 preset 组装执行其任务的每个会话；出站实例的 preset 命名与远端对话时 DSH 给本地衔接会话的组合（P0 运行时衔接为文档化扩展点；该值是持久化元数据并展示在 GUI）。
-5. **技能宣告取代工具白名单（已确认）** — AgentCard 技能即创建者声明；创建留空默认取所绑 preset 展示名（否则内置 `chat`）。v0.2 `deriveSkills` 机制删除。
+4. **preset 绑定实例（语义已确认）** — 入站实例的 preset 组装执行其任务的每个会话；出站实例的 preset 命名与远端对话时 DSH 给本地衔接会话的组合（P0 运行时衔接为文档化扩展点；该值是持久化元数据并展示在 GUI）。**每个实例总绑定一个具体 preset**——GUI 只列 roster 真实预设（id/name/描述，与应用内选择器一致），默认选中部署默认（`agentPresets.defaultId`）。
+5. **技能宣告从 preset 派生（已确认）** — 入站实例的 AgentCard 技能 = 该 preset 技能目录中模型可调（`invocation.modelInvocable`）的条目：`agentPresets.standingKeyFor(preset)` 取得该 preset standing scope key，`ctx.skills.list({ scope })` 返回该 preset agent 实际可见的目录（preset 层 + 部署全局）。**纯自动派生**——v0.2 工具白名单与创建者手写宣告表单均删除；skills 服务缺失时兜底内置 `chat` 技能，保持最小组合可启动可验证。
 6. **旧配置直接删除不迁移（已确认）** — `server.enabled` / `client.agents` 等不再被读取。
 
 ## 协议面
@@ -46,11 +46,11 @@ Agent2Agent（A2A）v1.0.1 双端插件，用于 DeepSeek Harness。
 
 `InboundServerManager` 拥有活跃实例集。每个持久化 `InboundServerRecord`（`inbound_servers` 表）在启动时成为一个活实例：
 
-- preset 化 `ContextSessionPool`（装有 `agents` 时）——会话按 `record.preset` 经 `agentPresets.resolve` + `mount` 组装，否则用部署默认；
+- preset 化 `ContextSessionPool`（装有 `agents` 时）——会话按 `record.preset` 经 `agentPresets.resolve` + `mount` 组装；
 - 共享 `TaskStore` 上的 `A2AServer`，带独立端点（`/a2a/<id>`）与卡片路由（`/a2a/<id>/agent-card.json`）；
 - `A2aRoutes` 注册（启停）、`ExecutorSet`（session/subagent）、`LiveInboundRegistry`（对端监控）。
 
-管理器拥有完整生命周期：`add`（持久化 + 组装 + 启用）、`update`（持久化 + 重建卡片 + 换装）、`setEnabled`（路由启停）、`remove`（dispose + 反持久化）。技能默认值（`defaultSkillFor`）在创建时应用：声明技能原样，否则 preset 展示名，否则 `chat`。
+管理器拥有完整生命周期：`add`（持久化 + 组装 + 启用）、`update`（持久化 + 重建卡片 + 换装）、`setEnabled`（路由启停）、`remove`（dispose + 反持久化）。技能按实例从所绑 preset 的技能目录派生（见设计决策 §5），无 skills 服务时兜底内置 `chat`；门禁的宣告技能白名单即派生列表，远端技能调用总能落到该实例的 preset 会话内。
 
 ### 任务生命周期
 
@@ -93,7 +93,7 @@ SubscribeToTask / SendStreamingMessage 在订阅时补发当前状态帧，然�
 
 ## GUI 面板
 
-- **浏览器半区**（`src/client/`）— React 插件，经 `ctx.slots.inject` 注册为 `settings.section`（"A2A 连接"），由 DSH web shell 加载其客户端 bundle。渲染入站/出站 server 列表（含 preset 选择器、技能宣告表单、鉴权 env 输入）与任务/对端视图。
+- **浏览器半区**（`src/client/`）— React 插件，经 `ctx.slots.inject` 注册为 `settings.section`（"A2A 连接"），由 DSH web shell 加载其客户端 bundle。渲染入站/出站 server 列表（preset 选择器只列真实 roster 预设并默认选中部署默认、鉴权 env 输入）与任务/对端视图；每行入站展示其 preset 派生的技能列表，而非技能宣告表单。
 - **回环 API**（`/a2a/api`）— GET 返回快照（入站/出站 server 视图、任务、对端）；`GET /a2a/api/presets` 返回 agent-preset 名单供选择器使用；POST 派发控制动作（inbound.create/update/remove/enable/disable、outbound.create/remove/enable/disable/refresh、task.cancel、inbound.close）。非回环调用 403。GUI、`/a2a` 命令与 `ctx.a2a` 消费方共用同一 facade 实现。
 
 ## 安全模型

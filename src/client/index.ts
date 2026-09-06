@@ -160,25 +160,6 @@ async function postControl(payload: Record<string, unknown>): Promise<{ readonly
   return body
 }
 
-/** One skill declaration per line: `id|name|description` (name/description default to id). */
-function parseSkills(text: string): SkillView[] | undefined {
-  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean)
-  if (lines.length === 0) return undefined
-  return lines.map((line) => {
-    const [id, name, ...descParts] = line.split('|').map((p) => p.trim())
-    const skillId = id ?? ''
-    return {
-      id: skillId,
-      name: name && name.length > 0 ? name : skillId,
-      ...(descParts.length > 0 || (descParts[0]?.length ?? 0) > 0 ? { description: descParts.join('|') } : {}),
-    }
-  })
-}
-
-function skillsToText(skills: readonly SkillView[]): string {
-  return skills.map((s) => [s.id, s.name, s.description].filter((p) => p !== undefined && p.length > 0).join('|')).join('\n')
-}
-
 type SectionProps = PropsRuntime<'settings.section'>
 
 export function A2aSection(_props: SectionProps): ReactElement {
@@ -194,7 +175,6 @@ export function A2aSection(_props: SectionProps): ReactElement {
   const [inVersion, setInVersion] = useState('1.0.0')
   const [inPreset, setInPreset] = useState('')
   const [inAuthEnv, setInAuthEnv] = useState('')
-  const [inSkills, setInSkills] = useState('')
 
   // Outbound create form state.
   const [outName, setOutName] = useState('')
@@ -211,6 +191,10 @@ export function A2aSection(_props: SectionProps): ReactElement {
         if (alive) {
           setSnap(next)
           setPresets(presetRows)
+          // Default an unset preset picker to the deployment default (if any).
+          const def = presetRows.find((p) => p.isDefault)?.id
+          setInPreset((current) => current === '' && def !== undefined ? def : current)
+          setOutPreset((current) => current === '' && def !== undefined ? def : current)
           setError(undefined)
         }
       } catch (err) {
@@ -243,14 +227,12 @@ export function A2aSection(_props: SectionProps): ReactElement {
     setInName('')
     setInDesc('')
     setInVersion('1.0.0')
-    setInPreset('')
+    setInPreset(presets.find((p) => p.isDefault)?.id ?? '')
     setInAuthEnv('')
-    setInSkills('')
   }
 
   const submitInbound = (): void => {
     if (!inName.trim()) return
-    const skills = parseSkills(inSkills)
     if (editingIn !== undefined) {
       void control({
         action: 'inbound.update',
@@ -260,7 +242,6 @@ export function A2aSection(_props: SectionProps): ReactElement {
         version: inVersion.trim() || '1.0.0',
         ...(inPreset !== '' ? { preset: inPreset } : {}),
         ...(inAuthEnv.trim() !== '' ? { authTokenEnv: inAuthEnv.trim() } : {}),
-        ...(skills !== undefined ? { skills } : {}),
       }).then(() => setEditingIn(undefined))
       return
     }
@@ -271,7 +252,6 @@ export function A2aSection(_props: SectionProps): ReactElement {
       version: inVersion.trim() || '1.0.0',
       ...(inPreset !== '' ? { preset: inPreset } : {}),
       ...(inAuthEnv.trim() !== '' ? { authTokenEnv: inAuthEnv.trim() } : {}),
-      ...(skills !== undefined ? { skills } : {}),
     }).then(() => startCreateInbound())
   }
 
@@ -280,9 +260,8 @@ export function A2aSection(_props: SectionProps): ReactElement {
     setInName(v.name)
     setInDesc(v.description)
     setInVersion(v.version)
-    setInPreset(v.preset ?? '')
+    setInPreset(v.preset ?? presets.find((p) => p.isDefault)?.id ?? '')
     setInAuthEnv(v.authTokenEnv ?? '')
-    setInSkills(skillsToText(v.skills))
   }
 
   const submitOutbound = (): void => {
@@ -298,7 +277,7 @@ export function A2aSection(_props: SectionProps): ReactElement {
     }).then(() => {
       setOutName('')
       setOutUrl('')
-      setOutPreset('')
+      setOutPreset(presets.find((p) => p.isDefault)?.id ?? '')
       setOutTokenEnv('')
     })
   }
@@ -377,8 +356,7 @@ export function A2aSection(_props: SectionProps): ReactElement {
         createElement('input', { value: inName, placeholder: '名称', onChange: (e: { target: { value: string } }) => setInName(e.target.value) }),
         createElement('input', { value: inVersion, placeholder: '版本', onChange: (e: { target: { value: string } }) => setInVersion(e.target.value), style: { width: '70px' } }),
         createElement('select', { value: inPreset, onChange: (e: { target: { value: string } }) => setInPreset(e.target.value) },
-          createElement('option', { value: '' }, 'Preset（默认）'),
-          ...presets.map((p) => createElement('option', { value: p.id, key: p.id }, `${p.name ?? p.id}${p.isDefault ? '（默认）' : ''}`)),
+          ...presets.map((p) => createElement('option', { value: p.id, key: p.id, title: p.description ?? p.id }, p.name ?? p.id)),
         ),
         createElement('input', { value: inAuthEnv, placeholder: '鉴权 env 变量名（可选）', onChange: (e: { target: { value: string } }) => setInAuthEnv(e.target.value) }),
       ),
@@ -390,27 +368,13 @@ export function A2aSection(_props: SectionProps): ReactElement {
             ev.preventDefault()
             submitInbound()
           },
-        },
-        createElement('textarea', {
-          value: inSkills,
-          placeholder: '技能宣告（每行 id|名称|描述，留空默认取 preset 名）',
-          onChange: (e: { target: { value: string } }) => setInSkills(e.target.value),
-        }),
-      ),
-      createElement(
-        'form',
-        {
-          className: 'dsh-a2a-form',
-          onSubmit: (ev: { preventDefault(): void }) => {
-            ev.preventDefault()
-            submitInbound()
-          },
+          style: { alignItems: 'flex-end' },
         },
         createElement('input', { value: inDesc, placeholder: '描述', onChange: (e: { target: { value: string } }) => setInDesc(e.target.value), style: { flex: 1, minWidth: '260px' } }),
         createElement('button', { type: 'submit', className: 'primary', disabled: busy || !inName.trim() }, editingIn !== undefined ? '保存修改' : '创建 Server'),
         editingIn !== undefined ? createElement('button', { type: 'button', disabled: busy, onClick: () => startCreateInbound() }, '取消') : null,
       ),
-      createElement('div', { className: 'dsh-a2a-hint' }, '技能宣告由创建者输入，默认取所绑定的 preset 展示名（无 preset 时为内置 chat）。'),
+      createElement('div', { className: 'dsh-a2a-hint' }, '该 server 绑定的 preset 决定其技能（一切皆插件）：AgentCard 技能 = 该 preset 可用的模型技能，创建后自动派生。'),
     ),
 
     // ── outbound server instances ───────────────────────────────────────
@@ -469,8 +433,7 @@ export function A2aSection(_props: SectionProps): ReactElement {
         createElement('input', { value: outName, placeholder: '名称', onChange: (e: { target: { value: string } }) => setOutName(e.target.value) }),
         createElement('input', { value: outUrl, placeholder: '远端 AgentCard URL', onChange: (e: { target: { value: string } }) => setOutUrl(e.target.value), style: { flex: 1, minWidth: '240px' } }),
         createElement('select', { value: outPreset, onChange: (e: { target: { value: string } }) => setOutPreset(e.target.value) },
-          createElement('option', { value: '' }, 'Preset（默认）'),
-          ...presets.map((p) => createElement('option', { value: p.id, key: p.id }, `${p.name ?? p.id}${p.isDefault ? '（默认）' : ''}`)),
+          ...presets.map((p) => createElement('option', { value: p.id, key: p.id, title: p.description ?? p.id }, p.name ?? p.id)),
         ),
         createElement('input', { value: outTokenEnv, placeholder: 'Bearer env 变量名（可选）', onChange: (e: { target: { value: string } }) => setOutTokenEnv(e.target.value) }),
         createElement('input', { value: outTimeout, placeholder: '超时 ms', onChange: (e: { target: { value: string } }) => setOutTimeout(e.target.value), style: { width: '90px' } }),

@@ -64,9 +64,9 @@ export interface InboundCreateInput {
   readonly description: string
   readonly version: string
   readonly endpointPath?: string
+  /** Preset id; absent = the deployment default. Skills derive from it. */
   readonly preset?: string
   readonly authTokenEnv?: string
-  readonly skills?: readonly SkillView[]
   readonly enabled?: boolean
 }
 
@@ -91,7 +91,7 @@ export interface A2AServiceImpl {
   createInboundServer(input: InboundCreateInput): Promise<OpResult>
   removeInboundServer(id: string): Promise<OpResult>
   setInboundServerEnabled(id: string, enabled: boolean): Promise<OpResult>
-  updateInboundServer(id: string, patch: { name?: string; description?: string; version?: string; endpointPath?: string; preset?: string; authTokenEnv?: string; skills?: readonly SkillView[] }): Promise<OpResult>
+  updateInboundServer(id: string, patch: { name?: string; description?: string; version?: string; endpointPath?: string; preset?: string; authTokenEnv?: string }): Promise<OpResult>
   // ── outbound server instances ───────────────────────────────────────
   listOutboundServers(): OutboundServerView[]
   createOutboundServer(input: OutboundCreateInput): Promise<OpResult>
@@ -140,7 +140,7 @@ export class A2AService extends Service {
     return this.impl.setInboundServerEnabled(id, enabled)
   }
 
-  async updateInboundServer(id: string, patch: { name?: string; description?: string; version?: string; endpointPath?: string; preset?: string; authTokenEnv?: string; skills?: readonly SkillView[] }): Promise<OpResult> {
+  async updateInboundServer(id: string, patch: { name?: string; description?: string; version?: string; endpointPath?: string; preset?: string; authTokenEnv?: string }): Promise<OpResult> {
     return this.impl.updateInboundServer(id, patch)
   }
 

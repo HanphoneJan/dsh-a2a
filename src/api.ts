@@ -16,8 +16,8 @@ import type { A2AServiceImpl } from './service.ts'
 
 /** Control actions the dashboard can issue. */
 export type ApiAction =
-  | { readonly action: 'inbound.create'; readonly name: string; readonly description: string; readonly version: string; readonly endpointPath?: string; readonly preset?: string; readonly authTokenEnv?: string; readonly skills?: readonly { id: string; name: string; description?: string }[]; readonly enabled?: boolean }
-  | { readonly action: 'inbound.remove' | 'inbound.enable' | 'inbound.disable' | 'inbound.update'; readonly id: string; readonly name?: string; readonly description?: string; readonly version?: string; readonly endpointPath?: string; readonly preset?: string; readonly authTokenEnv?: string; readonly skills?: readonly { id: string; name: string; description?: string }[] }
+  | { readonly action: 'inbound.create'; readonly name: string; readonly description: string; readonly version: string; readonly endpointPath?: string; readonly preset?: string; readonly authTokenEnv?: string; readonly enabled?: boolean }
+  | { readonly action: 'inbound.remove' | 'inbound.enable' | 'inbound.disable' | 'inbound.update'; readonly id: string; readonly name?: string; readonly description?: string; readonly version?: string; readonly endpointPath?: string; readonly preset?: string; readonly authTokenEnv?: string }
   | { readonly action: 'outbound.create'; readonly name: string; readonly agentCardUrl: string; readonly bearerTokenEnv?: string; readonly preset?: string; readonly enabled?: boolean; readonly timeoutMs?: number }
   | { readonly action: 'outbound.remove' | 'outbound.enable' | 'outbound.disable' | 'outbound.refresh'; readonly id: string }
   | { readonly action: 'task.cancel'; readonly id: string }
@@ -108,7 +108,6 @@ async function dispatch(payload: ApiAction, impl: A2AServiceImpl): Promise<{ rea
         ...(payload.endpointPath !== undefined ? { endpointPath: payload.endpointPath } : {}),
         ...(payload.preset !== undefined ? { preset: payload.preset } : {}),
         ...(payload.authTokenEnv !== undefined ? { authTokenEnv: payload.authTokenEnv } : {}),
-        ...(payload.skills !== undefined ? { skills: payload.skills } : {}),
         ...(payload.enabled !== undefined ? { enabled: payload.enabled } : {}),
       })
     case 'inbound.remove':
@@ -125,7 +124,6 @@ async function dispatch(payload: ApiAction, impl: A2AServiceImpl): Promise<{ rea
         ...(payload.endpointPath !== undefined ? { endpointPath: payload.endpointPath } : {}),
         ...(payload.preset !== undefined ? { preset: payload.preset } : {}),
         ...(payload.authTokenEnv !== undefined ? { authTokenEnv: payload.authTokenEnv } : {}),
-        ...(payload.skills !== undefined ? { skills: payload.skills } : {}),
       })
     case 'outbound.create':
       return impl.createOutboundServer({

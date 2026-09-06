@@ -25,7 +25,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { openDomain, DomainTaskStore, type A2aDomain, type TaskStore } from './server/store.ts'
-import { probeService, type AgentPresetsLike, type AgentRegistryLike } from './server/exec/agent-runtime.ts'
+import { probeService, type AgentPresetsLike, type AgentRegistryLike, type SkillsLike } from './server/exec/agent-runtime.ts'
 import type { SubagentsLike } from './server/exec/subagent.ts'
 import { handleApiRequest } from './api.ts'
 import { A2AService, type A2AServiceImpl, type InboundCreateInput, type InboundServerView, type OutboundCreateInput, type OpResult, type PresetView, type SkillView } from './service.ts'
@@ -72,8 +72,9 @@ export function apply(ctx: Context, config: A2AConfig) {
         | undefined
       const agents = probeService(ctx, 'agents', 'create') as AgentRegistryLike | undefined
       const agentPresets = probeService(ctx, 'agentPresets', 'list') as
-        | (AgentPresetsLike & { list(): Promise<Array<{ id: string; name?: string; description?: string; isDefault?: boolean }>> })
+        | (AgentPresetsLike & { list(): Promise<Array<{ id: string; name?: string; description?: string }>>; readonly defaultId?: string })
         | undefined
+      const skills = probeService(ctx, 'skills', 'list') as SkillsLike | undefined
       const subagents = probeService(ctx, 'subagents', 'start') as SubagentsLike | undefined
       const commandsRef = probeService(ctx, 'commands', 'register') as
         | { register(def: { name: string; description: string; handler(...args: unknown[]): unknown }): () => void }
@@ -89,7 +90,9 @@ export function apply(ctx: Context, config: A2AConfig) {
         logger,
         ...(agents !== undefined ? { agents } : {}),
         ...(agentPresets !== undefined ? { agentPresets } : {}),
+        ...(skills !== undefined ? { skills } : {}),
         ...(subagents !== undefined ? { subagents } : {}),
+        ...(agentPresets?.defaultId !== undefined ? { defaultPresetId: agentPresets.defaultId } : {}),
         resolveDefaultModel: () => resolveDefaultModel(ctx),
         sessionCwd: inboundCwd,
         defaultBaseUrl: baseUrl,
@@ -97,7 +100,7 @@ export function apply(ctx: Context, config: A2AConfig) {
         newId: () => crypto.randomUUID().slice(0, 8),
       }
       const inboundManager = new InboundServerManager(inboundHost, new DomainInboundStore(domain.inbound_servers))
-      inboundManager.boot()
+      await inboundManager.boot()
 
       // ── outbound manager ──────────────────────────────────────────────
       const outboundHost: OutboundManagerHost = {
@@ -146,7 +149,7 @@ interface FacadeHost {
   readonly store: TaskStore
   readonly inboundManager: InboundServerManager
   readonly outboundManager: OutboundServerManager
-  readonly agentPresets?: (AgentPresetsLike & { list(): Promise<Array<{ id: string; name?: string; description?: string; isDefault?: boolean }>> }) | undefined
+  readonly agentPresets?: (AgentPresetsLike & { list(): Promise<Array<{ id: string; name?: string; description?: string }>>; readonly defaultId?: string }) | undefined
   readonly logger: (message: string) => void
 }
 
@@ -162,12 +165,13 @@ function makeFacade(host: FacadeHost): A2AServiceImpl {
       description: r.description,
       version: r.version,
       endpointPath: live.endpointPath,
-      ...(r.preset !== undefined ? { preset: r.preset } : {}),
+      // Effective preset: the record's, else the deployment default.
+      ...(live.preset !== undefined ? { preset: live.preset } : {}),
       ...(r.authTokenEnv !== undefined ? { authTokenEnv: r.authTokenEnv } : {}),
       cardPath: live.cardPath,
       ...(live.card.supportedInterfaces?.[0]?.url !== undefined ? { cardUrl: live.card.supportedInterfaces[0].url } : {}),
       enabled: live.routes.active,
-      skills: r.skills.map((s): SkillView => ({ id: s.id, name: s.name, ...(s.description != null ? { description: s.description } : {}) })),
+      skills: live.skills.map((s): SkillView => ({ id: s.id, name: s.name, ...(s.description != null ? { description: s.description } : {}) })),
     }
   }
 
@@ -181,12 +185,13 @@ function makeFacade(host: FacadeHost): A2AServiceImpl {
     },
     async presets(): Promise<PresetView[]> {
       if (host.agentPresets === undefined) return []
+      const defaultId = host.agentPresets.defaultId
       try {
         return (await host.agentPresets.list()).map((p) => ({
           id: p.id,
           ...(p.name !== undefined ? { name: p.name } : {}),
           ...(p.description !== undefined ? { description: p.description } : {}),
-          ...(p.isDefault === true ? { isDefault: true } : {}),
+          ...(defaultId !== undefined && p.id === defaultId ? { isDefault: true } : {}),
         }))
       } catch {
         return []
@@ -204,7 +209,6 @@ function makeFacade(host: FacadeHost): A2AServiceImpl {
         ...(input.endpointPath !== undefined ? { endpointPath: input.endpointPath } : {}),
         ...(input.preset !== undefined ? { preset: input.preset } : {}),
         ...(input.authTokenEnv !== undefined ? { authTokenEnv: input.authTokenEnv } : {}),
-        ...(input.skills !== undefined ? { skills: input.skills } : {}),
         ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
       })
       host.logger(`[a2a] inbound created: ${result.message}`)
@@ -216,7 +220,7 @@ function makeFacade(host: FacadeHost): A2AServiceImpl {
     async setInboundServerEnabled(id: string, enabled: boolean): Promise<OpResult> {
       return host.inboundManager.setEnabled(id, enabled)
     },
-    async updateInboundServer(id: string, patch: { name?: string; description?: string; version?: string; endpointPath?: string; preset?: string; authTokenEnv?: string; skills?: readonly SkillView[] }): Promise<OpResult> {
+    async updateInboundServer(id: string, patch: { name?: string; description?: string; version?: string; endpointPath?: string; preset?: string; authTokenEnv?: string }): Promise<OpResult> {
       return host.inboundManager.update(id, patch)
     },
     // ── outbound ────────────────────────────────────────────────────────

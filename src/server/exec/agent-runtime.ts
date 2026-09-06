@@ -56,6 +56,21 @@ export interface AgentRegistryLike {
 export interface AgentPresetsLike {
   resolve(id?: string): Promise<{ readonly id: string; readonly name?: string }>
   mount(agentCtx: unknown, id: string): Promise<unknown>
+  /** Standing scope key of a preset's mount (no agent required; undefined = default preset). */
+  standingKeyFor?(id?: string): Promise<unknown>
+}
+
+/** One skill-catalogue row as `ctx.skills.list()` returns it. */
+export interface SkillRowLike {
+  readonly name: string
+  readonly description?: string
+  readonly whenToUse?: string
+  readonly invocation?: { readonly modelInvocable?: boolean }
+}
+
+/** Structural slice of `ctx.skills` (the skill registry). */
+export interface SkillsLike {
+  list(options: { readonly scope?: unknown }): Promise<readonly SkillRowLike[]>
 }
 
 /** Runtime options shared by the executors. */

@@ -5,7 +5,7 @@ Agent2Agent (A2A) Protocol v1.0.1 dual-end plugin for [DeepSeek Harness](https:/
 `@hanphone/dsh-a2a` is an independent, open-source A2A plugin that turns a
 DeepSeek Harness profile into a multi-faced agent-to-agent citizen: it can
 simultaneously serve **multiple inbound A2A servers**, each bound to its own
-agent preset with its own endpoint, AgentCard, declared skills and auth, and
+agent preset with its own endpoint, AgentCard, preset-derived skills and auth, and
 connect to **multiple outbound A2A servers**, each with its own preset, whose
 remote skills appear as model tools. Every server instance is created,
 started, stopped, edited and removed entirely from the GUI — no config-file
@@ -24,16 +24,20 @@ Architecture and design decisions: [docs/architecture.md](docs/architecture.md).
 - **Multiple inbound servers** — one per persona. Each instance gets its own
   endpoint (`/a2a/<id>`), AgentCard route, authentication env, and skill
   declarations.
-- **Per-instance agent preset** — every inbound server binds an agent preset
-  (e.g. `ptc`, `standard`, `minimal`, …); inbound tasks execute in sessions
-  composed from that preset through the standard `agentPresets` resolve+mount
-  path.
-- **Creator-declared skill declarations** — the AgentCard's skills are the
-  text the creator entered (id/name/description per skill); when left empty at
-  creation, the default is the bound preset's display name (built-in `chat`
-  otherwise). The v0.2 tool white-list derivation is removed.
+- **Per-instance agent preset** — every inbound server binds one concrete
+  agent preset (e.g. `ptc`, `standard`, `minimal`, …); the picker lists only
+  real roster presets (matching the in-app selector) and defaults to the
+  deployment default. Inbound tasks execute in sessions composed from that
+  preset through the standard `agentPresets` resolve+mount path.
+- **Preset-derived skill declarations** — the AgentCard's skills are the
+  model-invocable entries of the bound preset's skill directory
+  (`agentPresets.standingKeyFor` + `ctx.skills.list`), derived automatically —
+  "the preset decides its skills; everything is a plugin". No typed skill form;
+  a missing skills service falls back to the built-in `chat` skill. Remotes
+  call a skill via `metadata.skill`, and the preset session executes it
+  through its `tool-skill` loader.
 - **Multiple outbound servers** — each connection has its own remote URL,
-  auth env, timeout and optional preset; enabled instances map remote skills
+  auth env, timeout and preset; enabled instances map remote skills
   to `a2a__<name>__<skill>` model tools.
 - **Durable task store** — tasks live in the `a2a` storage domain (JSON
   backend by default, SQLite per deployment choice); server-generated ids
@@ -80,8 +84,9 @@ dsh plugin --profile <name> add <path-to>/hanphone-dsh-a2a-<version>.tgz
 2. **Restart the GUI** — the browser half is scanned at host startup, so
    restart once after installing (`pnpm dsh web` or your profile launcher).
 3. **Open Settings → A2A 连接** — create your first inbound server (pick a
-   preset, declare skills, optionally set an auth env). It is enabled
-   immediately and publishes its own endpoint and AgentCard.
+   preset — its skills are derived automatically — optionally set an auth
+   env). It is enabled immediately and publishes its own endpoint and
+   AgentCard.
 
 Each inbound server listens on the profile's webServer:
 
@@ -104,9 +109,9 @@ The browser half registers an **A2A 连接** page under Settings. From it you
 can, without touching any file:
 
 - **入站 Servers** — create inbound servers (name/description/version, agent
-  preset picker, auth env, skill-declaration textarea), start/stop, edit, and
-  remove them; each row shows its endpoint, preset, declared skills and live
-  AgentCard URL.
+  preset picker listing real roster presets with the deployment default
+  preselected, auth env), start/stop, edit, and remove them; each row shows
+  its endpoint, preset, preset-derived skills and live AgentCard URL.
 - **出站 Servers** — add outbound connections (name, remote AgentCard URL,
   preset picker, bearer env, timeout), start/stop, refresh, and remove them;
   each row shows connection state and tool registration counts.

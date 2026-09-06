@@ -15,7 +15,7 @@ import {
   type DomainFacility,
   type KvTable,
 } from '@deepseek-ai/dsh-storage-domain'
-import { TaskState, type AgentSkill, type Part } from '../protocol.ts'
+import { TaskState, type Part } from '../protocol.ts'
 
 /** One durable inbound/outbound task record. */
 export interface TaskRecord {
@@ -59,11 +59,9 @@ export interface InboundServerRecord {
   readonly description: string
   readonly version: string
   readonly endpointPath: string
-  /** Agent preset id composing inbound sessions; absent = deployment default. */
+  /** Agent preset id composing inbound sessions; absent falls back to the deployment default. */
   readonly preset?: string
   readonly authTokenEnv?: string
-  /** Advertised skills (creator-entered declarations, default = preset name). */
-  readonly skills: readonly AgentSkill[]
   readonly enabled: boolean
 }
 

@@ -1,31 +1,58 @@
 /**
  * AgentCard assembly unit tests: declared skill passthrough, endpoint join,
- * bearer security advertisement — the v1.0 declaration-driven card (the v0.2
- * tool white-list derivation no longer exists; see defaultSkillFor in the
- * inbound manager for the creator-empty default).
+ * bearer security advertisement, and preset-derived skill declaration — the
+ * v1.0 "the preset decides its skills" model (derivePresetSkills in the
+ * inbound manager).
  * @module dsh-a2a/tests/unit/card.spec
  */
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { buildCard } from '../../src/server/card.ts'
-import { defaultSkillFor } from '../../src/servers/inbound-manager.ts'
+import { chatFallbackSkills, derivePresetSkills } from '../../src/servers/inbound-manager.ts'
+import type { AgentPresetsLike, SkillRowLike, SkillsLike } from '../../src/server/exec/agent-runtime.ts'
 
-describe('defaultSkillFor (creator-empty declaration default)', () => {
-  it('keeps declared skills untouched', () => {
-    const declared = [{ id: 'code', name: 'Code', description: 'Write code' }]
-    expect(defaultSkillFor(declared, 'ptc')).toEqual(declared)
+function fakePresets(overrides: Partial<AgentPresetsLike> = {}): AgentPresetsLike {
+  const scope = { agentPreset: 'standard' }
+  return {
+    resolve: vi.fn(async (id?: string) => ({ id: id ?? 'standard', name: '标准模式' })),
+    mount: vi.fn(async () => undefined),
+    standingKeyFor: vi.fn(async (id?: string) => (id === undefined ? scope : { agentPreset: id })),
+    ...overrides,
+  }
+}
+
+function fakeSkills(rows: readonly SkillRowLike[]): SkillsLike {
+  return { list: vi.fn(async () => rows) }
+}
+
+describe('derivePresetSkills (preset-derived declarations, "everything is a plugin")', () => {
+  it('advertises model-invocable catalogue entries of the preset scope', async () => {
+    const skills = fakeSkills([
+      { name: 'web-search', description: 'Search the web', invocation: { modelInvocable: true } },
+      { name: 'bash', description: 'Run a command' },
+      { name: 'internal', description: 'hidden', invocation: { modelInvocable: false } },
+    ])
+    const derived = await derivePresetSkills(fakePresets(), skills, 'standard')
+    expect(derived.map((s) => s.id)).toEqual(['web-search', 'bash'])
+    expect(derived[0]).toMatchObject({ id: 'web-search', name: 'web-search', description: 'Search the web' })
   })
 
-  it('defaults to the bound preset display name when skills are empty', () => {
-    const skills = defaultSkillFor([], 'PTC 模式')
-    expect(skills).toHaveLength(1)
-    expect(skills[0]).toMatchObject({ id: 'chat', name: 'PTC 模式' })
+  it('falls back to the built-in chat skill without a skills service', async () => {
+    const derived = await derivePresetSkills(fakePresets(), undefined, 'standard')
+    expect(derived).toEqual(chatFallbackSkills())
   })
 
-  it('falls back to the built-in chat skill when there is no preset', () => {
-    const skills = defaultSkillFor(undefined, undefined)
-    expect(skills).toHaveLength(1)
-    expect(skills[0]).toMatchObject({ id: 'chat', name: 'chat' })
+  it('falls back to chat when the catalogue is empty or the mount fails', async () => {
+    expect(await derivePresetSkills(fakePresets(), fakeSkills([]), 'standard')).toEqual(chatFallbackSkills())
+    const broken = fakePresets({
+      standingKeyFor: vi.fn(async () => { throw new Error('preset broken') }),
+    })
+    expect(await derivePresetSkills(broken, fakeSkills([{ name: 'x', description: 'd' }]), 'standard')).toEqual(chatFallbackSkills())
+  })
+
+  it('falls back to chat when the preset roster offers no standing mount', async () => {
+    const derived = await derivePresetSkills(fakePresets({ standingKeyFor: undefined }), fakeSkills([{ name: 'x', description: 'd' }]), 'standard')
+    expect(derived).toEqual(chatFallbackSkills())
   })
 })
 

@@ -1,6 +1,11 @@
 # dsh-a2a 设计文档 v1.0（多实例重构稿）
 
-状态:已实现（2026-09-06 随 v1.0 交付）。v1.0 按用户新业务需求重构:从"单入站 server + 单出站 client"升级为"多入站 server + 多出站 server",每个 server 实例可绑定一个不同的 DeepSeek Harness agent preset,技能宣告文字由创建者输入(默认取 preset 名),全部配置与开关 GUI 可操作,协议面对齐官方 A2A v1.0.1(以 a2aproject/A2A 规范仓库为权威)。
+状态:已实现（2026-09-06 随 v1.0 交付）。v1.0 按用户新业务需求重构:从"单入站 server + 单出站 client"升级为"多入站 server + 多出站 server",每个 server 实例绑定一个 DeepSeek Harness agent preset,全部配置与开关 GUI 可操作,协议面对齐官方 A2A v1.0.1(以 a2aproject/A2A 规范仓库为权威)。
+
+> **2026-09-06 方案修订(与用户讨论后确定,先定方案再实现)**:三点语义在此定稿——
+> 1. **preset 选项完全对齐应用内**:下拉只列 roster 的真实预设(id/name/描述,显示 `name`),无"默认"占位项;每个 server 实例**总绑定一个具体 preset**,初始值为部署默认(`agentPresets.defaultId`,web profile = `standard`)。
+> 2. **preset 确定 → 技能确定(一切皆插件)**:技能宣告**纯自动**,从该 preset 的技能目录派生——`agentPresets.standingKeyFor(preset)` 取得该 preset standing mount 的 scope key,再 `ctx.skills.list({ scope })` 取模型可调(`invocation.modelInvocable`)条目,填入 AgentCard;创建者不再手写宣告文字。远端用 `metadata.skill` 指定技能,任务进该 preset 会话执行,模型经会话内的 `tool-skill` 装载并运行该技能(闭环)。
+> 3. **需求 6 的"创建者输入,默认取 preset 名"按以上 2 修订**:技能来源是 preset 组合,不是自由文本;原先的实现("宣告即声明"手写列表 + `defaultSkillFor` 兜底)已删除。
 
 历史:v0.2 文档(单实例、工具白名单派生技能)已废弃,由本稿取代;旧版配置不迁移,直接删除。
 
@@ -73,10 +78,12 @@
 - `id`: 稳定标识(路径安全 `[a-z0-9-]`)
 - `name` / `description` / `version`: 身份(AgentCard 头部)
 - `endpointPath`: 独立端点,默认 `/a2a/<id>`
-- `preset`: 绑定的 agent preset id(如 `ptc`);缺省 = 该 server 的入站任务用 DSH 默认 preset 创建会话
+- `preset`: **必填**的 agent preset id(如 `standard`/`ptc`);创建时未选 = 部署默认(`agentPresets.defaultId`)。该实例的入站任务会话全部按此 preset 组装
 - `authTokenEnv`: 可选,环境变量名(每实例独立鉴权)
-- `skills`: **宣告列表**(§5),创建者输入
+- `skills`: **派生视图(§5),不落库**——由 `preset` 实时派生,创建者不输入
 - `enabled`: 开关
+
+> GUI 预设下拉只列 roster 真实预设(id/name/描述),默认选中部署默认,无"默认"占位项(与应用内 select 完全一致;见 §9)。
 
 ### 3.2 路由
 
@@ -86,13 +93,15 @@ webServer 上每实例注册:
 
 AgentCard 的 `supportedInterfaces[].url` 指向实例自己端点,`protocolBinding: "JSONRPC"`, `protocolVersion: "1.0"`。
 
-### 3.3 入站任务 → preset 会话
+### 3.3 入站任务 → preset 会话 → 技能执行
 
-实例创建时把 `preset` 传入会话池:入站任务 `SendMessage` → 该实例的会话按 `agentPresets.resolve(preset) + mount(agentCtx, preset)` 组装(机制同 `ContextSessionPool`,只是预设来自实例配置而非全局默认)。不同入站 server 各自拥有不同的工作模式(如一个 `standard`、一个 `ptc`)。
+实例创建时把 `preset` 传入会话池:入站任务 `SendMessage` → 该实例的会话按 `agentPresets.resolve(preset) + mount(agentCtx, preset)` 组装(机制同 `ContextSessionPool`,预设来自实例配置)。不同入站 server 各自拥有不同的工作模式(如一个 `standard`、一个 `ptc`)。
+
+技能的**宣告**与**执行**同源:宣告列表由该 preset 的 standing scope 技能目录派生(§5);远端任务带 `metadata.skill` 进入后,由该 preset 会话执行,模型经会话内的 `tool-skill`(目录/装载工具)装载并运行该技能——宣告集合 ⊂ 会话可用技能,闭环一致。
 
 ### 3.4 实例生命周期
 
-GUI 可:创建(选 preset/填宣告/设鉴权 env)、启用/停用、删除、编辑。删除会 dispose 该实例的全部 effect 与环境。
+GUI 可:创建(选 preset/设鉴权 env)、启用/停用、删除、编辑。删除会 dispose 该实例的全部 effect 与环境。技能列表随 preset 派生,创建/编辑时无需手工输入。
 
 ---
 
@@ -106,11 +115,10 @@ GUI 可:创建(选 preset/填宣告/设鉴权 env)、启用/停用、删除、�
 - `name`: 展示名(工具命名空间)
 - `agentCardUrl`: 远端 AgentCard 地址
 - `bearerTokenEnv`: 可选,环境变量名
-- `preset`: **本端在与该远端交互时按该 preset 组装**(调用远端时本地维护的会话)
+- `preset`: **必填**,本端在与该远端交互时按该 preset 组装(调用远端时本地维护的会话);创建时未选 = 部署默认
 - `enabled` / `timeoutMs`
-- `skills`: 宣告列表(创建者输入;远端卡片技能可自动导入为默认)
 
-> **出站 preset 语义(已确认)**:需求 4 按用户确认的 (b) 解读——出站 server 的 preset 决定"与这个远端对话时本 DSH 维护的本地会话组装"。
+> **出站 preset 语义(已确认)**:需求 4 按用户确认的 (b) 解读——出站 server 的 preset 决定"与这个远端对话时本 DSH 维护的本地会话组装"。出站不宣告 AgentCard(无入站端点),preset 的技能目录仅作信息展示。
 
 ### 4.2 出站技能 → 工具
 
@@ -118,22 +126,23 @@ GUI 可:创建(选 preset/填宣告/设鉴权 env)、启用/停用、删除、�
 
 ---
 
-## 5. 技能宣告(skill 宣告文字)
+## 5. 技能宣告(从 preset 技能目录派生)
 
-### 5.1 数据来源
+### 5.1 语义(2026-09-06 与用户讨论后定稿)
 
-需求 6:**AgentCard 的每个技能宣告由创建者输入,默认取 preset 名**。
+**preset 确定 → 技能确定;一切皆插件。** harness 中技能是真实机制:`ctx.skills`(`@deepseek-ai/dsh-skill`)是按 scope 分层的技能注册表,插件(提供者,如 preset 内的 `skill-filesystem`)往所在 scope 的层注册技能条目;`tool-skill` 是技能的目录/装载工具(模型经它看到、装载技能)。技能条目含 `name`(kebab-case 技能 id)、`description`(必填)、`whenToUse?`、`invocation.modelInvocable`。
 
-- 创建/编辑 server 实例时,GUI 提供技能宣告表单:
-  - `id`(技能标识,路径安全)
-  - `name`(显示名,协议必填)
-  - `description`(宣告文字,自由输入)
-  - 可选 `tags` / `examples` / `inputModes` / `outputModes`(协议字段完整)
-- **默认**:未填时,name/description 默认取该实例绑定的 preset 的展示名(`preset.yml` 的 `name`,如 `ptc` → "PTC 模式");无 preset 时默认 `chat`(内置,描述"Conversational assistance over a DSH agent session")。
+### 5.2 派生机制(纯自动,取代手写宣告)
 
-### 5.2 与"从工具注册表派生"的关系
+每个入站实例的技能列表 = 该 preset 的真实可用技能:
 
-v0.2 从 `ctx.tools` 派生。v1.0 改为 **"宣告即声明"**:创建者声明这个 server 能做什么,填入 AgentCard 的技能字段。preset 的插件组装负责"实际能做什么",宣告负责"宣称能做什么",二者解耦(与 A2A 协议语义一致:AgentCard 是宣传面)。用户已确认:技能宣告完全取代工具白名单派生,白名单机制删除。
+1. `agentPresets.standingKeyFor(preset)` → 该 preset standing mount 的 scope key(不启动 agent、不占会话;`dsh-agent-presets` 为这种"无 agent 读取"场景专门提供);
+2. `ctx.skills.list({ scope })` → 该 preset agent 可见的完整技能目录(**preset 层贡献 + 部署全局层**——全局技能该 agent 确实能调,宣告"这台 server 实际能做的"正是这份清单);
+3. 过滤 `invocation.modelInvocable === false`(远端调用是模型面),映射为 `AgentSkill[]`:`id = name`、`name = name`、`description = description`(可拼 `whenToUse`)。
+
+- **不落库**:技能实时派生(standing mount 保证确定),preset 或技能目录变化后重启/编辑即刷新;
+- **兜底**:`agentPresets`/`skills` 服务或 standing mount 不可用时(最小组合/单测),宣告内置 `chat` 技能("Conversational assistance over a DSH agent session")以保持可启动、可端到端验证;
+- **与执行闭环**:宣告集合 ⊂ 该 preset 会话可用技能;远端 `metadata.skill` → preset 会话执行 → 模型经 `tool-skill` 装载运行(§3.3)。
 
 ### 5.3 协议字段
 
@@ -258,8 +267,8 @@ src/
 
 ## 13. 测试
 
-- 单测:多实例路由隔离、preset 绑定、宣告构建、出站连接 × preset、API 多实例、协议序列化(`TASK_STATE_*`)
-- 组合:多个入站 server 实例互不干扰、GUI 建删启停
+- 单测:多实例路由隔离、preset 绑定、**技能目录派生(standing scope + modelInvocable 过滤 + chat 兜底)**、出站连接 × preset、API 多实例、协议序列化(`TASK_STATE_*`)
+- 组合:多个入站 server 实例互不干扰、GUI 建删启停、预设下拉默认选中部署默认
 - 协议互操作:用官方 SDK/examples 交叉核对(设计期已审计,测试补覆盖)
 
 ---
@@ -275,6 +284,7 @@ src/
 ## 15. 评审确认点(已确认)
 
 1. 出站 preset 语义 = b) 与远端对话时本端会话按该 preset 组装 —— **已确认**
-2. 技能宣告完全取代工具白名单派生 —— **已确认**
-3. 旧版本完全删除,不迁移 —— **已确认**
-4. 协议权威 = `.research/A2A`(官方 1.0.1) —— **已确认**(方法名/枚举/结构已按此对齐)
+2. 预设下拉 = 只列 roster 真实预设,默认选中部署默认,无"默认"占位;每实例总绑定具体 preset —— **已确认(2026-09-06)**
+3. 技能宣告 = preset 技能目录纯自动派生(standingKeyFor + `ctx.skills.list`,过滤 `modelInvocable`),创建者不手写 —— **已确认(2026-09-06,B' 方案)**
+4. 旧版本完全删除,不迁移 —— **已确认**
+5. 协议权威 = `.research/A2A`(官方 1.0.1) —— **已确认**(方法名/枚举/结构已按此对齐)
