@@ -1,6 +1,6 @@
 # dsh-a2a 设计文档 v1.0（多实例重构稿）
 
-状态:待评审。v1.0 按用户新业务需求重构:从"单入站 server + 单出站 client"升级为"多入站 server + 多出站 server",每个 server 实例可绑定一个不同的 DeepSeek Harness agent preset,技能宣告文字由创建者输入(默认取 preset 名),全部配置与开关 GUI 可操作,协议面对齐官方 A2A v1.0.1(以 a2aproject/A2A 规范仓库为权威)。
+状态:已实现（2026-09-06 随 v1.0 交付）。v1.0 按用户新业务需求重构:从"单入站 server + 单出站 client"升级为"多入站 server + 多出站 server",每个 server 实例可绑定一个不同的 DeepSeek Harness agent preset,技能宣告文字由创建者输入(默认取 preset 名),全部配置与开关 GUI 可操作,协议面对齐官方 A2A v1.0.1(以 a2aproject/A2A 规范仓库为权威)。
 
 历史:v0.2 文档(单实例、工具白名单派生技能)已废弃,由本稿取代;旧版配置不迁移,直接删除。
 
