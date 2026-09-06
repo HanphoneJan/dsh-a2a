@@ -1,23 +1,24 @@
 /**
- * Agent2Agent (A2A) Protocol v1.0 — types, task states, JSON-RPC methods and
- * error codes used by this plugin's JSON-RPC over HTTP binding.
- *
- * The surface mirrors the normative `a2a.proto` of the A2A project (Apache-2.0);
- * this file is the plugin's own transcription and the single source of protocol
- * truth. Bindings other than JSON-RPC over HTTP (gRPC, REST) are not provided.
+ * Agent2Agent (A2A) Protocol v1.0.1 — types, JSON-RPC methods, task states,
+ * error codes and JSON serialization, transcribed from the official
+ * `a2aproject/A2A` specification (Apache-2.0), cross-checked against
+ * `specification/a2a.proto` and `docs/specification.md` (JSON-RPC binding,
+ * ADR-001 ProtoJSON). This file is the plugin's single source of protocol
+ * truth for the JSON-RPC over HTTP binding. Other bindings (gRPC, REST) are
+ * not provided.
  * @module dsh-a2a/protocol
  */
 
-/** Task lifecycle states (spec `TaskState`). */
+/** Task lifecycle states (spec `TaskState`; JSON = SCREAMING_SNAKE_CASE per ADR-001). */
 export enum TaskState {
-  SUBMITTED = 'SUBMITTED',
-  WORKING = 'WORKING',
-  INPUT_REQUIRED = 'INPUT_REQUIRED',
-  AUTH_REQUIRED = 'AUTH_REQUIRED',
-  COMPLETED = 'COMPLETED',
-  FAILED = 'FAILED',
-  CANCELED = 'CANCELED',
-  REJECTED = 'REJECTED',
+  SUBMITTED = 'TASK_STATE_SUBMITTED',
+  WORKING = 'TASK_STATE_WORKING',
+  INPUT_REQUIRED = 'TASK_STATE_INPUT_REQUIRED',
+  AUTH_REQUIRED = 'TASK_STATE_AUTH_REQUIRED',
+  COMPLETED = 'TASK_STATE_COMPLETED',
+  FAILED = 'TASK_STATE_FAILED',
+  CANCELED = 'TASK_STATE_CANCELED',
+  REJECTED = 'TASK_STATE_REJECTED',
 }
 
 /** States that settle a task; a settled task no longer transitions. */
@@ -28,72 +29,150 @@ export const TERMINAL_STATES: ReadonlySet<TaskState> = new Set([
   TaskState.REJECTED,
 ])
 
+/** Interrupted (non-terminal, still owed) states. */
+export const INTERRUPTED_STATES: ReadonlySet<TaskState> = new Set([
+  TaskState.INPUT_REQUIRED,
+  TaskState.AUTH_REQUIRED,
+])
+
 /** @returns whether the state settles the task. */
 export function isTerminal(state: TaskState): boolean {
   return TERMINAL_STATES.has(state)
 }
 
-/** Message sender role (spec `Role`). */
+/** Message sender role (spec `Role`; JSON = `ROLE_*` per ADR-001). */
 export enum Role {
-  USER = 'user',
-  AGENT = 'agent',
+  USER = 'ROLE_USER',
+  AGENT = 'ROLE_AGENT',
 }
 
-/** One message part: text, file (bytes or uri), or structured data. */
-export type Part =
-  | { readonly text: string; readonly metadata?: Record<string, unknown> }
-  | {
-    readonly file: {
-      readonly mimeType?: string
-      readonly name?: string
-      readonly bytes?: string
-      readonly uri?: string
-    }
-    readonly metadata?: Record<string, unknown>
-  }
-  | { readonly data: unknown; readonly metadata?: Record<string, unknown> }
+/** Base properties common to every message part. */
+export interface PartBase {
+  readonly metadata?: Record<string, unknown> | null
+}
 
-/** An interaction payload exchanged between agents. */
+/** Conveys plain textual content. */
+export interface TextPart extends PartBase {
+  readonly text: string
+}
+
+/** Conveys a file: raw bytes (base64 in JSON), a URL, or both. */
+export interface FilePart extends PartBase {
+  readonly raw?: string
+  readonly url?: string
+  readonly filename?: string
+  readonly mediaType?: string
+}
+
+/** Conveys structured data (a JSON value). */
+export interface DataPart extends PartBase {
+  readonly data: unknown
+}
+
+/** A container for a section of communication content (spec `Part`). */
+export type Part = TextPart | FilePart | DataPart
+
+/** A message in a task's conversation (spec `Message`). */
 export interface Message {
+  /** Unique id created by the message creator. */
   readonly messageId: string
-  readonly role: Role
+  /** Associates this message with a context. */
   readonly contextId?: string
-  /** Continuation: attaches this message to an existing task's conversation. */
+  /** Associates this message with a task. */
   readonly taskId?: string
+  readonly role: Role
   readonly parts: readonly Part[]
-  readonly metadata?: Record<string, unknown>
+  readonly metadata?: Record<string, unknown> | null
+  /** Extension URIs present or contributed. */
+  readonly extensions?: readonly string[]
+  /** Task ids this message references for additional context. */
+  readonly referenceTaskIds?: readonly string[]
 }
 
-/** Current state of a task, with an optional explanatory message. */
+/** Configuration of a send-message request (spec `SendMessageConfiguration`). */
+export interface SendMessageConfiguration {
+  /** Media types the client accepts for response parts. */
+  readonly acceptedOutputModes?: readonly string[]
+  /** Push notification config; task id empty when sent with SendMessage. */
+  readonly taskPushNotificationConfig?: TaskPushNotificationConfig
+  /** Max history messages to return; 0 = none; unset = no limit. */
+  readonly historyLength?: number
+  /** true = return immediately after task creation; false (default) = block to terminal/interrupted. */
+  readonly returnImmediately?: boolean
+}
+
+/** A container for the status of a task. */
 export interface TaskStatus {
   readonly state: TaskState
-  readonly message?: Message
+  readonly message?: Message | null
+  /** ISO 8601 timestamp when the status was recorded. */
   readonly timestamp: string
 }
 
-/** A chunk of task output. */
+/** A chunk of task output (spec `Artifact`). */
 export interface Artifact {
   readonly name?: string
-  readonly parts: readonly Part[]
   readonly artifactId?: string
+  readonly parts: readonly Part[]
+  readonly metadata?: Record<string, unknown> | null
 }
 
-/** A task: the durable work unit of A2A. */
+/** The core unit of action for A2A (spec `Task`). */
 export interface Task {
+  /** Server-generated id for a new task. */
   readonly id: string
   readonly contextId?: string
   readonly status: TaskStatus
   readonly artifacts?: readonly Artifact[]
   readonly history?: readonly Message[]
-  readonly metadata?: Record<string, unknown>
+  readonly metadata?: Record<string, unknown> | null
 }
 
-/** JSON-RPC 2.0 request as used by the A2A binding. */
+/** Task status transition event (spec `TaskStatusUpdateEvent`). */
+export interface TaskStatusUpdateEvent {
+  readonly taskId: string
+  readonly contextId?: string
+  readonly status: TaskStatus
+  readonly metadata?: Record<string, unknown> | null
+}
+
+/** Task artifact update event (spec `TaskArtifactUpdateEvent`). */
+export interface TaskArtifactUpdateEvent {
+  readonly taskId: string
+  readonly contextId?: string
+  readonly artifact: Artifact
+  readonly lastChunk?: boolean
+  readonly metadata?: Record<string, unknown> | null
+}
+
+/** Streaming payload variants (spec `StreamResponse` oneof). */
+export type StreamResponse =
+  | { readonly task: Task }
+  | { readonly message: Message }
+  | { readonly statusUpdate: TaskStatusUpdateEvent }
+  | { readonly artifactUpdate: TaskArtifactUpdateEvent }
+
+// ── push notifications (spec §Push Notification Objects) ──────────────────
+
+/** Push notification configuration (spec `TaskPushNotificationConfig`). */
+export interface TaskPushNotificationConfig {
+  readonly id?: string
+  readonly url: string
+  readonly token?: string | null
+  readonly authentication?: {
+    readonly schemes: readonly string[]
+    readonly credentials?: string | null
+  } | null
+}
+
+// ── JSON-RPC 2.0 frames ───────────────────────────────────────────────────
+
+/** JSON-RPC 2.0 message base. */
 export interface JsonRpcRequest {
   readonly jsonrpc: '2.0'
   readonly id?: string | number | null
   readonly method: string
-  readonly params?: unknown
+  readonly params?: Record<string, unknown> | null
 }
 
 export interface JsonRpcSuccess {
@@ -116,64 +195,91 @@ export interface JsonRpcError {
 
 export type JsonRpcResponse = JsonRpcSuccess | JsonRpcError
 
-/** A skill advertised by an agent. */
+// ── Agent Card (spec §8 Agent Discovery) ──────────────────────────────────
+
+/** A skill advertised by an agent (spec `AgentSkill`). */
 export interface AgentSkill {
   readonly id: string
-  readonly name?: string
-  readonly description?: string
-  readonly tags?: readonly string[]
-  readonly examples?: readonly string[]
-  readonly inputModes?: readonly string[]
-  readonly outputModes?: readonly string[]
+  /** Human-readable name. Required by the protocol. */
+  readonly name: string
+  /** Detailed description (CommonMark may be used). */
+  readonly description?: string | null
+  readonly tags?: readonly string[] | null
+  readonly examples?: readonly string[] | null
+  readonly inputModes?: readonly string[] | null
+  readonly outputModes?: readonly string[] | null
 }
 
+/** Optional A2A protocol features (spec `AgentCapabilities`). */
 export interface AgentCapabilities {
+  /** `SendStreamingMessage` + `SubscribeToTask` support. */
   readonly streaming?: boolean
+  /** Push notification webhooks. */
   readonly pushNotifications?: boolean
+  /** Extended Agent Card support. */
+  readonly extendedAgentCard?: boolean
   readonly stateTransitionHistory?: boolean
-  readonly extensions?: readonly string[]
 }
 
-/** One supported interface (transport binding) of an agent. */
+/** Information about the providing organization (spec `AgentProvider`). */
+export interface AgentProvider {
+  readonly organization: string
+  readonly url?: string | null
+}
+
+/** Authentication requirements of the agent's endpoint (spec `AgentAuthentication`). */
+export interface AgentAuthentication {
+  /** Scheme names, e.g. "Bearer", "OAuth2", "ApiKey". Empty = no A2A-level auth. */
+  readonly schemes: readonly string[]
+  /** Non-secret scheme configuration; MUST NOT contain plaintext secrets. */
+  readonly credentials?: string | null
+}
+
+/** One supported interface of an agent (spec `AgentInterface`). */
 export interface AgentInterface {
   readonly url: string
-  readonly protocolBinding?: 'JSONRPC' | 'REST' | 'gRPC' | string
+  readonly protocolBinding?: 'JSONRPC' | 'GRPC' | 'HTTP+JSON' | string
   readonly protocolVersion?: string
-  readonly authSchemes?: readonly string[]
+  readonly tenant?: string
 }
 
-/** Bearer-token security scheme advertised by the AgentCard. */
-export interface AgentSecurityScheme {
-  readonly type: 'http'
-  readonly scheme: 'bearer'
-  readonly description?: string
-}
-
-/** The discovery manifest of an A2A agent. */
+/** The discovery manifest of an A2A agent (spec `AgentCard`). */
 export interface AgentCard {
   readonly name: string
-  readonly description: string
+  readonly description?: string | null
+  readonly supportedInterfaces?: readonly AgentInterface[]
+  readonly provider?: AgentProvider | null
+  readonly iconUrl?: string | null
   readonly version: string
-  readonly url?: string
-  readonly provider?: { readonly url: string; readonly organization: string }
-  readonly skills?: readonly AgentSkill[]
-  readonly capabilities?: AgentCapabilities
+  readonly documentationUrl?: string | null
+  readonly capabilities: AgentCapabilities
+  readonly securitySchemes?: Record<string, unknown> | null
+  readonly securityRequirements?: readonly unknown[] | null
   readonly defaultInputModes?: readonly string[]
   readonly defaultOutputModes?: readonly string[]
-  readonly securitySchemes?: Record<string, AgentSecurityScheme>
-  readonly securityRequirements?: readonly Record<string, readonly string[]>[]
-  readonly supportedInterfaces?: readonly AgentInterface[]
-  readonly custom?: Record<string, unknown>
+  readonly skills: readonly AgentSkill[]
 }
 
-/** Streamed updates during a task run (SSE payloads). */
-export type StreamResponse =
-  | { readonly statusUpdate: { readonly taskId: string; readonly contextId?: string; readonly status: TaskStatus } }
-  | { readonly artifactUpdate: { readonly taskId: string; readonly contextId?: string; readonly artifact: Artifact; readonly lastChunk?: boolean } }
-  | { readonly task: Task }
-  | { readonly error: { readonly code: number; readonly message: string } }
+// ── JSON-RPC error codes (spec §error codes + §9.5) ───────────────────────
 
-/** A2A v1.0 JSON-RPC method names (canonical PascalCase as in a2a.proto). */
+/** JSON-RPC + A2A error codes. */
+export const A2A_ERROR_CODES = {
+  PARSE_ERROR: -32700,
+  INVALID_REQUEST: -32600,
+  METHOD_NOT_FOUND: -32601,
+  INVALID_PARAMS: -32602,
+  INTERNAL_ERROR: -32603,
+  TASK_NOT_FOUND: -32001,
+  TASK_CANCEL_NOT_ALLOWED: -32002,
+  PUSH_NOTIFICATION_NOT_SUPPORTED: -32003,
+  UNSUPPORTED_OPERATION: -32004,
+  CONTENT_TYPE_NOT_SUPPORTED: -32005,
+  STREAMING_NOT_SUPPORTED: -32006,
+  VERSION_NOT_SUPPORTED: -32007,
+  INVALID_AGENT_RESPONSE: -32008,
+} as const
+
+/** A2A v1.0 JSON-RPC method names (spec §5.3 Method Mapping Reference). */
 export const A2A_METHODS = {
   sendMessage: 'SendMessage',
   sendStreamingMessage: 'SendStreamingMessage',
@@ -181,30 +287,33 @@ export const A2A_METHODS = {
   listTasks: 'ListTasks',
   cancelTask: 'CancelTask',
   subscribeToTask: 'SubscribeToTask',
+  createTaskPushNotificationConfig: 'CreateTaskPushNotificationConfig',
+  getTaskPushNotificationConfig: 'GetTaskPushNotificationConfig',
+  listTaskPushNotificationConfigs: 'ListTaskPushNotificationConfigs',
+  deleteTaskPushNotificationConfig: 'DeleteTaskPushNotificationConfig',
   getExtendedAgentCard: 'GetExtendedAgentCard',
 } as const
 
-/** JSON-RPC error codes for the A2A binding (spec §error codes). */
-export const A2A_ERROR_CODES = {
-  INVALID_REQUEST: -32600,
-  METHOD_NOT_FOUND: -32601,
-  INVALID_PARAMS: -32602,
-  INTERNAL_ERROR: -32603,
-  UNAUTHORIZED: -32000,
-  TASK_NOT_FOUND: -32001,
-  TASK_CANCEL_NOT_ALLOWED: -32002,
-  AGENT_CARD_NOT_FOUND: -32004,
-  AGENT_CARD_SIGNATURE_INVALID: -32005,
-} as const
+/** The A2A protocol version this plugin implements (header + interface). */
+export const PROTOCOL_VERSION = '1.0'
 
-/** Read a message's text parts as a single string (model-facing convenience). */
+/** The well-known AgentCard content type (spec §14.1). */
+export const A2A_JSON_MEDIA_TYPE = 'application/a2a+json'
+
+/**
+ * Read a message's text parts as a single string (model-facing convenience).
+ * File parts render as their URL/name; data parts as JSON.
+ */
 export function partsToText(parts: readonly Part[] | undefined): string {
   if (!parts) return ''
   return parts
     .map((p) => {
       if ('text' in p && p.text) return p.text
       if ('data' in p && p.data !== undefined) return JSON.stringify(p.data)
-      if ('file' in p) return p.file.uri ?? `[file ${p.file.name ?? p.file.mimeType ?? 'binary'}]`
+      if ('raw' in p || 'url' in p || 'filename' in p) {
+        const f = p as FilePart
+        return f.url ?? `[file ${f.filename ?? f.mediaType ?? 'binary'}]`
+      }
       return ''
     })
     .filter(Boolean)

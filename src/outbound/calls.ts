@@ -60,17 +60,17 @@ export class A2AClient {
       signal: AbortSignal.timeout(timeoutMs),
     })
     if (!response.ok) {
-      throw new A2AError(A2A_ERROR_CODES.AGENT_CARD_NOT_FOUND, `agent card fetch failed: HTTP ${response.status}`)
+      throw new A2AError(A2A_ERROR_CODES.INVALID_AGENT_RESPONSE, `agent card fetch failed: HTTP ${response.status}`)
     }
     const card = (await response.json()) as AgentCard
-    if (typeof card.name !== 'string' || typeof card.description !== 'string') {
-      throw new A2AError(A2A_ERROR_CODES.AGENT_CARD_SIGNATURE_INVALID, `invalid agent card at ${agentCardUrl}`)
+    if (typeof card.name !== 'string' || !Array.isArray(card.skills)) {
+      throw new A2AError(A2A_ERROR_CODES.INVALID_AGENT_RESPONSE, `invalid agent card at ${agentCardUrl}`)
     }
     const iface = card.supportedInterfaces?.find((i) => (i.protocolBinding ?? 'JSONRPC') === 'JSONRPC')
       ?? card.supportedInterfaces?.[0]
-    const endpoint = iface?.url ?? card.url
+    const endpoint = iface?.url
     if (!endpoint) {
-      throw new A2AError(A2A_ERROR_CODES.AGENT_CARD_NOT_FOUND, `agent card at ${agentCardUrl} advertises no JSON-RPC interface`)
+      throw new A2AError(A2A_ERROR_CODES.INVALID_AGENT_RESPONSE, `agent card at ${agentCardUrl} advertises no JSON-RPC interface`)
     }
     return new A2AClient(card, endpoint, opts)
   }
@@ -130,7 +130,9 @@ export class A2AClient {
       throw err
     }
     if (response.status === 401) {
-      throw new A2AError(A2A_ERROR_CODES.UNAUTHORIZED, 'remote agent rejected credentials (401)')
+      // HTTP 401 has no dedicated JSON-RPC code in the spec; surface it as a
+      // distinct negative code the tools layer can map to a readable message.
+      throw new A2AError(-32040, 'remote agent rejected credentials (401)')
     }
     if (!response.ok) {
       throw new A2AError(A2A_ERROR_CODES.INTERNAL_ERROR, `A2A call ${method} failed: HTTP ${response.status}`)

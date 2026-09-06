@@ -100,7 +100,7 @@ describe('DomainTaskStore', () => {
       taskId,
       contextId: 'ctx-seeded',
       skill: 'chat',
-      state: 'COMPLETED',
+      state: 'TASK_STATE_COMPLETED',
       createdAt: '2026-09-06T00:00:00.000Z',
       updatedAt: '2026-09-06T00:00:01.000Z',
       sessionId: 's1',

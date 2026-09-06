@@ -230,7 +230,7 @@ describe('plugin composition (stub host services)', () => {
     }))
     await vi.waitFor(() => expect(response()).toBeDefined())
     const task = JSON.parse(response()!.body).result
-    expect(task.status.state).toBe('FAILED') // no agent loop: readable refusal
+    expect(task.status.state).toBe('TASK_STATE_FAILED') // no agent loop: readable refusal
     expect(task.status.message.parts[0].text).toMatch(/refusing inbound task/)
     expect((await ctx.a2a.listTasks() as unknown[]).length).toBe(1)
     expect((storageDomain.open as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1)

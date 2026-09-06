@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { A2AClient, A2AError } from '../../src/outbound/calls.ts'
-import { A2A_ERROR_CODES, A2A_METHODS, TaskState, type AgentCard } from '../../src/protocol.ts'
+import { A2A_ERROR_CODES, A2A_METHODS, Role, TaskState, type AgentCard } from '../../src/protocol.ts'
 
 const card: AgentCard = {
   name: 'remote',
@@ -52,16 +52,16 @@ describe('A2AClient.connect', () => {
     expect(calls[0]?.url).toBe('https://remote.example/card.json')
   })
 
-  it('throws AGENT_CARD_NOT_FOUND on an HTTP error', async () => {
+  it('throws INVALID_AGENT_RESPONSE on an HTTP error', async () => {
     const fetch = (async () => new Response('nope', { status: 404 })) as typeof fetch
     await expect(A2AClient.connect('https://remote.example/card.json', { fetchImpl: fetch }))
-      .rejects.toMatchObject({ code: A2A_ERROR_CODES.AGENT_CARD_NOT_FOUND })
+      .rejects.toMatchObject({ code: A2A_ERROR_CODES.INVALID_AGENT_RESPONSE })
   })
 
-  it('throws AGENT_CARD_SIGNATURE_INVALID on a card missing name/description', async () => {
+  it('throws INVALID_AGENT_RESPONSE on a card missing name/skills', async () => {
     const fetch = (async () => new Response(JSON.stringify({ version: '1' }), { status: 200 })) as typeof fetch
     await expect(A2AClient.connect('https://remote.example/card.json', { fetchImpl: fetch }))
-      .rejects.toMatchObject({ code: A2A_ERROR_CODES.AGENT_CARD_SIGNATURE_INVALID })
+      .rejects.toMatchObject({ code: A2A_ERROR_CODES.INVALID_AGENT_RESPONSE })
   })
 })
 
@@ -69,7 +69,7 @@ describe('A2AClient.sendMessage', () => {
   it('returns a terminal task without polling', async () => {
     const { fetch } = stubFetch([() => ({ result: terminalTask('a2a-1') })])
     const client = await A2AClient.connect('https://remote.example/card.json', { fetchImpl: fetch })
-    const task = await client.sendMessage({ messageId: 'm', role: 'user', parts: [{ text: 'hi' }] })
+    const task = await client.sendMessage({ messageId: 'm', role: Role.USER, parts: [{ text: 'hi' }] })
     expect(task.id).toBe('a2a-1')
     expect(task.status.state).toBe(TaskState.COMPLETED)
   })
@@ -80,15 +80,15 @@ describe('A2AClient.sendMessage', () => {
       () => ({ result: terminalTask('a2a-2', TaskState.COMPLETED) }),
     ])
     const client = await A2AClient.connect('https://remote.example/card.json', { fetchImpl: fetch, timeoutMs: 5000 })
-    const task = await client.sendMessage({ messageId: 'm', role: 'user', parts: [{ text: 'hi' }] })
+    const task = await client.sendMessage({ messageId: 'm', role: Role.USER, parts: [{ text: 'hi' }] })
     expect(task.status.state).toBe(TaskState.COMPLETED)
   })
 
   it('surfaces a remote JSON-RPC error with its code', async () => {
-    const { fetch } = stubFetch([() => ({ error: { code: A2A_ERROR_CODES.UNAUTHORIZED, message: 'nope' } })])
+    const { fetch } = stubFetch([() => ({ error: { code: A2A_ERROR_CODES.TASK_NOT_FOUND, message: 'nope' } })])
     const client = await A2AClient.connect('https://remote.example/card.json', { fetchImpl: fetch })
-    await expect(client.sendMessage({ messageId: 'm', role: 'user', parts: [] }))
-      .rejects.toMatchObject({ code: A2A_ERROR_CODES.UNAUTHORIZED })
+    await expect(client.sendMessage({ messageId: 'm', role: Role.USER, parts: [] }))
+      .rejects.toMatchObject({ code: A2A_ERROR_CODES.TASK_NOT_FOUND })
   })
 
   it('throws A2AError on a 401 response', async () => {
@@ -97,14 +97,14 @@ describe('A2AClient.sendMessage', () => {
       return new Response(JSON.stringify(card), { status: 200 })
     }) as typeof fetch
     const client = await A2AClient.connect('https://remote.example/card.json', { fetchImpl: fetch })
-    await expect(client.sendMessage({ messageId: 'm', role: 'user', parts: [] }))
-      .rejects.toMatchObject({ code: A2A_ERROR_CODES.UNAUTHORIZED })
+    await expect(client.sendMessage({ messageId: 'm', role: Role.USER, parts: [] }))
+      .rejects.toMatchObject({ code: -32040 })
   })
 
   it('times out when the task never settles', async () => {
     const { fetch } = stubFetch([() => ({ result: terminalTask('a2a-3', TaskState.WORKING) })])
     const client = await A2AClient.connect('https://remote.example/card.json', { fetchImpl: fetch, timeoutMs: 50 })
-    await expect(client.sendMessage({ messageId: 'm', role: 'user', parts: [] }))
+    await expect(client.sendMessage({ messageId: 'm', role: Role.USER, parts: [] }))
       .rejects.toMatchObject({ code: -32000, message: /did not settle/ })
   })
 })

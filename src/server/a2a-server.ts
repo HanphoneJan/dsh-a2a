@@ -120,7 +120,7 @@ export class A2AServer {
       return {
         status: 401,
         contentType: 'application/json',
-        body: JSON.stringify(rpcError(null, A2A_ERROR_CODES.UNAUTHORIZED, 'Unauthorized')),
+        body: JSON.stringify(rpcError(null, -32040, 'Unauthorized')),
         headers: { 'WWW-Authenticate': 'Bearer' },
       }
     }

@@ -66,6 +66,8 @@ export interface AgentRuntimeOptions {
   readonly resolveAgentOptions?: () => { readonly provider?: string; readonly model?: string; readonly maxTokens?: number } | undefined
   /** Preset roster; when present every spawned session joins the default preset. */
   readonly agentPresets?: AgentPresetsLike
+  /** When set, every spawned session joins THIS preset id instead of the deployment default. */
+  readonly presetId?: () => string | undefined
   /** Once-per-context hook after the first prompt lands (cosmetic naming). */
   readonly onSessionOpened?: (info: { readonly sessionId: string; readonly contextId: string; readonly firstPrompt: string }) => void | Promise<void>
 }
@@ -100,7 +102,8 @@ export class ContextSessionPool {
     let presetId: string | undefined
     let setup: ((agentCtx: unknown) => Promise<void>) | undefined
     if (presets !== undefined) {
-      presetId = (await presets.resolve()).id
+      const wanted = this.opts.presetId?.() ?? undefined
+      presetId = (wanted !== undefined ? await presets.resolve(wanted) : await presets.resolve()).id
       setup = async (agentCtx: unknown): Promise<void> => {
         await presets.mount(agentCtx, presetId!)
       }

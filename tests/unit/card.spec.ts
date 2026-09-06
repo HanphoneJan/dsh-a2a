@@ -58,7 +58,10 @@ describe('buildCard', () => {
 
   it('advertises a bearer scheme when auth is configured', () => {
     const card = buildCard({ ...base, authToken: 'secret' })
-    expect(card.securitySchemes?.bearerAuth).toMatchObject({ type: 'http', scheme: 'bearer' })
-    expect(card.securityRequirements).toEqual([{ bearerAuth: [] }])
+    // Official AgentCard security object shape (§8 sample + §4.5).
+    expect(card.securitySchemes?.bearer).toMatchObject({
+      httpAuthSecurityScheme: { scheme: 'bearer', description: 'Shared bearer token' },
+    })
+    expect(card.securityRequirements).toEqual([{ schemes: { bearer: { list: ['bearer'] } } }])
   })
 })

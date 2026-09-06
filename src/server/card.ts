@@ -91,15 +91,19 @@ export function buildCard(options: CardOptions): AgentCard {
     description: options.description,
     version: options.version,
     provider: { url: 'https://deepseek.com', organization: 'DeepSeek' },
-    capabilities: { streaming: true, pushNotifications: false, extensions: [] },
+    capabilities: { streaming: true, pushNotifications: false, extendedAgentCard: true, stateTransitionHistory: false },
     defaultInputModes: ['text/plain'],
     defaultOutputModes: ['text/plain'],
     skills: options.skills,
     supportedInterfaces: [iface],
     ...(options.authToken !== undefined
       ? {
-        securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer', description: 'Shared bearer token' } },
-        securityRequirements: [{ bearerAuth: [] }],
+        securitySchemes: {
+          bearer: {
+            httpAuthSecurityScheme: { scheme: 'bearer', description: 'Shared bearer token' },
+          },
+        },
+        securityRequirements: [{ schemes: { bearer: { list: ['bearer'] } } }],
       }
       : {}),
   }

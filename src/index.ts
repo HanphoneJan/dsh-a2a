@@ -52,6 +52,12 @@ export interface A2AConfig {
     endpointPath: string
     /** Environment variable name for the inbound bearer token; absent = anonymous. */
     authTokenEnv?: string
+    /**
+     * Agent preset id whose plugin assembly drives the advertised skills (the
+     * preset's tool rows become AgentCard skills) AND the session every
+     * inbound task runs in. Absent = the white-list (`skills.ids`) / defaults.
+     */
+    preset?: string
     skills: { ids: string[]; exclude: string[] }
     executors: Record<string, 'session' | 'subagent'>
     subagentProvider: string
@@ -72,6 +78,7 @@ export const Config: z<A2AConfig> = z.object({
     baseUrl: z.string(),
     endpointPath: z.string().default('/a2a'),
     authTokenEnv: z.string(),
+    preset: z.string(),
     skills: z.object({
       ids: z.array(z.string()).default([]),
       exclude: z.array(z.string()).default([]),
@@ -144,12 +151,17 @@ export function apply(ctx: Context, config: A2AConfig) {
         logger.warn('a2a: webServer not mounted; inbound server idle')
       } else {
         try {
-          const skills = deriveSkills(
-            probeService(ctx, 'tools', 'get') as ToolGetter | undefined ?? { get: () => undefined },
-            { ids: serverConfig.skills.ids, exclude: serverConfig.skills.exclude },
-          )
+          const toolsService = probeService(ctx, 'tools', 'get') as ToolGetter | undefined ?? { get: () => undefined }
+          // The inbound session composition: when `server.preset` names an
+          // agent preset, every inbound task's session is composed from that
+          // preset (its plugin assembly — tools, prompt sections, skills) via
+          // the standard agentPresets resolve+mount path. The AgentCard skill
+          // list stays the white-list derivation (host-visible tools); the
+          // preset governs what the session that EXECUTES a task can do.
+          const presets = probeService(ctx, 'agentPresets', 'resolve') as AgentPresetsLike | undefined
           const baseUrl = serverConfig.baseUrl ?? `http://127.0.0.1:${process.env['DSH_A2A_PORT'] ?? '3000'}`
           const endpointPath = serverConfig.endpointPath ?? '/a2a'
+          const skills = deriveSkills(toolsService, { ids: serverConfig.skills.ids, exclude: serverConfig.skills.exclude })
           const persistedIdentity = readIdentity(domain)
           const card = buildCard(cardOptionsFor(baseUrl, endpointPath, holder.identityDefaults, persistedIdentity, skills, authToken))
           holder.card = card
@@ -160,11 +172,13 @@ export function apply(ctx: Context, config: A2AConfig) {
 
           // Executors: probe the agent loop; refuse tasks readably without it.
           const agents = probeService(ctx, 'agents', 'create') as AgentRegistryLike | undefined
-          const presets = probeService(ctx, 'agentPresets', 'resolve') as AgentPresetsLike | undefined
           const sessionPool = agents
             ? new ContextSessionPool(agents, {
               cwd: inboundCwd,
               ...(presets ? { agentPresets: presets } : {}),
+              // A configured inbound preset composes every inbound session;
+              // otherwise the deployment default applies.
+              ...(serverConfig.preset !== undefined ? { presetId: () => serverConfig.preset } : {}),
               resolveAgentOptions: () => resolveDefaultModel(ctx),
             })
             : undefined
