@@ -4,10 +4,32 @@
   "description": "Agent2Agent (A2A) v1.0 dual-end plugin for DeepSeek Harness: governed inbound tasks, durable task store, pluggable executors, multi-agent outbound consumption, GUI management dashboard.",
   "type": "module",
   "license": "MIT",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "a2a",
+    "agent2agent",
+    "cordis",
+    "ai-agent",
+    "plugin"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HanphoneJan/dsh-a2a.git"
+  },
+  "homepage": "https://github.com/HanphoneJan/dsh-a2a#readme",
+  "bugs": {
+    "url": "https://github.com/HanphoneJan/dsh-a2a/issues"
+  },
   "files": [
     "lib",
     "src",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md"
   ],
   "main": "./lib/index.js",
   "exports": {

@@ -52,24 +52,19 @@ function injectStyles(): () => void {
 
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => injectStyles(), `${NS}: dashboard styles`)
-  ctx.effect(() => {
-    try {
-      const off = ctx.slots.register(
-        {
-          name: 'settings.section',
-          id: 'a2a',
-          order: 90,
-          label: () => 'A2A 连接',
-          inject: () => ({}),
-        },
-        A2aSection,
-      )
-      return () => off()
-    } catch (err) {
-      console.error('[dsh-a2a] failed to register A2A settings section:', err)
-      return () => {}
-    }
-  }, `${NS}: settings section`)
+  // settings.section is declared at runtime by ui-settings-general; slots.inject
+  // defers registration until that declaration exists and follows its lifetime
+  // (a bare register before the declaration can fail or land invisible).
+  ctx.slots.inject('settings.section', () => ctx.slots.register(
+    {
+      name: 'settings.section',
+      id: 'a2a',
+      order: 90,
+      label: () => 'A2A 连接',
+      inject: () => ({}),
+    },
+    A2aSection,
+  ))
 }
 
 /** Wire types — mirror the host's src/api.ts snapshot. */

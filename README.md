@@ -1,80 +1,83 @@
-# @hanphone/dsh-a2a
+# dsh-a2a
 
-Agent2Agent (A2A) Protocol v1.0 dual-end plugin for DeepSeek Harness:
-an **inbound server** (AgentCard derived from the live tool registry, JSON-RPC
-+ SSE, durable task store, pluggable session/subagent executors, and the
-`a2a/inbound-task` policy gate + audit) and an **outbound client**
-(persisted multi-agent AgentCard registry, skills mapped to model tools,
-sync calls with per-agent timeout).
+Agent2Agent (A2A) Protocol v1.0 dual-end plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
 
-Design: [docs/design.md](docs/design.md). Scope is P0 per that document.
+> **English** | [中文](README.zh.md)
 
-## Independence
+`@hanphone/dsh-a2a` turns a DeepSeek Harness profile into a first-class A2A agent:
 
-This package is an **independent project**, not a workspace member of the
-harness checkout it develops against (the two sit as sibling directories).
-It keeps its own `package.json` and dependency graph:
+- **Inbound server** — AgentCard derived from the live tool registry, JSON-RPC + SSE, durable task store, pluggable session/subagent executors, and a policy gate (`a2a/inbound-task`) with audit.
+- **Outbound client** — a persisted multi-agent AgentCard registry, remote skills mapped to model tools (`a2a__<name>__<skill>`), sync calls with per-agent timeout.
+- **GUI dashboard** — an **A2A 连接** settings page in the Harness Web UI: toggle the inbound server, manage outbound agents, view and cancel tasks — no config files required.
 
-- `@deepseek-ai/*` are **peer dependencies**: a DSH composition that loads the
-  plugin provides them at runtime.
-- `zod` is the only own runtime dependency (used by the storage-domain record
-  schemas).
-- Local typecheck/tests resolve the peers through the checkout's
-  `tsconfig.base.json` `paths` facade and its built `lib/types` declarations
-  (project references). `tsconfig.json` points at `../deepseek-harness/*` for
-  the sibling checkout; a fresh checkout must build the host aggregate before
-  `pnpm typecheck` here.
-- In sandboxes where the shared pnpm store is read-only, `node_modules/zod`,
-  `node_modules/@types/node`, `node_modules/vitest`, `node_modules/tsdown`,
-  and `node_modules/typescript` are symlinked into the sibling checkout's
-  `.pnpm` store; `vitest.config.ts` uses Vite's tsconfig-paths resolution
-  through the checkout's `tsconfig.base.json`. Both are dev glue that
-  disappears once the plugin installs its own dependencies.
+Design decisions are recorded in [docs/architecture.md](docs/architecture.md). Current scope is P0 of that document.
 
-## Development
+## Features
 
-> Prerequisite: the harness checkout must have its host aggregate built
-> (root `pnpm run build:lib:host`, or at least the four referenced projects)
-> so declaration outputs exist.
+- **A2A v1.0 protocol surface** — `SendMessage`, `SendStreamingMessage`, `GetTask`, `ListTasks`, `CancelTask`, `GetExtendedAgentCard`, `SubscribeToTask` over JSON-RPC; SSE streaming with catch-up frames.
+- **Dynamic AgentCard** — skills derived from the live `ctx.tools` registry (explicit id list, loud failure on missing referents) plus a built-in `chat` skill so a fresh install is immediately exercisable.
+- **Durable task store** — tasks live in the `a2a` storage domain (JSON backend by default, SQLite per deployment choice); task ids are server-generated and survive restarts.
+- **Executors** — `session` (one DSH session per `contextId`) and `subagent` (delegates to `ctx.subagents`, streams tool-call artifacts back) as built-in implementations.
+- **Governed inbound** — every inbound task passes through the `a2a/inbound-task` waterfall, so policy plugins can veto or audit before execution.
+- **Auth by environment variable** — inbound bearer token is referenced by env-var name (`authTokenEnv`), never stored in config as plaintext.
+- **Install-and-use** — both halves are enabled by default after `dsh plugin add`; no manual patch required to start.
+
+## Installation
+
+### From npm (published)
 
 ```sh
-pnpm typecheck      # tsc -b tsconfig.json --force (emits lib/types)
-pnpm test           # vitest run (unit + composition suites)
-pnpm build          # tsc -b + tsdown → lib/index.js (bundled, @deepseek-ai/* external)
+dsh plugin --profile web add @hanphone/dsh-a2a
 ```
 
-## Enable
+This works for any profile name (`web`, custom profiles, etc.):
 
-### 1. Install the bundle
+```sh
+dsh plugin --profile <name> add @hanphone/dsh-a2a
+```
+
+### From a local build
 
 ```sh
 cd dsh-a2a
 pnpm build
-dsh plugin --profile <name> add @hanphone/dsh-a2a   # or a local tarball/package path
+npm pack
+dsh plugin --profile <name> add <path-to>/hanphone-dsh-a2a-0.1.0.tgz
 ```
 
-**Install-and-use**: the bundle's own patch (`cordis.patch.yml`) mounts the
-plugin row, id `a2a`, with both halves **enabled by default** — the inbound
-server starts listening on the profile's webServer and the outbound client is
-live. No manual `cordis.patch.yml` entry is required to get started.
+## Quick start
 
-### 2. Operate from the GUI dashboard
+1. **Install** — `dsh plugin --profile web add @hanphone/dsh-a2a`.
+2. **Restart the GUI** — the browser half is scanned at host startup, so restart `pnpm dsh web` (or your profile launcher) once after installing.
+3. **Open Settings → A2A 连接** — you will see the inbound server status, the outbound agent list, and the task list.
 
-The browser half registers an **A2A 连接** page under Settings. From it you
-can, without touching any file:
+The inbound server listens on the profile's webServer (default `http://127.0.0.1:3080`):
+
+```sh
+curl http://127.0.0.1:3080/.well-known/agent-card.json
+```
+
+Send a task (the built-in `chat` skill):
+
+```sh
+curl -X POST http://127.0.0.1:3080/a2a \
+  -H "content-type: application/json" \
+  -d '{"jsonrpc":"2.0","id":"1","method":"SendMessage","params":{"message":{"role":"user","parts":[{"text":"hello"}],"metadata":{"skill":"chat"}}}}'
+```
+
+## GUI dashboard
+
+The browser half registers an **A2A 连接** page under Settings. From it you can, without touching any file:
 
 - toggle the inbound server (`server.enable` / `server.disable`),
 - list, add, enable/disable, refresh, and remove outbound agents,
 - view and cancel inbound tasks.
 
-All dashboard traffic goes through the loopback-only `/a2a/api` route on the
-profile's webServer (never exposed to remote peers).
+All dashboard traffic goes through the **loopback-only** `/a2a/api` route on the profile's webServer — remote peers can never drive it.
 
-### 3. File configuration stays available (the reserve path)
+## Configuration
 
-Directly editing the profile's user patch layer (`$DSH_HOME/profiles/<name>/cordis.patch.yml`)
-remains supported for values the dashboard does not edit (name/description,
-baseUrl, authTokenEnv, executors, toolPrefix):
+The dashboard covers the day-to-day operations. Values the dashboard does not edit (name/description, baseUrl, `authTokenEnv`, skills, executors, toolPrefix) are configured through the profile's user patch layer (`$DSH_HOME/profiles/<name>/cordis.patch.yml`) — the reserve path:
 
 ```yaml
 - id: a2a
@@ -88,26 +91,23 @@ baseUrl, authTokenEnv, executors, toolPrefix):
       endpointPath: /a2a
       authTokenEnv: A2A_INBOUND_TOKEN    # optional; an env var NAME, never the token
       skills:
-        ids: []                          # explicit tool ids to expose; the chat skill is built-in
+        ids: []                          # explicit tool ids to expose; chat is built-in
         exclude: []
       executors:
         chat: session                    # or subagent (needs the subagent seam)
       subagentProvider: in-process
     client:
       toolPrefix: a2a
-      agents: []                         # or list agents declaratively
+      agents: []                         # or declare agents declaratively
 ```
 
-Required host services (base-backed profiles mount them all): `webServer`
-(`@deepseek-ai/dsh-host-webserver`), the storage stack
-(`@deepseek-ai/dsh-storage` + `@deepseek-ai/dsh-storage-domain`), the tools
-registry (`@deepseek-ai/dsh-tools`), and an agent loop (`@deepseek-ai/dsh-agent`
-+ `@deepseek-ai/dsh-agent-loop`; the subagent executor additionally needs
-`@deepseek-ai/dsh-subagent`).
+### Required host services
 
-The task store lives in the `a2a` storage domain. The base composition routes
-storage through the `json` backend; to follow the design's SQLite requirement,
-route the domain and add the backend in the same patch layer:
+Base-backed profiles mount them all: `webServer` (`@deepseek-ai/dsh-host-webserver`), the storage stack (`@deepseek-ai/dsh-storage` + `@deepseek-ai/dsh-storage-domain`), the tools registry (`@deepseek-ai/dsh-tools`), and an agent loop (`@deepseek-ai/dsh-agent` + `@deepseek-ai/dsh-agent-loop`; the subagent executor additionally needs `@deepseek-ai/dsh-subagent`).
+
+### Storage backend
+
+The task store lives in the `a2a` storage domain. The base composition routes storage through the `json` backend; to use SQLite, route the domain and add the backend in the same patch layer:
 
 ```yaml
 - id: storage-domain
@@ -122,10 +122,7 @@ route the domain and add the backend in the same patch layer:
         path: /absolute/path/to/a2a.sqlite
 ```
 
-Set `A2A_INBOUND_TOKEN` in the environment (never in config). Verify with
-`curl http://127.0.0.1:<port>/.well-known/agent-card.json`.
-
-### 4. File-declared outbound agents (optional; the GUI manages the same list)
+### Outbound agents (file-declared, optional — the GUI manages the same list)
 
 ```yaml
 - id: a2a
@@ -140,31 +137,60 @@ Set `A2A_INBOUND_TOKEN` in the environment (never in config). Verify with
           timeoutMs: 60000
 ```
 
-Requires the `@deepseek-ai/dsh-tools` registry. Each enabled remote agent's
-skills become tools named `a2a__<name>__<skill>` (normalized, collision-hashed);
-the GUI dashboard shows connection state, the `/a2a` command lists it, and the
-registry persists across restarts.
+Each enabled remote agent's skills become model tools named `a2a__<name>__<skill>` (normalized, collision-hashed). The registry persists across restarts.
 
-## Operations
+## CLI
 
-GUI: the **A2A 连接** settings page manages the inbound toggle, outbound
-agents, and task view. CLI: `/a2a` command — `status | enable | disable |
-card | agents | agent add|remove|enable|disable|refresh | tasks | task get|cancel <id> | help`.
+A `/a2a` chat command mirrors the dashboard:
 
-## Testing
+```
+a2a status | enable | disable | card | agents |
+    agent add|remove|enable|disable|refresh |
+    tasks | task get|cancel <id> | help
+```
 
-- `tests/unit/` — protocol constants, JSON-RPC/SSE framing, card derivation,
-  task store, executor resolution, the A2A server (dispatch, gate, auth,
-  cancel, streaming), the outbound client (stubbed fetch) and registry.
-- `tests/composition/` — boots `apply()` on a real Cordis `Context` with stub
-  host services: assembly, route registration, the skill gate,
-  `a2a/inbound-task` policy vetoes, and task persistence.
-- A full REAL composition boot (SQLite backend + an LLM-backed agent loop
-  through loader-smoke) is P1 per the design doc.
+## How it works
 
-## Known limitations (documented, not roadmap)
+- **Inbound** — `POST /a2a` (JSON-RPC) and `GET /.well-known/agent-card.json`; the AgentCard is derived from the live tool registry. Tasks flow through `a2a/inbound-task` → executor → task store, with SSE frames streamed to subscribers.
+- **Outbound** — a persisted `agents` table in the `a2a` domain; `A2AClient` discovers an AgentCard, and each skill registers as a tool.
+- **Dashboard** — the browser half (React, `settings.section`) reads/writes the loopback-only `/a2a/api` route.
 
-OAuth 2.0 / per-client credentials, gRPC binding, push notifications,
-`INPUT_REQUIRED` ↔ approval, passive outbound result injection, and a dashboard
-UI are out of P0 scope and listed as P1 or explicitly-not-doing in
-[docs/design.md](docs/design.md).
+See [docs/architecture.md](docs/architecture.md) for the full design.
+
+## Directory structure
+
+```
+src/
+  api.ts             # loopback dashboard API (/a2a/api)
+  index.ts           # Cordis plugin entry (apply)
+  protocol.ts        # A2A v1.0 protocol constants + types
+  jsonrpc.ts         # JSON-RPC framing
+  server/            # inbound half: store, card, a2a-server, routes, executors
+  outbound/          # outbound half: A2AClient, registry, tools
+  client/            # browser half: settings dashboard (React)
+  service.ts         # ctx.a2a service facade
+  commands.ts        # /a2a chat command
+tests/
+  unit/              # protocol, framing, card, store, registry, server, client, api
+  composition/       # apply() on a real Cordis Context with stub host services
+cordis.patch.yml     # bundle patch (mounts the plugin, enabled by default)
+```
+
+## Development
+
+> The plugin typechecks against the harness source graph through project
+> references; a harness checkout with its built host aggregate is required.
+
+```sh
+pnpm typecheck   # host (tsc -b) + client (tsc -p tsconfig.client.json)
+pnpm test        # vitest run (unit + composition suites)
+pnpm build       # tsc + tsdown → lib/index.js (host) + lib/client.js (browser)
+```
+
+## Known limitations
+
+OAuth 2.0 / per-client credentials, gRPC binding, push notifications, `INPUT_REQUIRED` ↔ approval, and passive outbound result injection are listed as P1 or explicitly-not-doing in [docs/architecture.md](docs/architecture.md). They are documented gaps, not a roadmap.
+
+## License
+
+MIT
