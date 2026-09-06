@@ -15,7 +15,7 @@ import {
   type DomainFacility,
   type KvTable,
 } from '@deepseek-ai/dsh-storage-domain'
-import { TaskState, type Part } from '../protocol.ts'
+import { TaskState, type AgentSkill, type Part } from '../protocol.ts'
 
 /** One durable inbound/outbound task record. */
 export interface TaskRecord {
@@ -32,6 +32,8 @@ export interface TaskRecord {
   readonly executor: 'session' | 'subagent'
   readonly summary: string | null
   readonly error?: { readonly code: string; readonly message: string }
+  /** The inbound server instance this task arrived through. */
+  readonly serverId?: string
 }
 
 /** One durable context→session binding (inbound conversation ↔ DSH session). */
@@ -50,6 +52,33 @@ export interface OutboundAgentRecord {
   readonly lastCardAt: string | null
 }
 
+/** One durable inbound server instance. */
+export interface InboundServerRecord {
+  readonly id: string
+  readonly name: string
+  readonly description: string
+  readonly version: string
+  readonly endpointPath: string
+  /** Agent preset id composing inbound sessions; absent = deployment default. */
+  readonly preset?: string
+  readonly authTokenEnv?: string
+  /** Advertised skills (creator-entered declarations, default = preset name). */
+  readonly skills: readonly AgentSkill[]
+  readonly enabled: boolean
+}
+
+/** One durable outbound server connection instance. */
+export interface OutboundServerRecord {
+  readonly id: string
+  readonly name: string
+  readonly agentCardUrl: string
+  readonly bearerTokenEnv?: string
+  /** Preset composing this DSH's local session when talking to the remote. */
+  readonly preset?: string
+  readonly enabled: boolean
+  readonly timeoutMs: number
+}
+
 /** JSON-encoded record schema shared by every `a2a` table. */
 const json = z.string()
 
@@ -62,6 +91,8 @@ export const a2aDomainSpec = defineDomain({
     contexts: domainTable<string, string>(json),
     agents: domainTable<string, string>(json),
     identity: domainTable<string, string>(json),
+    inbound_servers: domainTable<string, string>(json),
+    outbound_servers: domainTable<string, string>(json),
   },
 })
 
@@ -112,6 +143,14 @@ export class A2aDomain {
     return this.handle.table('identity')
   }
 
+  get inbound_servers(): KvTable<string, string> {
+    return this.handle.table('inbound_servers')
+  }
+
+  get outbound_servers(): KvTable<string, string> {
+    return this.handle.table('outbound_servers')
+  }
+
   async close(): Promise<void> {
     await this.handle.close()
   }
@@ -119,7 +158,7 @@ export class A2aDomain {
 
 /** Task-store contract shared by the domain-backed and memory stores. */
 export interface TaskStore {
-  create(input: { contextId: string; skill: string; parts: readonly Part[]; remotePeerId: string | null }): TaskRecord
+  create(input: { contextId: string; skill: string; parts: readonly Part[]; remotePeerId: string | null; serverId?: string }): TaskRecord
   get(taskId: string): TaskRecord | undefined
   list(): TaskRecord[]
   setState(taskId: string, state: TaskState, message?: { code: string; text: string }): TaskRecord
@@ -146,7 +185,7 @@ export class MemoryTaskStore implements TaskStore {
   private tasks = new Map<string, TaskRecord>()
   private contexts = new Map<string, string>()
 
-  create(input: { contextId: string; skill: string; parts: readonly Part[]; remotePeerId: string | null }): TaskRecord {
+  create(input: { contextId: string; skill: string; parts: readonly Part[]; remotePeerId: string | null; serverId?: string }): TaskRecord {
     const record: TaskRecord = {
       taskId: `a2a-${crypto.randomUUID()}`,
       contextId: input.contextId,
@@ -160,6 +199,7 @@ export class MemoryTaskStore implements TaskStore {
       artifacts: [],
       executor: 'session',
       summary: null,
+      ...(input.serverId !== undefined ? { serverId: input.serverId } : {}),
     }
     this.tasks.set(record.taskId, record)
     return record
@@ -244,7 +284,7 @@ export class DomainTaskStore implements TaskStore {
     }
   }
 
-  create(input: { contextId: string; skill: string; parts: readonly Part[]; remotePeerId: string | null }): TaskRecord {
+  create(input: { contextId: string; skill: string; parts: readonly Part[]; remotePeerId: string | null; serverId?: string }): TaskRecord {
     const record: TaskRecord = {
       taskId: `a2a-${crypto.randomUUID()}`,
       contextId: input.contextId,
@@ -258,6 +298,7 @@ export class DomainTaskStore implements TaskStore {
       artifacts: [],
       executor: 'session',
       summary: null,
+      ...(input.serverId !== undefined ? { serverId: input.serverId } : {}),
     }
     this.records.set(record.taskId, record)
     // Persist eagerly; a failed write must fail the task, not silently lose it.
