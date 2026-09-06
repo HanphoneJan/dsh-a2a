@@ -1,0 +1,58 @@
+/**
+ * The `a2a/*` event domain and the `ctx.a2a` service key. P0 ships exactly one
+ * event — `a2a/inbound-task`, the policy seam — so the governance story has a
+ * real built-in consumer (skill gate + audit) and third-party plugins can hang
+ * approval-style policy on inbound tasks. Further events are deferred until a
+ * consumer exists (see design §4).
+ * @module dsh-a2a/events
+ */
+
+import type { Part } from './protocol.ts'
+
+/** The mutable policy decision for one inbound task, before execution. */
+export interface InboundTaskDecision {
+  readonly contextId: string
+  readonly skill: string
+  readonly parts: readonly Part[]
+  /** Request source identity (auth hash or null) for audit. */
+  readonly remotePeerId: string | null
+  /** Set by a policy listener to defer the task for human approval (P1). */
+  requiresApproval?: boolean
+  /** Set by a policy listener to veto the task outright. */
+  rejected?: { readonly reason: string }
+}
+
+/** The facade other plugins read as `ctx.a2a`. */
+export interface A2AServiceLike {
+  status(): unknown
+  enableServer(enable: boolean): Promise<{ readonly ok: boolean; readonly message: string }>
+  listTasks(): unknown
+  getTask(taskId: string): unknown
+  cancelTask(taskId: string): Promise<{ readonly ok: boolean; readonly message: string }>
+  agents(): unknown
+  addAgent(spec: unknown): Promise<{ readonly ok: boolean; readonly message: string }>
+  removeAgent(id: string): Promise<{ readonly ok: boolean; readonly message: string }>
+  setAgentEnabled(id: string, enabled: boolean): Promise<{ readonly ok: boolean; readonly message: string }>
+  refreshAgentCard(id: string): Promise<{ readonly ok: boolean; readonly message: string }>
+}
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** The A2A service facade, provided while the plugin is mounted. */
+    a2a: A2AServiceLike
+  }
+
+  interface Events {
+    /**
+     * Policy seam for one inbound task, dispatched as a waterfall before the
+     * task starts. Listeners mutate the decision (attach `requiresApproval`,
+     * set `rejected`) and MUST call `next(decision)` to delegate; returning
+     * without `next()` short-circuits and the returned value is final.
+     * @mode waterfall
+     * @param decision — the mutable task decision.
+     * @param next - delegate the (possibly mutated) decision downstream.
+     * @returns the final decision after all listeners.
+     */
+    'a2a/inbound-task'(this: unknown, decision: InboundTaskDecision, next: (d: InboundTaskDecision) => Promise<InboundTaskDecision> | InboundTaskDecision): Promise<InboundTaskDecision>
+  }
+}

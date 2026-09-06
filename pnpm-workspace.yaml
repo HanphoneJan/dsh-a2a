@@ -1,0 +1,7 @@
+# Standalone workspace for the @hanphone/dsh-a2a plugin. Deliberately NOT a
+# member of the harness workspace: this package manages its own dependency
+# graph (zod + tooling) and only type-checks against the harness checkout via
+# tsconfig paths. @deepseek-ai/* stay peer dependencies, provided at runtime
+# by the DSH composition that loads the plugin.
+packages:
+  - "."

@@ -1,0 +1,9 @@
+# @hanphone/dsh-a2a bundle patch: mount the plugin as one row, disabled by
+# default (opt-in per deployment). A patch on this row can enable the server
+# side, list client agents, or override any config field.
+- insert:
+    - id: a2a
+      name: '@hanphone/dsh-a2a'
+      config:
+        server:
+          enabled: false
