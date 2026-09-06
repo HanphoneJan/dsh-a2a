@@ -12,6 +12,7 @@
     "declaration": true,
     "emitDeclarationOnly": true,
     "declarationMap": true,
+    "tsBuildInfoFile": "node_modules/.cache/dsh-a2a/tsconfig.client.tsbuildinfo",
     "types": ["node"]
   },
   "include": ["src/client"],
