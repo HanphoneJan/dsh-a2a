@@ -1,7 +1,7 @@
 {
   "name": "@hanphone/dsh-a2a",
   "version": "0.1.0",
-  "description": "Agent2Agent (A2A) v1.0 dual-end plugin for DeepSeek Harness: governed inbound tasks, durable task store, pluggable executors, multi-agent outbound consumption.",
+  "description": "Agent2Agent (A2A) v1.0 dual-end plugin for DeepSeek Harness: governed inbound tasks, durable task store, pluggable executors, multi-agent outbound consumption, GUI management dashboard.",
   "type": "module",
   "license": "MIT",
   "files": [
@@ -15,11 +15,23 @@
       "types": "./lib/types/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
     "./package.json": "./package.json"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ],
+      "platform": "web"
     }
   },
   "//peers": "A2A runs inside a DSH harness composition: the host provides these. Local typecheck resolves them through tsconfig paths to the harness checkout, not from node_modules.",
@@ -34,13 +46,15 @@
   },
   "devDependencies": {
     "@types/node": "^22.20.0",
+    "@types/react": "^18.3.31",
+    "react": "^18.3.1",
     "tsdown": "^0.22.2",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
   },
   "scripts": {
-    "build": "tsc -b tsconfig.json && tsdown",
-    "typecheck": "tsc -b tsconfig.json",
+    "build": "tsc -b tsconfig.json && tsc -p tsconfig.client.json && tsdown && node scripts/build-client.mjs",
+    "typecheck": "tsc -b tsconfig.json && tsc -p tsconfig.client.json",
     "test": "vitest run"
   }
 }

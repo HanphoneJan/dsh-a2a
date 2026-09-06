@@ -1,0 +1,24 @@
+{
+  // Browser-half program: React JSX + DOM lib, no node ambient. Emits only
+  // declarations (lib/types/client/... — consumed by exports["./client"].types
+  // and the harness project reference from host aggregates); tsdown emits the
+  // client.js bundle directly from src/client/index.ts. `@deepseek-ai/dsh-*`
+  // imports resolve through the harness checkout's project references to their
+  // built lib/types declarations (the repo-standard artifact plane).
+  "extends": "../deepseek-harness/tsconfig.base.client.json",
+  "compilerOptions": {
+    "rootDir": "src/client",
+    "outDir": "lib/types/client",
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "declarationMap": true,
+    "types": ["node"]
+  },
+  "include": ["src/client"],
+  "references": [
+    { "path": "../deepseek-harness/vendor/cordis" },
+    { "path": "../deepseek-harness/packages/client/ui-renderer" },
+    { "path": "../deepseek-harness/packages/client/ui-slots" },
+    { "path": "../deepseek-harness/packages/client/ui-settings" }
+  ]
+}

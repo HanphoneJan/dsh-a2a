@@ -287,6 +287,10 @@ OAuth 2.0、gRPC 绑定、多 server 路由、配额/成本控制、workflow 执
 2. **发布渠道**:npm 发布 + `dsh plugin add`;包名 `@hanphone/dsh-a2a`。
 3. **双端**:P0 同时包含入站服务端与出站客户端,不做单端收缩。
 4. **开发环境**:`dsh-a2a/` 与 `.research/`(竞品克隆)均保留在 harness checkout 内,作为本地开发环境。
+5. **装完即用 + GUI 管理(2026-09-06 修订)**:`dsh plugin add` 后两端**默认启用**
+   (bundle patch 不再 `enabled: false`),浏览器端注册 **A2A 连接** 设置页
+   (`settings.section`),经回环专属 `/a2a/api` 完成入站开关、出站 agent
+   增删启停刷新、任务查看/取消;改 `cordis.patch.yml` 只作为保留方式。
 
 ## 16. 开发环境接线(2026-09-06 定稿)
 
@@ -309,6 +313,13 @@ OAuth 2.0、gRPC 绑定、多 server 路由、配额/成本控制、workflow 执
 - 验收补强(2026-09-06):出站 `config.client.agents` 由注册表 `seed()` 消费,
   出站在入站路由注册后初始化(回环可取本 server 卡),`DomainTaskStore` 自持
   写链可见的活跃视图。测试 58 → 65。
+- 浏览器端(2026-09-06):`src/client/` 为 browser half(React,`settings.section`
+  dashboard,数据走回环 `/a2a/api`);host 出站代码移至 `src/outbound/`。
+  双程序:host `tsconfig.json`(node)+ client `tsconfig.client.json`
+  (DOM/JSX,references 到 checkout client 包成品声明,emit 到 `lib/types/client`);
+  tsdown 双入口产 `lib/index.js`(ESM)与 `lib/client.cjs` →
+  `scripts/build-client.mjs` 包装为 `window.__ModuleLoader__.load` 的
+  `lib/client.js`;`exports["./client"]` + `dsh.client` 声明注册浏览器面。
 - 启用方式与示例见 [README](../README.md)。
 
 详见 Agent Note:

@@ -172,14 +172,16 @@ describe('plugin composition (stub host services)', () => {
     expect(status.server.skills).toContain('chat')
   })
 
-  it('registers the AgentCard and endpoint routes on enable', async () => {
+  it('registers the AgentCard, endpoint, and dashboard routes by default', async () => {
     const { ctx, webServer } = harness()
     await waitForFacade(ctx)
-    expect(webServer.routes.length).toBe(0)
-    await ctx.a2a.enableServer(true)
-    expect(webServer.routes.map((r) => r.path).sort()).toEqual(['/.well-known/agent-card.json', '/a2a'])
+    // The inbound server is enabled by default (install-and-use) and the
+    // loopback dashboard API is registered at apply time.
+    expect(webServer.routes.map((r) => r.path).sort()).toEqual(['/.well-known/agent-card.json', '/a2a', '/a2a/api'])
     await ctx.a2a.enableServer(false)
-    expect(webServer.routes.length).toBe(0)
+    expect(webServer.routes.map((r) => r.path).sort()).toEqual(['/a2a/api'])
+    await ctx.a2a.enableServer(true)
+    expect(webServer.routes.map((r) => r.path).sort()).toEqual(['/.well-known/agent-card.json', '/a2a', '/a2a/api'])
   })
 
   it('rejects a SendMessage for a skill outside the derived list', async () => {

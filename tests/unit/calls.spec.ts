@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { A2AClient, A2AError } from '../../src/client/calls.ts'
+import { A2AClient, A2AError } from '../../src/outbound/calls.ts'
 import { A2A_ERROR_CODES, A2A_METHODS, TaskState, type AgentCard } from '../../src/protocol.ts'
 
 const card: AgentCard = {

@@ -27,7 +27,8 @@ import { createSessionExecutor } from './server/exec/session.ts'
 import { createSubagentExecutor, type SubagentsLike } from './server/exec/subagent.ts'
 import { A2AServer, type GateInput, type GateResult } from './server/a2a-server.ts'
 import { A2aRoutes } from './server/routes.ts'
-import { OutboundAgentRegistry, DomainAgentStore, type OutboundAgentSpec } from './client/registry.ts'
+import { handleApiRequest } from './api.ts'
+import { OutboundAgentRegistry, DomainAgentStore, type OutboundAgentSpec } from './outbound/registry.ts'
 import { A2AService, type A2AServiceImpl, type OpResult } from './service.ts'
 import { buildA2aCommand } from './commands.ts'
 import type { InboundTaskDecision } from './events.ts'
@@ -62,7 +63,7 @@ export interface A2AConfig {
 /** Loader-validated config schema (defaults applied by the Loader). */
 export const Config: z<A2AConfig> = z.object({
   server: z.object({
-    enabled: z.boolean().default(false),
+    enabled: z.boolean().default(true),
     name: z.string().default('My DSH Agent'),
     description: z.string().default('A DeepSeek Harness agent exposed over A2A v1.0'),
     version: z.string().default('0.1.0'),
@@ -235,6 +236,20 @@ export function apply(ctx: Context, config: A2AConfig) {
         ctx.effect(() => commands.register(buildA2aCommand(impl) as never), 'a2a: command')
       }
 
+      // ── GUI dashboard API (loopback-only /a2a/api) ─────────────────────
+      const dashboardWebServer = probeService(ctx, 'webServer', 'register') as
+        | { register(route: { kind: 'exact' | 'prefix'; path: string; handler(...args: unknown[]): unknown }): () => void }
+        | undefined
+      if (dashboardWebServer !== undefined) {
+        ctx.effect(() => dashboardWebServer.register({
+          kind: 'prefix',
+          path: '/a2a/api',
+          handler: (req: unknown, res: unknown) => handleApiRequest(req as never, res as never, impl),
+        }), 'a2a: dashboard api')
+      } else {
+        logger.warn('a2a: webServer not mounted; GUI dashboard API idle')
+      }
+
       return async () => {
         holder.routes?.dispose()
         await holder.executors?.disposeAll()
@@ -334,5 +349,5 @@ function inboundSessionCwd(): string {
 export type { TaskState }
 export type { AgentSkill }
 export { A2AServer } from './server/a2a-server.ts'
-export { A2AClient, A2AError } from './client/calls.ts'
+export { A2AClient, A2AError } from './outbound/calls.ts'
 export { A2AService } from './service.ts'

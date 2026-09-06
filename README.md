@@ -53,12 +53,28 @@ pnpm build
 dsh plugin --profile <name> add @hanphone/dsh-a2a   # or a local tarball/package path
 ```
 
-The bundle's own patch (`cordis.patch.yml`) inserts one plugin row, id `a2a`,
-**disabled by default** — enable either half by overriding that row's config
-in the profile's user patch layer (`$DSH_HOME/profiles/<name>/cordis.patch.yml`
-or `$DSH_HOME/cordis.patch.yml`).
+**Install-and-use**: the bundle's own patch (`cordis.patch.yml`) mounts the
+plugin row, id `a2a`, with both halves **enabled by default** — the inbound
+server starts listening on the profile's webServer and the outbound client is
+live. No manual `cordis.patch.yml` entry is required to get started.
 
-### 2. Enable the inbound server
+### 2. Operate from the GUI dashboard
+
+The browser half registers an **A2A 连接** page under Settings. From it you
+can, without touching any file:
+
+- toggle the inbound server (`server.enable` / `server.disable`),
+- list, add, enable/disable, refresh, and remove outbound agents,
+- view and cancel inbound tasks.
+
+All dashboard traffic goes through the loopback-only `/a2a/api` route on the
+profile's webServer (never exposed to remote peers).
+
+### 3. File configuration stays available (the reserve path)
+
+Directly editing the profile's user patch layer (`$DSH_HOME/profiles/<name>/cordis.patch.yml`)
+remains supported for values the dashboard does not edit (name/description,
+baseUrl, authTokenEnv, executors, toolPrefix):
 
 ```yaml
 - id: a2a
@@ -68,7 +84,7 @@ or `$DSH_HOME/cordis.patch.yml`).
       name: My DSH Agent
       description: A DeepSeek Harness agent exposed over A2A v1.0
       version: 0.1.0
-      baseUrl: null                      # null = derived from the webServer address
+      baseUrl: http://127.0.0.1:<port>   # omit to derive from the webServer address
       endpointPath: /a2a
       authTokenEnv: A2A_INBOUND_TOKEN    # optional; an env var NAME, never the token
       skills:
@@ -77,6 +93,9 @@ or `$DSH_HOME/cordis.patch.yml`).
       executors:
         chat: session                    # or subagent (needs the subagent seam)
       subagentProvider: in-process
+    client:
+      toolPrefix: a2a
+      agents: []                         # or list agents declaratively
 ```
 
 Required host services (base-backed profiles mount them all): `webServer`
@@ -106,7 +125,7 @@ route the domain and add the backend in the same patch layer:
 Set `A2A_INBOUND_TOKEN` in the environment (never in config). Verify with
 `curl http://127.0.0.1:<port>/.well-known/agent-card.json`.
 
-### 3. Enable the outbound client
+### 4. File-declared outbound agents (optional; the GUI manages the same list)
 
 ```yaml
 - id: a2a
@@ -123,11 +142,14 @@ Set `A2A_INBOUND_TOKEN` in the environment (never in config). Verify with
 
 Requires the `@deepseek-ai/dsh-tools` registry. Each enabled remote agent's
 skills become tools named `a2a__<name>__<skill>` (normalized, collision-hashed);
-`/a2a agents` shows connection state, and the registry persists across restarts.
+the GUI dashboard shows connection state, the `/a2a` command lists it, and the
+registry persists across restarts.
 
 ## Operations
 
-`/a2a` command: `status | enable | disable | card | agents | agent add|remove|enable|disable|refresh | tasks | task get|cancel <id> | help`.
+GUI: the **A2A 连接** settings page manages the inbound toggle, outbound
+agents, and task view. CLI: `/a2a` command — `status | enable | disable |
+card | agents | agent add|remove|enable|disable|refresh | tasks | task get|cancel <id> | help`.
 
 ## Testing
 

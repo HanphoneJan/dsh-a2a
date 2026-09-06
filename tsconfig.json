@@ -5,6 +5,7 @@
     "outDir": "lib/types"
   },
   "include": ["src"],
+  "exclude": ["src/client"],
   "references": [
     { "path": "../deepseek-harness/vendor/cordis" },
     { "path": "../deepseek-harness/vendor/schemastery" },

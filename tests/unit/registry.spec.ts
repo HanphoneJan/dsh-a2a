@@ -5,7 +5,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { MemoryAgentStore, OutboundAgentRegistry } from '../../src/client/registry.ts'
+import { MemoryAgentStore, OutboundAgentRegistry } from '../../src/outbound/registry.ts'
 import type { OutboundAgentRecord } from '../../src/server/store.ts'
 import type { AgentCard } from '../../src/protocol.ts'
 
