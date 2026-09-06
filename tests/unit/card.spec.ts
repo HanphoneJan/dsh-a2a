@@ -1,37 +1,31 @@
 /**
- * AgentCard derivation unit tests: explicit id-list filter, missing-referent
- * failure, built-in chat skill, and bearer security advertisement.
+ * AgentCard assembly unit tests: declared skill passthrough, endpoint join,
+ * bearer security advertisement — the v1.0 declaration-driven card (the v0.2
+ * tool white-list derivation no longer exists; see defaultSkillFor in the
+ * inbound manager for the creator-empty default).
  * @module dsh-a2a/tests/unit/card.spec
  */
 
 import { describe, expect, it } from 'vitest'
-import { buildCard, deriveSkills, type ToolGetter } from '../../src/server/card.ts'
+import { buildCard } from '../../src/server/card.ts'
+import { defaultSkillFor } from '../../src/servers/inbound-manager.ts'
 
-function fakeTools(get: Map<string, { description?: string }>): ToolGetter {
-  return { get: (name) => get.get(name) }
-}
-
-describe('deriveSkills', () => {
-  it('always includes the built-in chat skill first', () => {
-    const skills = deriveSkills(fakeTools(new Map()), { ids: [], exclude: [] })
-    expect(skills.map((s) => s.id)).toEqual(['chat'])
+describe('defaultSkillFor (creator-empty declaration default)', () => {
+  it('keeps declared skills untouched', () => {
+    const declared = [{ id: 'code', name: 'Code', description: 'Write code' }]
+    expect(defaultSkillFor(declared, 'ptc')).toEqual(declared)
   })
 
-  it('derives id-listed tools and applies excludes last', () => {
-    const tools = fakeTools(new Map([
-      ['tool_bash', { description: 'Run a command' }],
-      ['tool_fs', {}],
-    ]))
-    const skills = deriveSkills(tools, { ids: ['tool_bash', 'tool_fs', 'tool_web'], exclude: ['tool_web'] })
-    const ids = skills.map((s) => s.id)
-    expect(ids).toEqual(['chat', 'tool_bash', 'tool_fs'])
-    expect(skills.find((s) => s.id === 'tool_bash')?.description).toBe('Run a command')
+  it('defaults to the bound preset display name when skills are empty', () => {
+    const skills = defaultSkillFor([], 'PTC 模式')
+    expect(skills).toHaveLength(1)
+    expect(skills[0]).toMatchObject({ id: 'chat', name: 'PTC 模式' })
   })
 
-  it('fails loudly naming every unregistered id', () => {
-    const tools = fakeTools(new Map([]))
-    expect(() => deriveSkills(tools, { ids: ['missing_a', 'missing_b'], exclude: [] }))
-      .toThrow(/missing_a, missing_b/)
+  it('falls back to the built-in chat skill when there is no preset', () => {
+    const skills = defaultSkillFor(undefined, undefined)
+    expect(skills).toHaveLength(1)
+    expect(skills[0]).toMatchObject({ id: 'chat', name: 'chat' })
   })
 })
 
@@ -63,5 +57,11 @@ describe('buildCard', () => {
       httpAuthSecurityScheme: { scheme: 'bearer', description: 'Shared bearer token' },
     })
     expect(card.securityRequirements).toEqual([{ schemes: { bearer: { list: ['bearer'] } } }])
+  })
+
+  it('carries the declared skills verbatim onto the card', () => {
+    const skills = [{ id: 'code', name: 'Code', description: 'Write code', tags: ['dev'] }]
+    const card = buildCard({ ...base, skills })
+    expect(card.skills).toEqual(skills)
   })
 })

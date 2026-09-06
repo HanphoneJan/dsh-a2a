@@ -1,7 +1,7 @@
 /**
- * The `ctx.a2a` service facade: the thin read/control surface commands and
- * other plugins use. Registered as a Cordis Service so the key disappears
- * with the plugin fiber.
+ * The `ctx.a2a` service facade: the thin read/control surface commands, the
+ * GUI API, and other plugins use. Registered as a Cordis Service so the key
+ * disappears with the plugin fiber.
  * @module dsh-a2a/service
  */
 
@@ -13,25 +13,98 @@ export interface OpResult {
   readonly message: string
 }
 
+/** Agent-preset roster row shown in the instance pickers. */
+export interface PresetView {
+  readonly id: string
+  readonly name?: string
+  readonly description?: string
+  /** Whether this preset is the deployment default when none is named. */
+  readonly isDefault?: boolean
+}
+
+/** A skill declaration as the GUI reads it. */
+export interface SkillView {
+  readonly id: string
+  readonly name: string
+  readonly description?: string
+}
+
+/** One inbound server instance, as the GUI/facade reads it. */
+export interface InboundServerView {
+  readonly id: string
+  readonly name: string
+  readonly description: string
+  readonly version: string
+  readonly endpointPath: string
+  readonly preset?: string
+  readonly authTokenEnv?: string
+  readonly cardPath: string
+  readonly cardUrl?: string
+  readonly enabled: boolean
+  readonly skills: readonly SkillView[]
+}
+
+/** One outbound server instance, as the GUI/facade reads it. */
+export interface OutboundServerView {
+  readonly id: string
+  readonly name: string
+  readonly agentCardUrl: string
+  readonly preset?: string
+  readonly enabled: boolean
+  readonly timeoutMs: number
+  readonly state: 'connected' | 'disconnected' | 'failed'
+  readonly skillCount: number
+  readonly toolCount: number
+  readonly lastError?: string
+}
+
+/** Creator input for an inbound server instance. */
+export interface InboundCreateInput {
+  readonly name: string
+  readonly description: string
+  readonly version: string
+  readonly endpointPath?: string
+  readonly preset?: string
+  readonly authTokenEnv?: string
+  readonly skills?: readonly SkillView[]
+  readonly enabled?: boolean
+}
+
+/** Creator input for an outbound server instance. */
+export interface OutboundCreateInput {
+  readonly id?: string
+  readonly name: string
+  readonly agentCardUrl: string
+  readonly bearerTokenEnv?: string
+  readonly preset?: string
+  readonly enabled?: boolean
+  readonly timeoutMs?: number
+}
+
 /** The implementation the facade delegates to (owned by the plugin assembly). */
 export interface A2AServiceImpl {
   status(): unknown
-  enableServer(enable: boolean): Promise<OpResult>
+  /** Agent-preset roster for the GUI pickers. */
+  presets(): Promise<PresetView[]>
+  // ── inbound server instances ────────────────────────────────────────
+  listInboundServers(): InboundServerView[]
+  createInboundServer(input: InboundCreateInput): Promise<OpResult>
+  removeInboundServer(id: string): Promise<OpResult>
+  setInboundServerEnabled(id: string, enabled: boolean): Promise<OpResult>
+  updateInboundServer(id: string, patch: { name?: string; description?: string; version?: string; endpointPath?: string; preset?: string; authTokenEnv?: string; skills?: readonly SkillView[] }): Promise<OpResult>
+  // ── outbound server instances ───────────────────────────────────────
+  listOutboundServers(): OutboundServerView[]
+  createOutboundServer(input: OutboundCreateInput): Promise<OpResult>
+  removeOutboundServer(id: string): Promise<OpResult>
+  setOutboundServerEnabled(id: string, enabled: boolean): Promise<OpResult>
+  refreshOutboundServer(id: string): Promise<OpResult>
+  // ── tasks ───────────────────────────────────────────────────────────
   getTask(taskId: string): unknown
   listTasks(): unknown
   cancelTask(taskId: string): Promise<OpResult>
-  agents(): unknown
-  addAgent(spec: { readonly name: string; readonly agentCardUrl: string; readonly bearerTokenEnv?: string }): Promise<OpResult>
-  removeAgent(id: string): Promise<OpResult>
-  setAgentEnabled(id: string, enabled: boolean): Promise<OpResult>
-  refreshAgentCard(id: string): Promise<OpResult>
-  /** Current service identity (persisted override + composition defaults). */
-  identity(): unknown
-  /** Persist and apply a new service identity onto the live AgentCard. */
-  updateIdentity(patch: { readonly name?: string; readonly description?: string; readonly version?: string }): Promise<OpResult>
-  /** Cancel an inbound peer's active tasks and drop its record. */
-  closeInbound(peerId: string): Promise<OpResult>
+  // ── inbound peer monitoring (per instance) ──────────────────────────
   inbounds(): unknown
+  closeInbound(peerId: string): Promise<OpResult>
 }
 
 /** The service other plugins read as `ctx.a2a`. */
@@ -47,8 +120,48 @@ export class A2AService extends Service {
     return this.impl.status()
   }
 
-  async enableServer(enable: boolean): Promise<OpResult> {
-    return this.impl.enableServer(enable)
+  async presets(): Promise<PresetView[]> {
+    return this.impl.presets()
+  }
+
+  listInboundServers(): InboundServerView[] {
+    return this.impl.listInboundServers()
+  }
+
+  async createInboundServer(input: InboundCreateInput): Promise<OpResult> {
+    return this.impl.createInboundServer(input)
+  }
+
+  async removeInboundServer(id: string): Promise<OpResult> {
+    return this.impl.removeInboundServer(id)
+  }
+
+  async setInboundServerEnabled(id: string, enabled: boolean): Promise<OpResult> {
+    return this.impl.setInboundServerEnabled(id, enabled)
+  }
+
+  async updateInboundServer(id: string, patch: { name?: string; description?: string; version?: string; endpointPath?: string; preset?: string; authTokenEnv?: string; skills?: readonly SkillView[] }): Promise<OpResult> {
+    return this.impl.updateInboundServer(id, patch)
+  }
+
+  listOutboundServers(): OutboundServerView[] {
+    return this.impl.listOutboundServers()
+  }
+
+  async createOutboundServer(input: OutboundCreateInput): Promise<OpResult> {
+    return this.impl.createOutboundServer(input)
+  }
+
+  async removeOutboundServer(id: string): Promise<OpResult> {
+    return this.impl.removeOutboundServer(id)
+  }
+
+  async setOutboundServerEnabled(id: string, enabled: boolean): Promise<OpResult> {
+    return this.impl.setOutboundServerEnabled(id, enabled)
+  }
+
+  async refreshOutboundServer(id: string): Promise<OpResult> {
+    return this.impl.refreshOutboundServer(id)
   }
 
   getTask(taskId: string): unknown {
@@ -63,39 +176,11 @@ export class A2AService extends Service {
     return this.impl.cancelTask(taskId)
   }
 
-  agents(): unknown {
-    return this.impl.agents()
-  }
-
-  async addAgent(spec: { readonly name: string; readonly agentCardUrl: string; readonly bearerTokenEnv?: string }): Promise<OpResult> {
-    return this.impl.addAgent(spec)
-  }
-
-  async removeAgent(id: string): Promise<OpResult> {
-    return this.impl.removeAgent(id)
-  }
-
-  async setAgentEnabled(id: string, enabled: boolean): Promise<OpResult> {
-    return this.impl.setAgentEnabled(id, enabled)
-  }
-
-  async refreshAgentCard(id: string): Promise<OpResult> {
-    return this.impl.refreshAgentCard(id)
-  }
-
-  identity(): unknown {
-    return this.impl.identity()
-  }
-
-  async updateIdentity(patch: { readonly name?: string; readonly description?: string; readonly version?: string }): Promise<OpResult> {
-    return this.impl.updateIdentity(patch)
+  inbounds(): unknown {
+    return this.impl.inbounds()
   }
 
   async closeInbound(peerId: string): Promise<OpResult> {
     return this.impl.closeInbound(peerId)
-  }
-
-  inbounds(): unknown {
-    return this.impl.inbounds()
   }
 }

@@ -11,10 +11,10 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { EventEmitter } from 'node:events'
 
 /** A structural request whose socket carries a remote address. */
-function reqWith(remoteAddress: string | undefined, method = 'GET', body = ''): IncomingMessage & { body?: string } {
+function reqWith(remoteAddress: string | undefined, method = 'GET', body = '', url = '/a2a/api'): IncomingMessage & { body?: string } {
   const req = new EventEmitter() as IncomingMessage & { body?: string }
   req.method = method
-  req.url = '/a2a/api'
+  req.url = url
   req.headers = {}
   req.socket = { remoteAddress, remotePort: 12345 } as unknown as IncomingMessage['socket']
   req.body = body
@@ -46,18 +46,21 @@ function resCollector() {
 
 function facadeStub(overrides: Partial<A2AServiceImpl> = {}): A2AServiceImpl {
   return {
-    status: () => ({ server: { enabled: true, cardUrl: 'http://x/a2a', skills: ['chat'], configured: false }, tasks: 0, agents: [], inbounds: [] }),
-    enableServer: vi.fn(async () => ({ ok: true, message: 'server enabled' })),
+    status: () => ({ inbounds: [], outbounds: [], tasks: 0, peers: [] }),
+    presets: vi.fn(async () => []),
+    listInboundServers: () => [],
+    createInboundServer: vi.fn(async () => ({ ok: true, message: 'created', id: 'in-1' })),
+    removeInboundServer: vi.fn(async () => ({ ok: true, message: 'removed' })),
+    setInboundServerEnabled: vi.fn(async () => ({ ok: true, message: 'toggled' })),
+    updateInboundServer: vi.fn(async () => ({ ok: true, message: 'updated' })),
+    listOutboundServers: () => [],
+    createOutboundServer: vi.fn(async () => ({ ok: true, message: 'created', id: 'out-1' })),
+    removeOutboundServer: vi.fn(async () => ({ ok: true, message: 'removed' })),
+    setOutboundServerEnabled: vi.fn(async () => ({ ok: true, message: 'toggled' })),
+    refreshOutboundServer: vi.fn(async () => ({ ok: true, message: 'refreshed' })),
     getTask: () => undefined,
     listTasks: () => [],
     cancelTask: vi.fn(async () => ({ ok: false, message: 'nope' })),
-    agents: () => [],
-    addAgent: vi.fn(async () => ({ ok: true, message: 'added' })),
-    removeAgent: vi.fn(async () => ({ ok: true, message: 'removed' })),
-    setAgentEnabled: vi.fn(async () => ({ ok: true, message: 'toggled' })),
-    refreshAgentCard: vi.fn(async () => ({ ok: true, message: 'refreshed' })),
-    identity: () => ({ name: 'x', description: 'd', version: '0.1.0' }),
-    updateIdentity: vi.fn(async () => ({ ok: true, message: 'identity updated' })),
     closeInbound: vi.fn(async () => ({ ok: true, message: 'peer closed' })),
     inbounds: () => [],
     ...overrides,
@@ -70,7 +73,7 @@ describe('handleApiRequest', () => {
     await handleApiRequest(reqWith('127.0.0.1'), res, facadeStub())
     const out = res.output()
     expect(out.status).toBe(200)
-    expect(JSON.parse(out.body).server.enabled).toBe(true)
+    expect(JSON.parse(out.body).inbounds).toEqual([])
   })
 
   it('rejects non-loopback callers with 403', async () => {
@@ -79,24 +82,52 @@ describe('handleApiRequest', () => {
     expect(res.output().status).toBe(403)
   })
 
-  it('dispatches server.enable to the facade', async () => {
-    const impl = facadeStub()
+  it('serves the preset roster on GET /a2a/api/presets', async () => {
+    const impl = facadeStub({ presets: vi.fn(async () => [{ id: 'ptc', name: 'PTC 模式' }]) })
     const res = resCollector()
-    await handleApiRequest(reqWith('::1', 'POST', JSON.stringify({ action: 'server.enable' })), res, impl)
-    expect(res.output().status).toBe(200)
-    expect(impl.enableServer).toHaveBeenCalledWith(true)
+    await handleApiRequest(reqWith('127.0.0.1', 'GET', '', '/a2a/api/presets'), res, impl)
+    const out = res.output()
+    expect(out.status).toBe(200)
+    expect(JSON.parse(out.body)).toEqual([{ id: 'ptc', name: 'PTC 模式' }])
   })
 
-  it('dispatches agent.add with the supplied spec', async () => {
+  it('dispatches inbound.create with the supplied input', async () => {
     const impl = facadeStub()
     const res = resCollector()
     await handleApiRequest(
-      reqWith('127.0.0.1', 'POST', JSON.stringify({ action: 'agent.add', name: 'aa', agentCardUrl: 'https://x/card.json' })),
+      reqWith('127.0.0.1', 'POST', JSON.stringify({ action: 'inbound.create', name: 'Main', description: 'd', version: '1.0.0', preset: 'ptc' })),
       res,
       impl,
     )
     expect(res.output().status).toBe(200)
-    expect(impl.addAgent).toHaveBeenCalledWith({ name: 'aa', agentCardUrl: 'https://x/card.json' })
+    expect(impl.createInboundServer).toHaveBeenCalledWith({
+      name: 'Main', description: 'd', version: '1.0.0', preset: 'ptc',
+    })
+  })
+
+  it('dispatches inbound.enable/disable/remove by id', async () => {
+    const impl = facadeStub()
+    const res = resCollector()
+    await handleApiRequest(reqWith('127.0.0.1', 'POST', JSON.stringify({ action: 'inbound.enable', id: 'in-1' })), res, impl)
+    expect(impl.setInboundServerEnabled).toHaveBeenCalledWith('in-1', true)
+    await handleApiRequest(reqWith('127.0.0.1', 'POST', JSON.stringify({ action: 'inbound.disable', id: 'in-1' })), res, impl)
+    expect(impl.setInboundServerEnabled).toHaveBeenCalledWith('in-1', false)
+    await handleApiRequest(reqWith('127.0.0.1', 'POST', JSON.stringify({ action: 'inbound.remove', id: 'in-1' })), res, impl)
+    expect(impl.removeInboundServer).toHaveBeenCalledWith('in-1')
+  })
+
+  it('dispatches outbound.create with the supplied spec', async () => {
+    const impl = facadeStub()
+    const res = resCollector()
+    await handleApiRequest(
+      reqWith('127.0.0.1', 'POST', JSON.stringify({ action: 'outbound.create', name: 'remote', agentCardUrl: 'https://x/card.json', preset: 'ptc' })),
+      res,
+      impl,
+    )
+    expect(res.output().status).toBe(200)
+    expect(impl.createOutboundServer).toHaveBeenCalledWith({
+      name: 'remote', agentCardUrl: 'https://x/card.json', preset: 'ptc',
+    })
   })
 
   it('returns 409 with the facade message when a control action fails', async () => {
@@ -108,18 +139,6 @@ describe('handleApiRequest', () => {
     expect(JSON.parse(out.body).message).toBe('task not found')
   })
 
-  it('dispatches identity.update with the supplied patch', async () => {
-    const impl = facadeStub()
-    const res = resCollector()
-    await handleApiRequest(
-      reqWith('127.0.0.1', 'POST', JSON.stringify({ action: 'identity.update', name: 'New Agent', description: 'desc', version: '0.2.0' })),
-      res,
-      impl,
-    )
-    expect(res.output().status).toBe(200)
-    expect(impl.updateIdentity).toHaveBeenCalledWith({ name: 'New Agent', description: 'desc', version: '0.2.0' })
-  })
-
   it('dispatches inbound.close with the peer id', async () => {
     const impl = facadeStub()
     const res = resCollector()
@@ -128,10 +147,13 @@ describe('handleApiRequest', () => {
     expect(impl.closeInbound).toHaveBeenCalledWith('peer-1')
   })
 
-  it('includes inbounds in the snapshot', async () => {
-    const impl = facadeStub({ status: () => ({ server: { enabled: true, configured: true }, tasks: 0, agents: [], inbounds: [{ id: 'p1' }] }) })
+  it('includes inbounds/outbounds/tasks in the snapshot', async () => {
+    const impl = facadeStub({ status: () => ({ inbounds: [{ id: 'in-1' }], outbounds: [{ id: 'out-1' }], tasks: 0, peers: [{ id: 'p1' }] }) })
     const res = resCollector()
     await handleApiRequest(reqWith('127.0.0.1'), res, impl)
-    expect(JSON.parse(res.output().body).inbounds).toEqual([{ id: 'p1' }])
+    const body = JSON.parse(res.output().body)
+    expect(body.inbounds).toEqual([{ id: 'in-1' }])
+    expect(body.outbounds).toEqual([{ id: 'out-1' }])
+    expect(body.peers).toEqual([{ id: 'p1' }])
   })
 })

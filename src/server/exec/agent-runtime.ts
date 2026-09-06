@@ -54,7 +54,7 @@ export interface AgentRegistryLike {
 
 /** Structural slice of `ctx.agentPresets` (preset roster). */
 export interface AgentPresetsLike {
-  resolve(id?: string): Promise<{ readonly id: string }>
+  resolve(id?: string): Promise<{ readonly id: string; readonly name?: string }>
   mount(agentCtx: unknown, id: string): Promise<unknown>
 }
 

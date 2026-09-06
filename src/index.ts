@@ -1,13 +1,18 @@
 /**
  * @hanphone/dsh-a2a — Cordis plugin entry.
  *
- * Mounts the A2A v1.0 dual-end plugin: the inbound server (AgentCard derived
- * from the live tool registry, JSON-RPC + SSE, durable SQLite task store,
- * session/subagent executors, the `a2a/inbound-task` policy gate + audit)
- * and the outbound client (persisted multi-agent registry, skills mapped to
- * model tools, sync calls with per-agent timeout). Optional services are
- * probed rather than injected so a composition lacking one half idles just
- * that half; only the storage domain is required.
+ * Mounts the A2A v1.0.1 dual-end plugin as a MULTI-INSTANCE composition: an
+ * arbitrary set of inbound A2A servers (each a preset-bound session pool, its
+ * own endpoint + AgentCard + creator-declared skills + auth) and an arbitrary
+ * set of outbound A2A connections (each a remote URL + preset + timeout).
+ * Instances are persisted in the `a2a` domain (`inbound_servers` /
+ * `outbound_servers` tables) and created/edited/started/stopped entirely from
+ * the GUI — the plugin `Config` is minimal and instance setup is not
+ * patch-config driven. The protocol surface is aligned with the official A2A
+ * v1.0.1 spec (see docs/design.md).
+ *
+ * Optional services are probed rather than injected so a composition lacking
+ * one half idles just that half; only the storage domain is required.
  *
  * Function-plugin export shape: named `name`/`inject`/`Config`/`apply`, no
  * default export (mixing forms makes the Loader drop the namespace).
@@ -19,260 +24,106 @@ import z from '@deepseek-ai/schemastery'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { mkdirSync } from 'node:fs'
-import { deriveSkills, buildCard, type ToolGetter } from './server/card.ts'
 import { openDomain, DomainTaskStore, type A2aDomain, type TaskStore } from './server/store.ts'
-import { LiveInboundRegistry, type InboundRegistry } from './server/inbound-registry.ts'
-import { cardOptionsFor, readIdentity, rebuildCardWithIdentity, writeIdentity, type A2aIdentity } from './server/identity.ts'
-import { ExecutorSet } from './server/executor.ts'
-import { ContextSessionPool, probeService, type AgentPresetsLike, type AgentRegistryLike } from './server/exec/agent-runtime.ts'
-import { createSessionExecutor } from './server/exec/session.ts'
-import { createSubagentExecutor, type SubagentsLike } from './server/exec/subagent.ts'
-import { A2AServer, type GateInput, type GateResult } from './server/a2a-server.ts'
-import { A2aRoutes } from './server/routes.ts'
+import { probeService, type AgentPresetsLike, type AgentRegistryLike } from './server/exec/agent-runtime.ts'
+import type { SubagentsLike } from './server/exec/subagent.ts'
 import { handleApiRequest } from './api.ts'
-import { OutboundAgentRegistry, DomainAgentStore, type OutboundAgentSpec } from './outbound/registry.ts'
-import { A2AService, type A2AServiceImpl, type OpResult } from './service.ts'
+import { A2AService, type A2AServiceImpl, type InboundCreateInput, type InboundServerView, type OutboundCreateInput, type OpResult, type PresetView, type SkillView } from './service.ts'
 import { buildA2aCommand } from './commands.ts'
-import type { InboundTaskDecision } from './events.ts'
-import type { AgentCard, AgentSkill, TaskState } from './protocol.ts'
+import { InboundServerManager, DomainInboundStore, type InboundManagerHost, type WebServerLike as InboundWebServerLike } from './servers/inbound-manager.ts'
+import { OutboundServerManager, DomainOutboundStore, type OutboundManagerHost, type OutboundServerView } from './servers/outbound-manager.ts'
 
 export const name = 'a2a'
 
 /** Only the storage domain is required; the other halves are probed. */
 export const inject = ['storageDomain'] as const
 
+/** Minimal host-level config; per-instance setup happens in the GUI/domain. */
 export interface A2AConfig {
-  server: {
-    enabled: boolean
-    name: string
-    description: string
-    version: string
-    /** Advertised base URL; null/absent lets the host webServer address be used. */
-    baseUrl?: string
-    endpointPath: string
-    /** Environment variable name for the inbound bearer token; absent = anonymous. */
-    authTokenEnv?: string
-    /**
-     * Agent preset id whose plugin assembly drives the advertised skills (the
-     * preset's tool rows become AgentCard skills) AND the session every
-     * inbound task runs in. Absent = the white-list (`skills.ids`) / defaults.
-     */
-    preset?: string
-    skills: { ids: string[]; exclude: string[] }
-    executors: Record<string, 'session' | 'subagent'>
-    subagentProvider: string
-  }
-  client: {
-    agents: OutboundAgentSpec[]
-    toolPrefix: string
-  }
+  /** Advertised base URL for every inbound card; absent lets a default stand. */
+  baseUrl?: string
+  /** Subagent driver provider for the inbound subagent executors. */
+  subagentProvider: string
+  /** Default outbound connection timeout (ms). */
+  defaultTimeoutMs: number
 }
 
 /** Loader-validated config schema (defaults applied by the Loader). */
 export const Config: z<A2AConfig> = z.object({
-  server: z.object({
-    enabled: z.boolean().default(true),
-    name: z.string().default('My DSH Agent'),
-    description: z.string().default('A DeepSeek Harness agent exposed over A2A v1.0'),
-    version: z.string().default('0.1.0'),
-    baseUrl: z.string(),
-    endpointPath: z.string().default('/a2a'),
-    authTokenEnv: z.string(),
-    preset: z.string(),
-    skills: z.object({
-      ids: z.array(z.string()).default([]),
-      exclude: z.array(z.string()).default([]),
-    }),
-    executors: z.dict(z.union(['session', 'subagent'] as const)).default({ chat: 'session' }),
-    subagentProvider: z.string().default('in-process'),
-  }),
-  client: z.object({
-    agents: z.array(z.object({
-      name: z.string(),
-      agentCardUrl: z.string(),
-      bearerTokenEnv: z.string(),
-      enabled: z.boolean().default(true),
-      timeoutMs: z.number().default(60000),
-    })).default([]),
-    toolPrefix: z.string().default('a2a'),
-  }),
+  baseUrl: z.string(),
+  subagentProvider: z.string().default('in-process'),
+  defaultTimeoutMs: z.number().default(60_000),
 })
-
-/** Mutable state shared across the plugin's halves. */
-interface Shared {
-  readonly domain: A2aDomain
-  readonly store: TaskStore
-  registry: OutboundAgentRegistry | undefined
-  inbound: InboundRegistry | undefined
-  server: A2AServer | undefined
-  routes: A2aRoutes | undefined
-  card: AgentCard | undefined
-  executors: ExecutorSet | undefined
-  enabled: boolean
-  /** Composition defaults for the card identity (before any persisted override). */
-  identityDefaults: { name: string; description: string; version: string }
-}
 
 export function apply(ctx: Context, config: A2AConfig) {
   const logger = ctx.logger('a2a')
-  const serverConfig = { ...config.server }
-  const clientConfig = { ...config.client }
-  const authToken = serverConfig.authTokenEnv !== undefined ? process.env[serverConfig.authTokenEnv] : undefined
-  const toolPrefix = clientConfig.toolPrefix
-  const subagentProvider = serverConfig.subagentProvider
+  const subagentProvider = config.subagentProvider
   const inboundCwd = inboundSessionCwd()
 
   ctx.inject(['storageDomain'], (ctx) => {
     ctx.effect(async () => {
       const domain = await openDomain(ctx.storageDomain)
       const store = new DomainTaskStore(domain)
-      const holder: Shared = {
-        domain,
-        store,
-        registry: undefined,
-        inbound: undefined,
-        server: undefined,
-        routes: undefined,
-        card: undefined,
-        executors: undefined,
-        enabled: serverConfig.enabled,
-        identityDefaults: {
-          name: serverConfig.name ?? 'My DSH Agent',
-          description: serverConfig.description ?? 'A DeepSeek Harness agent exposed over A2A v1.0',
-          version: serverConfig.version ?? '0.1.0',
-        },
-      }
 
-      // ── inbound server half ────────────────────────────────────────────
-      const webServer = probeService(ctx, 'webServer', 'register') as
-        | { register(route: { kind: 'exact' | 'prefix'; path: string; handler(...args: unknown[]): unknown }): () => void }
+      // Probe the optional host services each half uses.
+      const webServer = probeService(ctx, 'webServer', 'register') as InboundWebServerLike | undefined
+      const tools = probeService(ctx, 'tools', 'register') as
+        | ({ get(name: string): unknown } & { register(def: unknown): (() => void) | void })
         | undefined
-      if (webServer === undefined) {
-        logger.warn('a2a: webServer not mounted; inbound server idle')
-      } else {
-        try {
-          const toolsService = probeService(ctx, 'tools', 'get') as ToolGetter | undefined ?? { get: () => undefined }
-          // The inbound session composition: when `server.preset` names an
-          // agent preset, every inbound task's session is composed from that
-          // preset (its plugin assembly — tools, prompt sections, skills) via
-          // the standard agentPresets resolve+mount path. The AgentCard skill
-          // list stays the white-list derivation (host-visible tools); the
-          // preset governs what the session that EXECUTES a task can do.
-          const presets = probeService(ctx, 'agentPresets', 'resolve') as AgentPresetsLike | undefined
-          const baseUrl = serverConfig.baseUrl ?? `http://127.0.0.1:${process.env['DSH_A2A_PORT'] ?? '3000'}`
-          const endpointPath = serverConfig.endpointPath ?? '/a2a'
-          const skills = deriveSkills(toolsService, { ids: serverConfig.skills.ids, exclude: serverConfig.skills.exclude })
-          const persistedIdentity = readIdentity(domain)
-          const card = buildCard(cardOptionsFor(baseUrl, endpointPath, holder.identityDefaults, persistedIdentity, skills, authToken))
-          holder.card = card
-
-          // Inbound connection registry (dashboard "who is talking to us").
-          const inbound = new LiveInboundRegistry()
-          holder.inbound = inbound
-
-          // Executors: probe the agent loop; refuse tasks readably without it.
-          const agents = probeService(ctx, 'agents', 'create') as AgentRegistryLike | undefined
-          const sessionPool = agents
-            ? new ContextSessionPool(agents, {
-              cwd: inboundCwd,
-              ...(presets ? { agentPresets: presets } : {}),
-              // A configured inbound preset composes every inbound session;
-              // otherwise the deployment default applies.
-              ...(serverConfig.preset !== undefined ? { presetId: () => serverConfig.preset } : {}),
-              resolveAgentOptions: () => resolveDefaultModel(ctx),
-            })
-            : undefined
-          const sessionExecutor = sessionPool ? createSessionExecutor(sessionPool) : refuseExecutor('no agent loop mounted')
-          const subagents = probeService(ctx, 'subagents', 'start') as SubagentsLike | undefined
-          const subagentExecutor = sessionPool !== undefined && subagents !== undefined
-            ? createSubagentExecutor({ pool: sessionPool, subagents, provider: subagentProvider })
-            : undefined
-          const executors = new ExecutorSet(serverConfig.executors, sessionExecutor, subagentExecutor)
-          holder.executors = executors
-
-          const skillIds = new Set(skills.map((s) => s.id))
-          const gate = async (input: GateInput): Promise<GateResult> => {
-            if (!skillIds.has(input.skill)) {
-              return { ok: false, reason: `unknown skill "${input.skill}"` }
-            }
-            const decision: InboundTaskDecision = {
-              contextId: input.contextId,
-              skill: input.skill,
-              parts: input.parts,
-              remotePeerId: input.remotePeerId,
-            }
-            const decided = await ctx.waterfall('a2a/inbound-task', decision, async (d) => d)
-            // Built-in audit: every task decision is logged with its source.
-            logger.info(`[a2a] inbound skill=${decided.skill} remote=${decided.remotePeerId} rejected=${decided.rejected?.reason ?? 'no'}`)
-            if (decided.rejected !== undefined) return { ok: false, reason: decided.rejected.reason }
-            return { ok: true }
-          }
-
-          const server = new A2AServer({
-            card,
-            store,
-            executors,
-            ...(authToken ? { authToken } : {}),
-            gate,
-            onInbound: (facts) => inbound.note({
-              method: facts.method,
-              ...(facts.source !== undefined ? { source: facts.source } : {}),
-              taskIds: facts.taskIds,
-              streaming: facts.streaming,
-            }),
-            onTaskSettled: (taskId) => {
-              logger.info(`[a2a] task settled ${taskId}`)
-              inbound.settle(taskId)
-            },
-          })
-          holder.server = server
-          const routes = new A2aRoutes(webServer as never, server)
-          holder.routes = routes
-          if (holder.enabled) routes.enable()
-        } catch (err) {
-          logger.error(`a2a: server half failed to build: ${(err as Error).message}`)
-        }
-      }
-
-      // ── outbound client half (after the inbound routes exist, so a
-      // loopback agent can fetch this server's own card) ──────────────────
-      const toolsService = probeService(ctx, 'tools', 'get') as
-        | (ToolGetter & { register(def: unknown): (() => void) | void })
+      const agents = probeService(ctx, 'agents', 'create') as AgentRegistryLike | undefined
+      const agentPresets = probeService(ctx, 'agentPresets', 'list') as
+        | (AgentPresetsLike & { list(): Promise<Array<{ id: string; name?: string; description?: string; isDefault?: boolean }>> })
         | undefined
-      if (toolsService === undefined) {
-        logger.warn('a2a: tools service not mounted; outbound client idle')
-      } else {
-        const registry = new OutboundAgentRegistry({
-          registrar: { register: (def) => toolsService.register(def) },
-          store: new DomainAgentStore(domain.agents),
-          toolPrefix,
-          tokenOf: (env) => (env ? process.env[env] : undefined),
-          onError: (message) => logger.warn(message),
-        })
-        holder.registry = registry
-        registry.loadAll()
-        // Declared agents seed the registry: the persisted store stays the
-        // runtime state, so a disabled or removed agent is not reconnected.
-        if (clientConfig.agents.length > 0) await registry.seed(clientConfig.agents)
-      }
-
-      // ── service facade + commands ──────────────────────────────────────
-      const impl: A2AServiceImpl = makeFacade(holder, logger.info.bind(logger))
-      new A2AService(ctx, impl)
-
-      const commands = probeService(ctx, 'commands', 'register') as
+      const subagents = probeService(ctx, 'subagents', 'start') as SubagentsLike | undefined
+      const commandsRef = probeService(ctx, 'commands', 'register') as
         | { register(def: { name: string; description: string; handler(...args: unknown[]): unknown }): () => void }
         | undefined
-      if (commands !== undefined) {
-        ctx.effect(() => commands.register(buildA2aCommand(impl) as never), 'a2a: command')
+
+      const baseUrl = config.baseUrl ?? `http://127.0.0.1:${process.env['DSH_A2A_PORT'] ?? '3000'}`
+
+      // ── inbound manager ───────────────────────────────────────────────
+      const inboundHost: InboundManagerHost = {
+        ctx,
+        webServer: webServer ?? { register: noopRegister },
+        tasks: store,
+        logger,
+        ...(agents !== undefined ? { agents } : {}),
+        ...(agentPresets !== undefined ? { agentPresets } : {}),
+        ...(subagents !== undefined ? { subagents } : {}),
+        resolveDefaultModel: () => resolveDefaultModel(ctx),
+        sessionCwd: inboundCwd,
+        defaultBaseUrl: baseUrl,
+        subagentProvider,
+        newId: () => crypto.randomUUID().slice(0, 8),
+      }
+      const inboundManager = new InboundServerManager(inboundHost, new DomainInboundStore(domain.inbound_servers))
+      inboundManager.boot()
+
+      // ── outbound manager ──────────────────────────────────────────────
+      const outboundHost: OutboundManagerHost = {
+        registrar: { register: (def) => tools?.register(def) },
+        tokenOf: (env) => (env ? process.env[env] : undefined),
+        onError: (message) => logger.warn(message),
+        defaultTimeoutMs: config.defaultTimeoutMs,
+      }
+      const outboundManager = new OutboundServerManager(
+        outboundHost,
+        domain.agents,
+        new DomainOutboundStore(domain.outbound_servers),
+        () => `out-${crypto.randomUUID().slice(0, 12)}`,
+      )
+      outboundManager.boot()
+
+      // ── service facade + commands + GUI API ───────────────────────────
+      const impl: A2AServiceImpl = makeFacade({ domain, store, inboundManager, outboundManager, agentPresets, logger: logger.info.bind(logger) })
+      new A2AService(ctx, impl)
+
+      if (commandsRef !== undefined) {
+        ctx.effect(() => commandsRef.register(buildA2aCommand(impl) as never), 'a2a: command')
       }
 
-      // ── GUI dashboard API (loopback-only /a2a/api) ─────────────────────
-      const dashboardWebServer = probeService(ctx, 'webServer', 'register') as
-        | { register(route: { kind: 'exact' | 'prefix'; path: string; handler(...args: unknown[]): unknown }): () => void }
-        | undefined
-      if (dashboardWebServer !== undefined) {
-        ctx.effect(() => dashboardWebServer.register({
+      if (webServer !== undefined) {
+        ctx.effect(() => webServer.register({
           kind: 'prefix',
           path: '/a2a/api',
           handler: (req: unknown, res: unknown) => handleApiRequest(req as never, res as never, impl),
@@ -282,126 +133,139 @@ export function apply(ctx: Context, config: A2AConfig) {
       }
 
       return async () => {
-        holder.routes?.dispose()
-        await holder.executors?.disposeAll()
-        await holder.registry?.disposeAll()
+        inboundManager.disposeAll()
+        await outboundManager.disposeAll()
         await domain.close()
       }
-    }, 'a2a: domain + halves')
+    }, 'a2a: multi-instance composition')
   })
 }
 
-/** Facade closure over the shared holder (commands and `ctx.a2a` consumers). */
-function makeFacade(holder: Shared, log: (message: string) => void): A2AServiceImpl {
-  const serverEnabled = (): boolean => holder.routes?.active ?? false
+interface FacadeHost {
+  readonly domain: A2aDomain
+  readonly store: TaskStore
+  readonly inboundManager: InboundServerManager
+  readonly outboundManager: OutboundServerManager
+  readonly agentPresets?: (AgentPresetsLike & { list(): Promise<Array<{ id: string; name?: string; description?: string; isDefault?: boolean }>> }) | undefined
+  readonly logger: (message: string) => void
+}
+
+/** Facade closure over the two managers (commands and `ctx.a2a` consumers). */
+function makeFacade(host: FacadeHost): A2AServiceImpl {
+  const inboundView = (id: string): InboundServerView | undefined => {
+    const live = host.inboundManager.get(id)
+    if (live === undefined) return undefined
+    const r = live.record
+    return {
+      id: r.id,
+      name: r.name,
+      description: r.description,
+      version: r.version,
+      endpointPath: live.endpointPath,
+      ...(r.preset !== undefined ? { preset: r.preset } : {}),
+      ...(r.authTokenEnv !== undefined ? { authTokenEnv: r.authTokenEnv } : {}),
+      cardPath: live.cardPath,
+      ...(live.card.supportedInterfaces?.[0]?.url !== undefined ? { cardUrl: live.card.supportedInterfaces[0].url } : {}),
+      enabled: live.routes.active,
+      skills: r.skills.map((s): SkillView => ({ id: s.id, name: s.name, ...(s.description != null ? { description: s.description } : {}) })),
+    }
+  }
+
   return {
     status(): unknown {
       return {
-        server: {
-          enabled: serverEnabled(),
-          cardUrl: holder.card?.supportedInterfaces?.[0]?.url,
-          skills: holder.card?.skills?.map((s) => s.id) ?? [],
-          executors: holder.executors ? ['session', ...(holder.executors['subagent'] !== undefined ? ['subagent'] : [])] : [],
-          name: holder.card?.name,
-          description: holder.card?.description,
-          version: holder.card?.version,
-          // True when a persisted identity override exists (the dashboard has
-          // been configured); guides the first-run onboarding.
-          configured: readIdentity(holder.domain) !== undefined,
-        },
-        tasks: holder.store.list().length,
-        agents: holder.registry?.list() ?? [],
-        inbounds: holder.inbound?.list() ?? [],
+        inbounds: host.inboundManager.list().map((live) => inboundView(live.id)).filter((v): v is InboundServerView => v !== undefined),
+        outbounds: host.outboundManager.list(),
+        tasks: host.store.list().length,
       }
     },
-    async enableServer(enable: boolean): Promise<OpResult> {
-      if (holder.routes === undefined) return { ok: false, message: 'inbound server is not mounted (no webServer)' }
-      if (enable) holder.routes.enable()
-      else holder.routes.disable()
-      log(`[a2a] server ${enable ? 'enabled' : 'disabled'}`)
-      return { ok: true, message: `server ${enable ? 'enabled' : 'disabled'}` }
+    async presets(): Promise<PresetView[]> {
+      if (host.agentPresets === undefined) return []
+      try {
+        return (await host.agentPresets.list()).map((p) => ({
+          id: p.id,
+          ...(p.name !== undefined ? { name: p.name } : {}),
+          ...(p.description !== undefined ? { description: p.description } : {}),
+          ...(p.isDefault === true ? { isDefault: true } : {}),
+        }))
+      } catch {
+        return []
+      }
     },
-    getTask(taskId: string): unknown {
-      return holder.store.get(taskId)
+    // ── inbound ─────────────────────────────────────────────────────────
+    listInboundServers(): InboundServerView[] {
+      return host.inboundManager.list().map((live) => inboundView(live.id)).filter((v): v is InboundServerView => v !== undefined)
     },
-    listTasks(): unknown {
-      return holder.store.list()
-    },
-    async cancelTask(taskId: string): Promise<OpResult> {
-      const record = holder.store.get(taskId)
-      if (record === undefined) return { ok: false, message: `task ${taskId} not found` }
-      const aborted = holder.server?.abort?.(taskId) ?? false
-      return { ok: true, message: aborted ? `task ${taskId} canceled` : `task ${taskId} already terminal` }
-    },
-    agents(): unknown {
-      return holder.registry?.list() ?? []
-    },
-    async addAgent(spec: { name: string; agentCardUrl: string; bearerTokenEnv?: string }): Promise<OpResult> {
-      const registry = holder.registry
-      if (registry === undefined) return { ok: false, message: 'outbound client not mounted (no tools service)' }
-      const result = await registry.add({ ...spec, enabled: true, timeoutMs: 60000 })
+    async createInboundServer(input: InboundCreateInput): Promise<OpResult> {
+      const result = await host.inboundManager.add({
+        name: input.name,
+        description: input.description,
+        version: input.version,
+        ...(input.endpointPath !== undefined ? { endpointPath: input.endpointPath } : {}),
+        ...(input.preset !== undefined ? { preset: input.preset } : {}),
+        ...(input.authTokenEnv !== undefined ? { authTokenEnv: input.authTokenEnv } : {}),
+        ...(input.skills !== undefined ? { skills: input.skills } : {}),
+        ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+      })
+      host.logger(`[a2a] inbound created: ${result.message}`)
       return result
     },
-    async removeAgent(id: string): Promise<OpResult> {
-      return holder.registry?.remove(id) ?? { ok: false, message: 'outbound client not mounted' }
+    async removeInboundServer(id: string): Promise<OpResult> {
+      return host.inboundManager.remove(id)
     },
-    async setAgentEnabled(id: string, enabled: boolean): Promise<OpResult> {
-      return holder.registry?.setEnabled(id, enabled) ?? { ok: false, message: 'outbound client not mounted' }
+    async setInboundServerEnabled(id: string, enabled: boolean): Promise<OpResult> {
+      return host.inboundManager.setEnabled(id, enabled)
     },
-    async refreshAgentCard(id: string): Promise<OpResult> {
-      return holder.registry?.refresh(id) ?? { ok: false, message: 'outbound client not mounted' }
+    async updateInboundServer(id: string, patch: { name?: string; description?: string; version?: string; endpointPath?: string; preset?: string; authTokenEnv?: string; skills?: readonly SkillView[] }): Promise<OpResult> {
+      return host.inboundManager.update(id, patch)
     },
-    identity(): unknown {
-      const current = holder.card
-      const persisted = readIdentity(holder.domain)
-      return {
-        ...(persisted ?? {}),
-        // Composition defaults shown when nothing is persisted yet.
-        defaults: holder.identityDefaults,
-        name: current?.name ?? holder.identityDefaults.name,
-        description: current?.description ?? holder.identityDefaults.description,
-        version: current?.version ?? holder.identityDefaults.version,
-      }
+    // ── outbound ────────────────────────────────────────────────────────
+    listOutboundServers(): OutboundServerView[] {
+      return [...host.outboundManager.list()]
     },
-    async updateIdentity(patch: { name?: string; description?: string; version?: string }): Promise<OpResult> {
-      const card = holder.card
-      const server = holder.server
-      if (card === undefined || server === undefined) return { ok: false, message: 'inbound server not mounted (no card)' }
-      const persisted = readIdentity(holder.domain)
-      const base = persisted ?? holder.identityDefaults
-      const next: A2aIdentity = {
-        name: patch.name?.trim() || base.name,
-        description: patch.description?.trim() || base.description,
-        version: patch.version?.trim() || base.version,
-      }
-      writeIdentity(holder.domain, next)
-      const rebuilt = rebuildCardWithIdentity(card, next, card.skills ?? [])
-      server.setCard(rebuilt)
-      holder.card = rebuilt
-      log(`[a2a] identity updated: ${next.name}`)
-      return { ok: true, message: `service identity updated (${next.name})` }
+    async createOutboundServer(input: OutboundCreateInput): Promise<OpResult> {
+      return host.outboundManager.add({
+        ...(input.id !== undefined ? { id: input.id } : {}),
+        name: input.name,
+        agentCardUrl: input.agentCardUrl,
+        ...(input.bearerTokenEnv !== undefined ? { bearerTokenEnv: input.bearerTokenEnv } : {}),
+        ...(input.preset !== undefined ? { preset: input.preset } : {}),
+        enabled: input.enabled ?? true,
+        timeoutMs: input.timeoutMs ?? host.outboundManager.defaultTimeoutMs,
+      })
+    },
+    async removeOutboundServer(id: string): Promise<OpResult> {
+      return host.outboundManager.remove(id)
+    },
+    async setOutboundServerEnabled(id: string, enabled: boolean): Promise<OpResult> {
+      return host.outboundManager.setEnabled(id, enabled)
+    },
+    async refreshOutboundServer(id: string): Promise<OpResult> {
+      return host.outboundManager.refresh(id)
+    },
+    // ── tasks ───────────────────────────────────────────────────────────
+    getTask(taskId: string): unknown {
+      return host.store.get(taskId)
+    },
+    listTasks(): unknown {
+      return host.store.list()
+    },
+    async cancelTask(taskId: string): Promise<OpResult> {
+      const live = host.inboundManager.list().find((l) => l.server.abort(taskId))
+      return { ok: live !== undefined, message: live !== undefined ? `task ${taskId} canceled` : `task ${taskId} not found or already terminal` }
+    },
+    // ── inbound peers (aggregated across instances) ─────────────────────
+    inbounds(): unknown {
+      return host.inboundManager.list().flatMap((live) => live.inbound.list())
     },
     async closeInbound(peerId: string): Promise<OpResult> {
-      const inbound = holder.inbound
-      if (inbound === undefined) return { ok: false, message: 'inbound registry not mounted' }
-      // Cancel the peer's active tasks, then drop the record.
-      for (const taskId of inbound.activeTasksOf(peerId)) {
-        await holder.server?.abort?.(taskId)
+      for (const live of host.inboundManager.list()) {
+        const peers = live.inbound.activeTasksOf(peerId)
+        for (const taskId of peers) live.server.abort(taskId)
+        const result = live.inbound.closePeer(peerId)
+        if (result) return { ok: true, message: `inbound peer ${peerId} closed` }
       }
-      return inbound.closePeer(peerId)
-    },
-    inbounds(): unknown {
-      return holder.inbound?.list() ?? []
-    },
-  }
-}
-
-/** A task that refuses readably on compositions without an agent loop. */
-function refuseExecutor(reason: string) {
-  return {
-    name: 'refuse',
-    async execute(): Promise<{ parts: { text: string }[] }> {
-      throw new Error(`a2a: ${reason}; refusing inbound task`)
+      return { ok: false, message: `inbound peer ${peerId} not found` }
     },
   }
 }
@@ -426,8 +290,11 @@ function inboundSessionCwd(): string {
   return dir
 }
 
-export type { TaskState }
-export type { AgentSkill }
+function noopRegister(): () => void {
+  return () => {}
+}
+
+export type { OpResult }
 export { A2AServer } from './server/a2a-server.ts'
 export { A2AClient, A2AError } from './outbound/calls.ts'
 export { A2AService } from './service.ts'

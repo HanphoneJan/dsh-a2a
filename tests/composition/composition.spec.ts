@@ -1,10 +1,10 @@
 /**
  * Composition tests: boot the plugin's `apply()` on a real Cordis Context
  * with stub host services (storageDomain, webServer, tools, commands) and
- * drive the assembled inbound server through the registered HTTP routes.
- * The full real composition (SQLite backend, agent loop) stays P1 per the
- * design doc; this covers assembly, route registration, the skill gate, and
- * the `a2a/inbound-task` policy seam at the Cordis layer.
+ * drive the assembled multi-instance composition through the registered HTTP
+ * routes: inbound-server instance CRUD/route isolation, the skill gate, the
+ * `a2a/inbound-task` policy seam, and outbound connections mapping remote
+ * skills to model tools.
  * @module dsh-a2a/tests/composition/composition.spec
  */
 
@@ -96,8 +96,8 @@ function fakeCommands() {
   return { register, definitions }
 }
 
-/** Fake HTTP request/responses so the registered route handler is exercisable. */
-function invoke(route: FakeRoute, body: string) {
+/** Fake HTTP request/responses so a registered route handler is exercisable. */
+function invoke(route: FakeRoute, body: string, url = '/a2a') {
   const req = new EventEmitter() as EventEmitter & {
     method?: string
     url?: string
@@ -105,7 +105,7 @@ function invoke(route: FakeRoute, body: string) {
     socket?: { remoteAddress?: string; remotePort?: number }
   }
   req.method = 'POST'
-  req.url = '/a2a'
+  req.url = url
   req.headers = { 'content-type': 'application/json', accept: 'application/json' }
   const chunks: Buffer[] = []
   let sent: { status: number; headers: Record<string, string>; body: string } | undefined
@@ -161,40 +161,48 @@ async function waitForFacade(ctx: Context): Promise<void> {
   })
 }
 
-describe('plugin composition (stub host services)', () => {
-  it('assembles and registers the /a2a command when enabled', async () => {
-    const { ctx, commands } = harness()
+async function sendMessage(ctx: Context, webServer: ReturnType<typeof fakeWebServer>, endpoint: string, text: string, skill?: string, id = 1, messageId = 'm1') {
+  const route = webServer.routes.find((r) => r.path === endpoint && r.kind === 'prefix')!
+  const { response } = invoke(route, JSON.stringify({
+    jsonrpc: '2.0', id, method: 'SendMessage',
+    params: { message: { messageId, role: 'user', parts: [{ text }], ...(skill !== undefined ? { metadata: { skill } } : {}) } },
+  }), endpoint)
+  await vi.waitFor(() => expect(response()).toBeDefined())
+  return JSON.parse(response()!.body)
+}
+
+describe('plugin composition (multi-instance)', () => {
+  it('boots with no instances and registers the dashboard api', async () => {
+    const { ctx, webServer, commands } = harness()
     await waitForFacade(ctx)
-    await ctx.a2a.enableServer(true)
     expect(commands.definitions.some((d) => d.name === 'a2a')).toBe(true)
-    const status = ctx.a2a.status() as { server: { enabled: boolean; skills: string[] } }
-    expect(status.server.enabled).toBe(true)
-    expect(status.server.skills).toContain('chat')
+    expect(ctx.a2a.listInboundServers()).toEqual([])
+    expect(ctx.a2a.listOutboundServers()).toEqual([])
+    expect(webServer.routes.map((r) => r.path)).toEqual(['/a2a/api'])
   })
 
-  it('registers the AgentCard, endpoint, and dashboard routes by default', async () => {
+  it('creates inbound instances with independent endpoints and cards', async () => {
     const { ctx, webServer } = harness()
     await waitForFacade(ctx)
-    // The inbound server is enabled by default (install-and-use) and the
-    // loopback dashboard API is registered at apply time.
-    expect(webServer.routes.map((r) => r.path).sort()).toEqual(['/.well-known/agent-card.json', '/a2a', '/a2a/api'])
-    await ctx.a2a.enableServer(false)
-    expect(webServer.routes.map((r) => r.path).sort()).toEqual(['/a2a/api'])
-    await ctx.a2a.enableServer(true)
-    expect(webServer.routes.map((r) => r.path).sort()).toEqual(['/.well-known/agent-card.json', '/a2a', '/a2a/api'])
+    const created = await ctx.a2a.createInboundServer({ name: 'Main', description: 'main', version: '1.0.0' })
+    expect(created.ok).toBe(true)
+    const views = ctx.a2a.listInboundServers() as Array<{ id: string; endpointPath: string; cardPath: string; enabled: boolean; skills: Array<{ id: string; name: string }> }>
+    expect(views).toHaveLength(1)
+    const id = views[0]!.id
+    expect(views[0]!.endpointPath).toBe(`/a2a/${id}`)
+    expect(views[0]!.cardPath).toBe(`/a2a/${id}/agent-card.json`)
+    expect(views[0]!.enabled).toBe(true)
+    // Declared skills default to the chat skill with no preset bound.
+    expect(views[0]!.skills.map((s) => s.name)).toEqual(['chat'])
+    expect(webServer.routes.map((r) => r.path)).toEqual(['/a2a/api', `/a2a/${id}/agent-card.json`, `/a2a/${id}`])
   })
 
-  it('rejects a SendMessage for a skill outside the derived list', async () => {
+  it('rejects a SendMessage for a skill outside the declared list', async () => {
     const { ctx, webServer } = harness()
     await waitForFacade(ctx)
-    await ctx.a2a.enableServer(true)
-    const route = webServer.routes.find((r) => r.path === '/a2a')!
-    const { response } = invoke(route, JSON.stringify({
-      jsonrpc: '2.0', id: 1, method: 'SendMessage',
-      params: { message: { messageId: 'm1', role: 'user', parts: [{ text: 'run rm -rf' }], metadata: { skill: 'coding' } } },
-    }))
-    await vi.waitFor(() => expect(response()).toBeDefined())
-    const body = JSON.parse(response()!.body)
+    await ctx.a2a.createInboundServer({ name: 'Main', description: 'main', version: '1.0.0' })
+    const view = ctx.a2a.listInboundServers()[0] as { endpointPath: string }
+    const body = await sendMessage(ctx, webServer, view.endpointPath, 'run rm -rf', 'coding')
     expect(body.error.code).toBe(-32602)
     expect(body.error.message).toMatch(/unknown skill/)
   })
@@ -208,35 +216,49 @@ describe('plugin composition (stub host services)', () => {
       }
       return next(decision)
     })
-    await ctx.a2a.enableServer(true)
-    const route = webServer.routes.find((r) => r.path === '/a2a')!
-    const { response } = invoke(route, JSON.stringify({
-      jsonrpc: '2.0', id: 2, method: 'SendMessage',
-      params: { message: { messageId: 'm2', role: 'user', parts: [{ text: 'please veto this' }] } },
-    }))
-    await vi.waitFor(() => expect(response()).toBeDefined())
-    const body = JSON.parse(response()!.body)
+    await ctx.a2a.createInboundServer({ name: 'Main', description: 'main', version: '1.0.0' })
+    const view = ctx.a2a.listInboundServers()[0] as { endpointPath: string }
+    const body = await sendMessage(ctx, webServer, view.endpointPath, 'please veto this')
     expect(body.error.message).toMatch(/vetoed by policy/)
   })
 
   it('settles an accepted chat task and persists it in the domain store', async () => {
     const { ctx, webServer, storageDomain } = harness()
     await waitForFacade(ctx)
-    await ctx.a2a.enableServer(true)
-    const route = webServer.routes.find((r) => r.path === '/a2a')!
-    const { response } = invoke(route, JSON.stringify({
-      jsonrpc: '2.0', id: 3, method: 'SendMessage',
-      params: { message: { messageId: 'm3', role: 'user', parts: [{ text: 'hello' }] } },
-    }))
-    await vi.waitFor(() => expect(response()).toBeDefined())
-    const task = JSON.parse(response()!.body).result
+    await ctx.a2a.createInboundServer({ name: 'Main', description: 'main', version: '1.0.0' })
+    const view = ctx.a2a.listInboundServers()[0] as { endpointPath: string }
+    const body = await sendMessage(ctx, webServer, view.endpointPath, 'hello')
+    const task = body.result
     expect(task.status.state).toBe('TASK_STATE_FAILED') // no agent loop: readable refusal
     expect(task.status.message.parts[0].text).toMatch(/refusing inbound task/)
     expect((await ctx.a2a.listTasks() as unknown[]).length).toBe(1)
     expect((storageDomain.open as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1)
   })
 
-  it('seeds declared client agents into the tools registry and persists them', async () => {
+  it('isolates two inbound instances end to end (independent tasks)', async () => {
+    const { ctx, webServer } = harness()
+    await waitForFacade(ctx)
+    await ctx.a2a.createInboundServer({ name: 'First', description: 'a', version: '1.0.0' })
+    await ctx.a2a.createInboundServer({ name: 'Second', description: 'b', version: '1.0.0' })
+    const views = ctx.a2a.listInboundServers() as Array<{ endpointPath: string }>
+    expect(views).toHaveLength(2)
+    const body1 = await sendMessage(ctx, webServer, views[0]!.endpointPath, 'one', undefined, 1, 'ma')
+    const body2 = await sendMessage(ctx, webServer, views[1]!.endpointPath, 'two', undefined, 2, 'mb')
+    expect(body1.result.id).not.toBe(body2.result.id)
+    expect((await ctx.a2a.listTasks() as unknown[]).length).toBe(2)
+  })
+
+  it('removes an inbound instance and unregisters its routes', async () => {
+    const { ctx, webServer } = harness()
+    await waitForFacade(ctx)
+    await ctx.a2a.createInboundServer({ name: 'Main', description: 'main', version: '1.0.0' })
+    const view = ctx.a2a.listInboundServers()[0] as { id: string }
+    await ctx.a2a.removeInboundServer(view.id)
+    expect(ctx.a2a.listInboundServers()).toEqual([])
+    expect(webServer.routes.map((r) => r.path)).toEqual(['/a2a/api'])
+  })
+
+  it('creates an outbound instance and maps its remote skills to model tools', async () => {
     const card = {
       name: 'remote', description: 'Remote agent', version: '1.0.0',
       supportedInterfaces: [{ url: 'https://remote.example/a2a', protocolBinding: 'JSONRPC' }],
@@ -244,18 +266,26 @@ describe('plugin composition (stub host services)', () => {
     }
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(card), { status: 200 })))
     try {
-      const { ctx, tools } = harness(Config({
-        server: { enabled: true, name: 'x', description: 'x', version: '0.1.0', endpointPath: '/a2a', skills: { ids: [], exclude: [] }, executors: {}, subagentProvider: 'in-process' },
-        client: { toolPrefix: 'a2a', agents: [{ name: 'remote-1', agentCardUrl: 'https://remote.example/card.json', enabled: true, timeoutMs: 1000 }] },
-      }))
+      const { ctx, tools } = harness()
       await waitForFacade(ctx)
-      // The declared agent's skill becomes a model tool on the tools registry.
+      const created = await ctx.a2a.createOutboundServer({ name: 'remote-1', agentCardUrl: 'https://remote.example/card.json', timeoutMs: 1000 })
+      expect(created.ok).toBe(true)
+      const views = ctx.a2a.listOutboundServers() as Array<{ name: string; state: string; skillCount: number }>
+      expect(views).toHaveLength(1)
+      expect(views[0]!.state).toBe('connected')
+      expect(views[0]!.skillCount).toBe(1)
+      // The remote skill becomes a model tool on the tools registry.
       await vi.waitFor(() => {
         expect(tools.get('a2a__remote-1__chat')).toBeDefined()
       })
-      expect(ctx.a2a.status().agents).toHaveLength(1)
     } finally {
       vi.unstubAllGlobals()
     }
+  })
+
+  it('reports the agent-preset roster for the GUI pickers (empty without the service)', async () => {
+    const { ctx } = harness()
+    await waitForFacade(ctx)
+    expect(await ctx.a2a.presets()).toEqual([])
   })
 })

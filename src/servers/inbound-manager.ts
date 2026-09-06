@@ -1,10 +1,16 @@
 /**
  * Inbound server manager: owns every inbound A2A server instance. Each
  * instance binds one agent preset (its session pool is composed from that
- * preset) and advertises creator-declared skills. Instances are persisted in
- * the `inbound_servers` domain table and assembled on boot. The manager owns
- * route registration, lifecycle (enable/disable/remove), and disposes every
- * instance's environment on teardown.
+ * preset), advertises creator-declared skills, and serves its own endpoint and
+ * AgentCard route. Instances are persisted in the `inbound_servers` domain
+ * table and assembled on boot; the manager owns route registration and the
+ * full lifecycle (add/enable/disable/update/remove) driven from the GUI and
+ * facade, and disposes every instance's environment on teardown.
+ *
+ * Skill declaration: the stored `skills` list is exactly what the creator
+ * declared. When a creator leaves it empty at creation time, the default skill
+ * derives from the bound preset's display name (else the built-in `chat`
+ * skill), per the v1.0 design — the v0.2 tool white-list derivation is gone.
  * @module dsh-a2a/servers/inbound-manager
  */
 
@@ -17,7 +23,7 @@ import { createSessionExecutor } from '../server/exec/session.ts'
 import { createSubagentExecutor, type SubagentsLike } from '../server/exec/subagent.ts'
 import { ExecutorSet } from '../server/executor.ts'
 import { LiveInboundRegistry } from '../server/inbound-registry.ts'
-import type { A2aDomain, InboundServerRecord, TaskStore } from '../server/store.ts'
+import type { TaskStore, InboundServerRecord } from '../server/store.ts'
 import type { AgentSkill } from '../protocol.ts'
 import type { GateInput, GateResult } from '../server/a2a-server.ts'
 import type { InboundTaskDecision } from '../events.ts'
@@ -35,17 +41,18 @@ export interface WebServerLike {
 export interface InboundManagerHost {
   readonly ctx: Context
   readonly webServer: WebServerLike
-  readonly domain: A2aDomain
-  readonly store: TaskStore
+  readonly tasks: TaskStore
   readonly logger: { info(message: string): void; warn(message: string): void; error(message: string): void }
-  readonly tools?: { get(name: string): { readonly name: string; readonly description?: string } | undefined }
   readonly agents?: AgentRegistryLike
   readonly agentPresets?: AgentPresetsLike
   readonly subagents?: SubagentsLike
-  readonly resolveDefaultModel?: () => { readonly provider?: string; readonly model?: string }
   readonly sessionCwd: string
   readonly defaultBaseUrl: string
   readonly subagentProvider: string
+  /** Resolve the deployment's default model options (may be undefined). */
+  readonly resolveDefaultModel?: () => { readonly provider?: string; readonly model?: string } | undefined
+  /** Allocate a fresh stable instance id. */
+  readonly newId: () => string
 }
 
 /** One live inbound instance's runtime handle. */
@@ -57,7 +64,27 @@ export interface LiveInboundServer {
   readonly routes: A2aRoutes
   readonly inbound: LiveInboundRegistry
   readonly executors: ExecutorSet
+  readonly endpointPath: string
+  readonly cardPath: string
   dispose(): void
+}
+
+/** Creator input for a new (or updated) inbound instance. */
+export interface InboundCreateInput {
+  readonly name: string
+  readonly description: string
+  readonly version: string
+  readonly endpointPath?: string
+  readonly preset?: string
+  readonly authTokenEnv?: string
+  /** Declared skills; empty defaults to the preset name (or `chat`). */
+  readonly skills?: readonly AgentSkill[]
+  readonly enabled?: boolean
+}
+
+export interface OpResult {
+  readonly ok: boolean
+  readonly message: string
 }
 
 function refuseExecutor(reason: string) {
@@ -69,12 +96,26 @@ function refuseExecutor(reason: string) {
   }
 }
 
-/** Assemble one inbound instance from a persisted record. */
+/** Default skkill when a creator declares none: the preset display name. */
+export function defaultSkillFor(
+  skills: readonly AgentSkill[] | undefined,
+  presetName: string | undefined,
+): readonly AgentSkill[] {
+  if (skills !== undefined && skills.length > 0) return skills
+  if (presetName !== undefined && presetName.length > 0) {
+    return [{ id: 'chat', name: presetName, description: `Compose inbound sessions from the "${presetName}" agent preset.`, tags: ['preset'] }]
+  }
+  return [{ id: 'chat', name: 'chat', description: 'Conversational assistance over a DSH agent session.', tags: ['chat'] }]
+}
+
+/** Assemble one live instance from a persisted record. */
 function assemble(record: InboundServerRecord, host: InboundManagerHost): LiveInboundServer {
   const skills: readonly AgentSkill[] = record.skills
+  const endpointPath = record.endpointPath
+  const cardPath = `${endpointPath.replace(/\/$/, '')}/agent-card.json`
   const card = buildCard({
     baseUrl: host.defaultBaseUrl,
-    endpointPath: record.endpointPath,
+    endpointPath,
     name: record.name,
     description: record.description,
     version: record.version,
@@ -92,8 +133,7 @@ function assemble(record: InboundServerRecord, host: InboundManagerHost): LiveIn
       ...(record.preset !== undefined ? { presetId: () => record.preset } : {}),
       // `?.()` yields `{ provider?, model? } | undefined`, matching the
       // AgentRuntimeOptions.resolveAgentOptions signature under
-      // exactOptionalPropertyTypes (a bare `host.resolveDefaultModel` would
-      // be a possibly-undefined function, whose return does not admit `| undefined`).
+      // exactOptionalPropertyTypes.
       resolveAgentOptions: () => host.resolveDefaultModel?.(),
     })
     : undefined
@@ -123,9 +163,10 @@ function assemble(record: InboundServerRecord, host: InboundManagerHost): LiveIn
 
   const server = new A2AServer({
     card,
-    store: host.store,
+    store: host.tasks,
     executors,
     ...(card.securitySchemes !== undefined ? { authToken: 'configured' } : {}),
+    cardPath,
     gate,
     onInbound: (facts) => inbound.note({
       method: facts.method,
@@ -138,7 +179,7 @@ function assemble(record: InboundServerRecord, host: InboundManagerHost): LiveIn
       inbound.settle(taskId)
     },
   })
-  const routes = new A2aRoutes(host.webServer as never, server)
+  const routes = new A2aRoutes(host.webServer, server, cardPath)
 
   return {
     id: record.id,
@@ -148,6 +189,8 @@ function assemble(record: InboundServerRecord, host: InboundManagerHost): LiveIn
     routes,
     inbound,
     executors,
+    endpointPath,
+    cardPath,
     dispose: () => {
       routes.dispose()
       void executors.disposeAll().catch(() => {})
@@ -210,11 +253,12 @@ export class InboundServerManager {
 
   constructor(
     private readonly host: InboundManagerHost,
+    private readonly store: DomainInboundStore,
   ) {}
 
   /** Assemble every persisted enabled instance (boot). */
-  boot(records: readonly InboundServerRecord[]): void {
-    for (const record of records) {
+  boot(): void {
+    for (const record of this.store.list()) {
       try {
         const live = assemble(record, this.host)
         this.live.set(record.id, live)
@@ -233,21 +277,94 @@ export class InboundServerManager {
     return this.live.get(id)
   }
 
+  /** Resolve the display name of a preset id (undefined when unnamed/absent). */
+  private async presetDisplayName(preset: string | undefined): Promise<string | undefined> {
+    if (preset === undefined || this.host.agentPresets === undefined) return undefined
+    try {
+      const resolved = await this.host.agentPresets.resolve(preset)
+      return resolved.name ?? resolved.id
+    } catch {
+      return undefined
+    }
+  }
+
+  /** Create, persist, and assemble a new inbound instance. */
+  async add(input: InboundCreateInput): Promise<OpResult & { readonly id?: string }> {
+    const id = this.newId(input.name)
+    if (this.live.has(id)) return { ok: false, message: `inbound server ${id} already exists` }
+    const presetName = await this.presetDisplayName(input.preset)
+    const record: InboundServerRecord = {
+      id,
+      name: input.name,
+      description: input.description,
+      version: input.version,
+      endpointPath: input.endpointPath ?? `/a2a/${id}`,
+      ...(input.preset !== undefined ? { preset: input.preset } : {}),
+      ...(input.authTokenEnv !== undefined ? { authTokenEnv: input.authTokenEnv } : {}),
+      skills: [...defaultSkillFor(input.skills, presetName)],
+      enabled: input.enabled ?? true,
+    }
+    try {
+      const live = assemble(record, this.host)
+      await this.store.save(record)
+      this.live.set(id, live)
+      if (record.enabled) live.routes.enable()
+      return { ok: true, message: `inbound server "${record.name}" created`, id }
+    } catch (err) {
+      return { ok: false, message: `failed to create inbound server: ${String((err as Error).message)}` }
+    }
+  }
+
+  /** Persist, rebuild, and apply a patch onto a live instance. */
+  async update(id: string, patch: Partial<Pick<InboundServerRecord, 'name' | 'description' | 'version' | 'endpointPath' | 'preset' | 'authTokenEnv' | 'skills'>>): Promise<OpResult> {
+    const live = this.live.get(id)
+    const stored = this.store.get(id)
+    if (live === undefined || stored === undefined) return { ok: false, message: `inbound server ${id} not found` }
+    const next: InboundServerRecord = {
+      ...stored,
+      name: patch.name ?? stored.name,
+      description: patch.description ?? stored.description,
+      version: patch.version ?? stored.version,
+      endpointPath: patch.endpointPath ?? stored.endpointPath,
+      ...(patch.preset !== undefined ? { preset: patch.preset } : {}),
+      ...(patch.authTokenEnv !== undefined ? { authTokenEnv: patch.authTokenEnv } : {}),
+      skills: patch.skills ?? stored.skills,
+      enabled: stored.enabled,
+    }
+    try {
+      await this.store.save(next)
+      const replaced = assemble(next, this.host)
+      // Preserve the route registration state while swapping runtime halves.
+      const wasEnabled = live.routes.active
+      live.dispose()
+      this.live.set(id, replaced)
+      if (wasEnabled || next.enabled) replaced.routes.enable()
+      return { ok: true, message: `inbound server ${id} updated` }
+    } catch (err) {
+      return { ok: false, message: `failed to update inbound server: ${String((err as Error).message)}` }
+    }
+  }
+
   /** Enable/disable an instance's routes. */
-  setEnabled(id: string, enabled: boolean): { readonly ok: boolean; readonly message: string } {
+  setEnabled(id: string, enabled: boolean): OpResult {
     const live = this.live.get(id)
     if (live === undefined) return { ok: false, message: `inbound server ${id} not found` }
     if (enabled) live.routes.enable()
     else live.routes.disable()
+    const stored = this.store.get(id)
+    if (stored !== undefined) {
+      void this.store.save({ ...stored, enabled }).catch(() => {})
+    }
     return { ok: true, message: `inbound server ${id} ${enabled ? 'enabled' : 'disabled'}` }
   }
 
-  /** Remove and dispose an instance. */
-  remove(id: string): { readonly ok: boolean; readonly message: string } {
+  /** Remove, dispose, and unpersist an instance. */
+  async remove(id: string): Promise<OpResult> {
     const live = this.live.get(id)
     if (live === undefined) return { ok: false, message: `inbound server ${id} not found` }
     live.dispose()
     this.live.delete(id)
+    await this.store.remove(id)
     return { ok: true, message: `inbound server ${id} removed` }
   }
 
@@ -255,6 +372,11 @@ export class InboundServerManager {
   disposeAll(): void {
     for (const live of this.live.values()) live.dispose()
     this.live.clear()
+  }
+
+  private newId(seed: string): string {
+    const slug = seed.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'server'
+    return `${slug}-${this.host.newId()}`
   }
 }
 

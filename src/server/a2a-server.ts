@@ -51,6 +51,8 @@ export interface A2AServerOptions {
   readonly gate: (input: GateInput) => Promise<GateResult>
   readonly onInbound?: (facts: InboundFacts) => void
   readonly onTaskSettled?: (taskId: string) => void
+  /** AgentCard route path for this instance; default = well-known A2A path. */
+  readonly cardPath?: string
 }
 
 /** Structural request the server handles (HTTP adapter fills it). */
@@ -84,6 +86,11 @@ export class A2AServer {
     this.card = next
   }
 
+  /** The AgentCard route path for this instance. */
+  cardPath(): string {
+    return this.opts.cardPath ?? '/.well-known/agent-card.json'
+  }
+
   /**
    * Abort a running task by control path (facade /a2a task cancel): abort the
    * executor's signal, settle the task CANCELED, and wake stream waiters.
@@ -110,7 +117,7 @@ export class A2AServer {
   /** Route one inbound HTTP request (GET card, POST JSON-RPC). */
   async handle(req: ServerRequest, body: string): Promise<ServerResponseSpec> {
     const path = (req.url ?? '').split('?')[0] ?? ''
-    if (req.method === 'GET' && path === '/.well-known/agent-card.json') {
+    if (req.method === 'GET' && path === this.cardPath()) {
       return { status: 200, contentType: 'application/json', body: JSON.stringify(this.card) }
     }
     if (req.method !== 'POST' || path !== endpointOf(this.card)) {

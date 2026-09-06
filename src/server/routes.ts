@@ -17,7 +17,7 @@ export interface WebServerLike {
   }): () => void
 }
 
-const CARD_PATH = '/.well-known/agent-card.json'
+const DEFAULT_CARD_PATH = '/.well-known/agent-card.json'
 
 /** Runtime-registered HTTP routes for one A2A server. */
 export class A2aRoutes {
@@ -27,6 +27,8 @@ export class A2aRoutes {
   constructor(
     private readonly webServer: WebServerLike,
     private readonly server: A2AServer,
+    /** AgentCard route path; default = the well-known A2A path. */
+    private readonly cardPath: string = DEFAULT_CARD_PATH,
   ) {}
 
   get active(): boolean {
@@ -39,7 +41,7 @@ export class A2aRoutes {
     this.disposers.push(
       this.webServer.register({
         kind: 'exact',
-        path: CARD_PATH,
+        path: this.cardPath,
         handler: (_req, res) => {
           res.writeHead(200, { 'content-type': 'application/json' })
           res.end(JSON.stringify(this.server.card))
@@ -100,8 +102,8 @@ export class A2aRoutes {
       return
     }
 
-    // GET AgentCard at the well-known path; anything else is the server's call.
-    const out = await this.server.handle(toServerReq(req), path === CARD_PATH ? '' : '')
+    // GET AgentCard at this instance's card path; anything else is the server's call.
+    const out = await this.server.handle(toServerReq(req), path === this.cardPath ? '' : '')
     res.writeHead(out.status, { 'content-type': out.contentType, ...(out.headers ?? {}) })
     res.end(out.body)
   }

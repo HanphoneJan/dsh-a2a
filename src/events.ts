@@ -25,15 +25,22 @@ export interface InboundTaskDecision {
 /** The facade other plugins read as `ctx.a2a`. */
 export interface A2AServiceLike {
   status(): unknown
-  enableServer(enable: boolean): Promise<{ readonly ok: boolean; readonly message: string }>
-  listTasks(): unknown
+  presets(): Promise<Array<{ id: string; name?: string; description?: string }>>
+  listInboundServers(): unknown
+  createInboundServer(input: unknown): Promise<{ readonly ok: boolean; readonly message: string }>
+  removeInboundServer(id: string): Promise<{ readonly ok: boolean; readonly message: string }>
+  setInboundServerEnabled(id: string, enabled: boolean): Promise<{ readonly ok: boolean; readonly message: string }>
+  updateInboundServer(id: string, patch: unknown): Promise<{ readonly ok: boolean; readonly message: string }>
+  listOutboundServers(): unknown
+  createOutboundServer(input: unknown): Promise<{ readonly ok: boolean; readonly message: string }>
+  removeOutboundServer(id: string): Promise<{ readonly ok: boolean; readonly message: string }>
+  setOutboundServerEnabled(id: string, enabled: boolean): Promise<{ readonly ok: boolean; readonly message: string }>
+  refreshOutboundServer(id: string): Promise<{ readonly ok: boolean; readonly message: string }>
   getTask(taskId: string): unknown
+  listTasks(): unknown
   cancelTask(taskId: string): Promise<{ readonly ok: boolean; readonly message: string }>
-  agents(): unknown
-  addAgent(spec: unknown): Promise<{ readonly ok: boolean; readonly message: string }>
-  removeAgent(id: string): Promise<{ readonly ok: boolean; readonly message: string }>
-  setAgentEnabled(id: string, enabled: boolean): Promise<{ readonly ok: boolean; readonly message: string }>
-  refreshAgentCard(id: string): Promise<{ readonly ok: boolean; readonly message: string }>
+  inbounds(): unknown
+  closeInbound(peerId: string): Promise<{ readonly ok: boolean; readonly message: string }>
 }
 
 declare module '@deepseek-ai/cordis' {
