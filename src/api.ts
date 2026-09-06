@@ -93,7 +93,8 @@ function snapshotOf(impl: A2AServiceImpl): ApiSnapshot {
     inbounds: status.inbounds ?? [],
     outbounds: status.outbounds ?? [],
     tasks: impl.listTasks() as readonly unknown[],
-    peers: status.peers ?? impl.inbounds() as readonly unknown[],
+    // `status()` may already carry aggregated peers; fall back to the facade.
+    peers: (status.peers ?? impl.inbounds()) as readonly unknown[],
   }
 }
 

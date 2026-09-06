@@ -1,11 +1,8 @@
 # @hanphone/dsh-a2a bundle patch: mount the plugin as one row, enabled by
-# default (install-and-use; turn either half off through the GUI dashboard or
-# an overlay patch on this row).
+# default. v1.0 instances are NOT patch-configured — inbound/outbound server
+# instances are created, preset-bound, and enabled/disabled entirely from the
+# GUI (persisted in the a2a domain); this row only mounts the plugin core.
 - insert:
     - id: a2a
       name: '@hanphone/dsh-a2a'
-      config:
-        server:
-          enabled: true
-        client:
-          agents: []
+      config: {}

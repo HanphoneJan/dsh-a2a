@@ -79,7 +79,7 @@ export function apply(ctx: Context, config: A2AConfig) {
         | { register(def: { name: string; description: string; handler(...args: unknown[]): unknown }): () => void }
         | undefined
 
-      const baseUrl = config.baseUrl ?? `http://127.0.0.1:${process.env['DSH_A2A_PORT'] ?? '3000'}`
+      const baseUrl = config.baseUrl ?? `http://127.0.0.1:${webServerPort(webServer) ?? process.env['DSH_A2A_PORT'] ?? '3000'}`
 
       // ── inbound manager ───────────────────────────────────────────────
       const inboundHost: InboundManagerHost = {
@@ -292,6 +292,14 @@ function inboundSessionCwd(): string {
 
 function noopRegister(): () => void {
   return () => {}
+}
+
+/** The listening port of a mounted webServer (undefined when unavailable). */
+function webServerPort(webServer: InboundWebServerLike | undefined): string | undefined {
+  const candidate = webServer as { port?: number | (() => number) } | undefined
+  if (candidate === undefined) return undefined
+  const value = typeof candidate.port === 'function' ? (candidate as { port(): number }).port() : candidate.port
+  return typeof value === 'number' && Number.isFinite(value) ? String(value) : undefined
 }
 
 export type { OpResult }

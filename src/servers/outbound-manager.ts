@@ -93,7 +93,9 @@ export class DomainOutboundStore {
     const out: OutboundServerRecord[] = []
     const entries = this.table.entries
     if (entries === undefined) return out
-    for (const [key, raw] of entries()) {
+    // Call through the table (method `this` stays bound); the real KvTable's
+    // `entries()` reads instance state.
+    for (const [key, raw] of entries.call(this.table)) {
       if (!key.startsWith('out:')) continue
       const parsed = safeParse(raw)
       if (parsed !== undefined) out.push(parsed)
