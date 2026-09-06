@@ -1,36 +1,52 @@
 # dsh-a2a
 
-Agent2Agent (A2A) Protocol v1.0 dual-end plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
+Agent2Agent (A2A) Protocol v1.0 dual-end plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) — **English** · [中文](README.zh.md)
 
-> **English** | [中文](README.zh.md)
+`@hanphone/dsh-a2a` is an independent, open-source A2A plugin that turns a
+DeepSeek Harness profile into a first-class agent-to-agent citizen: an inbound
+server with a durable governed task store and a live-derived AgentCard, an
+outbound client whose remote skills appear as model tools, and a GUI
+dashboard that manages both halves without touching any file.
 
-`@hanphone/dsh-a2a` turns a DeepSeek Harness profile into a first-class A2A agent:
-
-- **Inbound server** — AgentCard derived from the live tool registry, JSON-RPC + SSE, durable task store, pluggable session/subagent executors, and a policy gate (`a2a/inbound-task`) with audit.
-- **Outbound client** — a persisted multi-agent AgentCard registry, remote skills mapped to model tools (`a2a__<name>__<skill>`), sync calls with per-agent timeout.
-- **GUI dashboard** — an **A2A 连接** settings page in the Harness Web UI: toggle the inbound server, manage outbound agents, view and cancel tasks — no config files required.
-
-Design decisions are recorded in [docs/architecture.md](docs/architecture.md). Current scope is P0 of that document.
+Architecture and design decisions: [docs/architecture.md](docs/architecture.md).
 
 ## Features
 
-- **A2A v1.0 protocol surface** — `SendMessage`, `SendStreamingMessage`, `GetTask`, `ListTasks`, `CancelTask`, `GetExtendedAgentCard`, `SubscribeToTask` over JSON-RPC; SSE streaming with catch-up frames.
-- **Dynamic AgentCard** — skills derived from the live `ctx.tools` registry (explicit id list, loud failure on missing referents) plus a built-in `chat` skill so a fresh install is immediately exercisable.
-- **Durable task store** — tasks live in the `a2a` storage domain (JSON backend by default, SQLite per deployment choice); task ids are server-generated and survive restarts.
-- **Executors** — `session` (one DSH session per `contextId`) and `subagent` (delegates to `ctx.subagents`, streams tool-call artifacts back) as built-in implementations.
-- **Governed inbound** — every inbound task passes through the `a2a/inbound-task` waterfall, so policy plugins can veto or audit before execution.
-- **Auth by environment variable** — inbound bearer token is referenced by env-var name (`authTokenEnv`), never stored in config as plaintext.
-- **Install-and-use** — both halves are enabled by default after `dsh plugin add`; no manual patch required to start.
+- **A2A v1.0 protocol surface** — `SendMessage`, `SendStreamingMessage`,
+  `GetTask`, `ListTasks`, `CancelTask`, `GetExtendedAgentCard`,
+  `SubscribeToTask` over JSON-RPC; SSE streaming with catch-up frames.
+- **Dynamic AgentCard** — skills derived from the live `ctx.tools` registry
+  (explicit id list, loud failure on missing referents) plus a built-in
+  `chat` skill; a fresh install answers end-to-end immediately.
+- **Durable task store** — tasks live in the `a2a` storage domain (JSON
+  backend by default, SQLite per deployment choice); server-generated ids
+  survive restarts.
+- **Executors** — `session` (one DSH session per `contextId`) and `subagent`
+  (delegates to `ctx.subagents`, streams tool-call artifacts back).
+- **Governed inbound** — every inbound task passes through the
+  `a2a/inbound-task` waterfall so policy plugins can veto or audit.
+- **Inbound connection monitoring** — the dashboard shows which remote peers
+  are talking to this DSH (source, first/last seen, task counts, active
+  streams) and can close a peer.
+- **Runtime service identity** — edit the AgentCard's name/description/version
+  from the dashboard; the card rebuilds immediately and the identity persists
+  across restarts.
+- **First-run onboarding** — a fresh install shows a pre-filled identity form
+  ("service identity") so publishing the service is one click.
+- **Auth by environment variable** — inbound bearer token is referenced by
+  env-var name (`authTokenEnv`), never stored in config as plaintext.
+- **Install-and-use** — both halves are enabled by default after
+  `dsh plugin add`; no manual patch required to start.
 
 ## Installation
 
-### From npm (published)
+### From npm
 
 ```sh
 dsh plugin --profile web add @hanphone/dsh-a2a
 ```
 
-This works for any profile name (`web`, custom profiles, etc.):
+Any profile name works (`web`, custom profiles, headless etc.):
 
 ```sh
 dsh plugin --profile <name> add @hanphone/dsh-a2a
@@ -42,16 +58,20 @@ dsh plugin --profile <name> add @hanphone/dsh-a2a
 cd dsh-a2a
 pnpm build
 npm pack
-dsh plugin --profile <name> add <path-to>/hanphone-dsh-a2a-0.1.0.tgz
+dsh plugin --profile <name> add <path-to>/hanphone-dsh-a2a-0.2.0.tgz
 ```
 
 ## Quick start
 
 1. **Install** — `dsh plugin --profile web add @hanphone/dsh-a2a`.
-2. **Restart the GUI** — the browser half is scanned at host startup, so restart `pnpm dsh web` (or your profile launcher) once after installing.
-3. **Open Settings → A2A 连接** — you will see the inbound server status, the outbound agent list, and the task list.
+2. **Restart the GUI** — the browser half is scanned at host startup, so
+   restart once after installing (`pnpm dsh web` or your profile launcher).
+3. **Open Settings → A2A 连接** — the dashboard shows the inbound server
+   status, the service identity (with first-run onboarding pre-filled), the
+   outbound agent list, inbound peer connections, and the task list.
 
-The inbound server listens on the profile's webServer (default `http://127.0.0.1:3080`):
+The inbound server listens on the profile's webServer (default
+`http://127.0.0.1:3080`):
 
 ```sh
 curl http://127.0.0.1:3080/.well-known/agent-card.json
@@ -67,17 +87,26 @@ curl -X POST http://127.0.0.1:3080/a2a \
 
 ## GUI dashboard
 
-The browser half registers an **A2A 连接** page under Settings. From it you can, without touching any file:
+The browser half registers an **A2A 连接** page under Settings. From it you
+can, without touching any file:
 
-- toggle the inbound server (`server.enable` / `server.disable`),
-- list, add, enable/disable, refresh, and remove outbound agents,
+- toggle the inbound server;
+- view and edit the service identity (name/description/version) — the
+  AgentCard rebuilds immediately and the change persists;
+- list, add, enable/disable, refresh, and remove outbound agents;
+- see which inbound peers are connected (source, activity, tasks) and close
+  one;
 - view and cancel inbound tasks.
 
-All dashboard traffic goes through the **loopback-only** `/a2a/api` route on the profile's webServer — remote peers can never drive it.
+All dashboard traffic goes through the **loopback-only** `/a2a/api` route —
+remote peers can never drive it.
 
 ## Configuration
 
-The dashboard covers the day-to-day operations. Values the dashboard does not edit (name/description, baseUrl, `authTokenEnv`, skills, executors, toolPrefix) are configured through the profile's user patch layer (`$DSH_HOME/profiles/<name>/cordis.patch.yml`) — the reserve path:
+The dashboard covers day-to-day operations. Values the dashboard does not
+edit (baseUrl, `authTokenEnv`, skills, executors, toolPrefix) are configured
+through the profile's user patch layer (`$DSH_HOME/profiles/<name>/cordis.patch.yml`)
+— the reserve path:
 
 ```yaml
 - id: a2a
@@ -103,11 +132,17 @@ The dashboard covers the day-to-day operations. Values the dashboard does not ed
 
 ### Required host services
 
-Base-backed profiles mount them all: `webServer` (`@deepseek-ai/dsh-host-webserver`), the storage stack (`@deepseek-ai/dsh-storage` + `@deepseek-ai/dsh-storage-domain`), the tools registry (`@deepseek-ai/dsh-tools`), and an agent loop (`@deepseek-ai/dsh-agent` + `@deepseek-ai/dsh-agent-loop`; the subagent executor additionally needs `@deepseek-ai/dsh-subagent`).
+Base-backed profiles mount them all: `webServer` (`@deepseek-ai/dsh-host-webserver`),
+the storage stack (`@deepseek-ai/dsh-storage` + `@deepseek-ai/dsh-storage-domain`),
+the tools registry (`@deepseek-ai/dsh-tools`), and an agent loop
+(`@deepseek-ai/dsh-agent` + `@deepseek-ai/dsh-agent-loop`; the subagent
+executor additionally needs `@deepseek-ai/dsh-subagent`).
 
 ### Storage backend
 
-The task store lives in the `a2a` storage domain. The base composition routes storage through the `json` backend; to use SQLite, route the domain and add the backend in the same patch layer:
+The task store lives in the `a2a` storage domain. The base composition routes
+storage through the `json` backend; to use SQLite, route the domain and add
+the backend in the same patch layer:
 
 ```yaml
 - id: storage-domain
@@ -137,7 +172,9 @@ The task store lives in the `a2a` storage domain. The base composition routes st
           timeoutMs: 60000
 ```
 
-Each enabled remote agent's skills become model tools named `a2a__<name>__<skill>` (normalized, collision-hashed). The registry persists across restarts.
+Each enabled remote agent's skills become model tools named
+`a2a__<name>__<skill>` (normalized, collision-hashed). The registry persists
+across restarts.
 
 ## CLI
 
@@ -151,9 +188,15 @@ a2a status | enable | disable | card | agents |
 
 ## How it works
 
-- **Inbound** — `POST /a2a` (JSON-RPC) and `GET /.well-known/agent-card.json`; the AgentCard is derived from the live tool registry. Tasks flow through `a2a/inbound-task` → executor → task store, with SSE frames streamed to subscribers.
-- **Outbound** — a persisted `agents` table in the `a2a` domain; `A2AClient` discovers an AgentCard, and each skill registers as a tool.
-- **Dashboard** — the browser half (React, `settings.section`) reads/writes the loopback-only `/a2a/api` route.
+- **Inbound** — `POST /a2a` (JSON-RPC) and `GET /.well-known/agent-card.json`;
+  the AgentCard derives from the live tool registry and carries the persisted
+  service identity. Tasks flow through `a2a/inbound-task` → executor → task
+  store, with SSE frames streamed to subscribers.
+- **Outbound** — a persisted `agents` table in the `a2a` domain; `A2AClient`
+  discovers an AgentCard, and each skill registers as a tool.
+- **Dashboard** — the browser half (React, `settings.section`) reads/writes
+  the loopback-only `/a2a/api` route; the host half feeds it snapshots of the
+  server, tasks, agents, inbound peers, and the service identity.
 
 See [docs/architecture.md](docs/architecture.md) for the full design.
 
@@ -161,19 +204,21 @@ See [docs/architecture.md](docs/architecture.md) for the full design.
 
 ```
 src/
-  api.ts             # loopback dashboard API (/a2a/api)
-  index.ts           # Cordis plugin entry (apply)
-  protocol.ts        # A2A v1.0 protocol constants + types
-  jsonrpc.ts         # JSON-RPC framing
-  server/            # inbound half: store, card, a2a-server, routes, executors
-  outbound/          # outbound half: A2AClient, registry, tools
-  client/            # browser half: settings dashboard (React)
-  service.ts         # ctx.a2a service facade
-  commands.ts        # /a2a chat command
+  api.ts                  # loopback dashboard API (/a2a/api)
+  index.ts                # Cordis plugin entry (apply)
+  protocol.ts             # A2A v1.0 protocol constants + types
+  jsonrpc.ts              # JSON-RPC framing
+  server/                 # inbound half: store, card, a2a-server, routes,
+                          #   executors, inbound-registry, identity
+  outbound/               # outbound half: A2AClient, registry, tools
+  client/                 # browser half: settings dashboard (React)
+  service.ts              # ctx.a2a service facade
+  commands.ts             # /a2a chat command
 tests/
-  unit/              # protocol, framing, card, store, registry, server, client, api
-  composition/       # apply() on a real Cordis Context with stub host services
-cordis.patch.yml     # bundle patch (mounts the plugin, enabled by default)
+  unit/                   # protocol, framing, card, store, registry, server,
+                          #   client, api, inbound-registry, identity
+  composition/            # apply() on a real Cordis Context with stub host services
+cordis.patch.yml          # bundle patch (mounts the plugin, enabled by default)
 ```
 
 ## Development

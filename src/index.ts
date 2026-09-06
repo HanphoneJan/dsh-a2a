@@ -21,6 +21,8 @@ import { join } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { deriveSkills, buildCard, type ToolGetter } from './server/card.ts'
 import { openDomain, DomainTaskStore, type A2aDomain, type TaskStore } from './server/store.ts'
+import { LiveInboundRegistry, type InboundRegistry } from './server/inbound-registry.ts'
+import { cardOptionsFor, readIdentity, rebuildCardWithIdentity, writeIdentity, type A2aIdentity } from './server/identity.ts'
 import { ExecutorSet } from './server/executor.ts'
 import { ContextSessionPool, probeService, type AgentPresetsLike, type AgentRegistryLike } from './server/exec/agent-runtime.ts'
 import { createSessionExecutor } from './server/exec/session.ts'
@@ -94,11 +96,14 @@ interface Shared {
   readonly domain: A2aDomain
   readonly store: TaskStore
   registry: OutboundAgentRegistry | undefined
+  inbound: InboundRegistry | undefined
   server: A2AServer | undefined
   routes: A2aRoutes | undefined
   card: AgentCard | undefined
   executors: ExecutorSet | undefined
   enabled: boolean
+  /** Composition defaults for the card identity (before any persisted override). */
+  identityDefaults: { name: string; description: string; version: string }
 }
 
 export function apply(ctx: Context, config: A2AConfig) {
@@ -118,11 +123,17 @@ export function apply(ctx: Context, config: A2AConfig) {
         domain,
         store,
         registry: undefined,
+        inbound: undefined,
         server: undefined,
         routes: undefined,
         card: undefined,
         executors: undefined,
         enabled: serverConfig.enabled,
+        identityDefaults: {
+          name: serverConfig.name ?? 'My DSH Agent',
+          description: serverConfig.description ?? 'A DeepSeek Harness agent exposed over A2A v1.0',
+          version: serverConfig.version ?? '0.1.0',
+        },
       }
 
       // ── inbound server half ────────────────────────────────────────────
@@ -139,16 +150,13 @@ export function apply(ctx: Context, config: A2AConfig) {
           )
           const baseUrl = serverConfig.baseUrl ?? `http://127.0.0.1:${process.env['DSH_A2A_PORT'] ?? '3000'}`
           const endpointPath = serverConfig.endpointPath ?? '/a2a'
-          const card = buildCard({
-            baseUrl,
-            endpointPath,
-            name: serverConfig.name ?? 'My DSH Agent',
-            description: serverConfig.description ?? 'A DeepSeek Harness agent exposed over A2A v1.0',
-            version: serverConfig.version ?? '0.1.0',
-            skills,
-            ...(authToken ? { authToken } : {}),
-          })
+          const persistedIdentity = readIdentity(domain)
+          const card = buildCard(cardOptionsFor(baseUrl, endpointPath, holder.identityDefaults, persistedIdentity, skills, authToken))
           holder.card = card
+
+          // Inbound connection registry (dashboard "who is talking to us").
+          const inbound = new LiveInboundRegistry()
+          holder.inbound = inbound
 
           // Executors: probe the agent loop; refuse tasks readably without it.
           const agents = probeService(ctx, 'agents', 'create') as AgentRegistryLike | undefined
@@ -192,7 +200,16 @@ export function apply(ctx: Context, config: A2AConfig) {
             executors,
             ...(authToken ? { authToken } : {}),
             gate,
-            onTaskSettled: (taskId) => logger.info(`[a2a] task settled ${taskId}`),
+            onInbound: (facts) => inbound.note({
+              method: facts.method,
+              ...(facts.source !== undefined ? { source: facts.source } : {}),
+              taskIds: facts.taskIds,
+              streaming: facts.streaming,
+            }),
+            onTaskSettled: (taskId) => {
+              logger.info(`[a2a] task settled ${taskId}`)
+              inbound.settle(taskId)
+            },
           })
           holder.server = server
           const routes = new A2aRoutes(webServer as never, server)
@@ -271,9 +288,16 @@ function makeFacade(holder: Shared, log: (message: string) => void): A2AServiceI
           cardUrl: holder.card?.supportedInterfaces?.[0]?.url,
           skills: holder.card?.skills?.map((s) => s.id) ?? [],
           executors: holder.executors ? ['session', ...(holder.executors['subagent'] !== undefined ? ['subagent'] : [])] : [],
+          name: holder.card?.name,
+          description: holder.card?.description,
+          version: holder.card?.version,
+          // True when a persisted identity override exists (the dashboard has
+          // been configured); guides the first-run onboarding.
+          configured: readIdentity(holder.domain) !== undefined,
         },
         tasks: holder.store.list().length,
         agents: holder.registry?.list() ?? [],
+        inbounds: holder.inbound?.list() ?? [],
       }
     },
     async enableServer(enable: boolean): Promise<OpResult> {
@@ -312,6 +336,48 @@ function makeFacade(holder: Shared, log: (message: string) => void): A2AServiceI
     },
     async refreshAgentCard(id: string): Promise<OpResult> {
       return holder.registry?.refresh(id) ?? { ok: false, message: 'outbound client not mounted' }
+    },
+    identity(): unknown {
+      const current = holder.card
+      const persisted = readIdentity(holder.domain)
+      return {
+        ...(persisted ?? {}),
+        // Composition defaults shown when nothing is persisted yet.
+        defaults: holder.identityDefaults,
+        name: current?.name ?? holder.identityDefaults.name,
+        description: current?.description ?? holder.identityDefaults.description,
+        version: current?.version ?? holder.identityDefaults.version,
+      }
+    },
+    async updateIdentity(patch: { name?: string; description?: string; version?: string }): Promise<OpResult> {
+      const card = holder.card
+      const server = holder.server
+      if (card === undefined || server === undefined) return { ok: false, message: 'inbound server not mounted (no card)' }
+      const persisted = readIdentity(holder.domain)
+      const base = persisted ?? holder.identityDefaults
+      const next: A2aIdentity = {
+        name: patch.name?.trim() || base.name,
+        description: patch.description?.trim() || base.description,
+        version: patch.version?.trim() || base.version,
+      }
+      writeIdentity(holder.domain, next)
+      const rebuilt = rebuildCardWithIdentity(card, next, card.skills ?? [])
+      server.setCard(rebuilt)
+      holder.card = rebuilt
+      log(`[a2a] identity updated: ${next.name}`)
+      return { ok: true, message: `service identity updated (${next.name})` }
+    },
+    async closeInbound(peerId: string): Promise<OpResult> {
+      const inbound = holder.inbound
+      if (inbound === undefined) return { ok: false, message: 'inbound registry not mounted' }
+      // Cancel the peer's active tasks, then drop the record.
+      for (const taskId of inbound.activeTasksOf(peerId)) {
+        await holder.server?.abort?.(taskId)
+      }
+      return inbound.closePeer(peerId)
+    },
+    inbounds(): unknown {
+      return holder.inbound?.list() ?? []
     },
   }
 }

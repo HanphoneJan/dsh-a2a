@@ -61,6 +61,7 @@ export const a2aDomainSpec = defineDomain({
     tasks: domainTable<string, string>(json),
     contexts: domainTable<string, string>(json),
     agents: domainTable<string, string>(json),
+    identity: domainTable<string, string>(json),
   },
 })
 
@@ -105,6 +106,10 @@ export class A2aDomain {
 
   get agents(): KvTable<string, string> {
     return this.handle.table('agents')
+  }
+
+  get identity(): KvTable<string, string> {
+    return this.handle.table('identity')
   }
 
   async close(): Promise<void> {

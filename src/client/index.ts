@@ -69,9 +69,18 @@ export function apply(ctx: ClientContext): void {
 
 /** Wire types — mirror the host's src/api.ts snapshot. */
 export interface ApiSnapshot {
-  readonly server: { readonly enabled: boolean; readonly cardUrl?: string; readonly skills: readonly string[] }
+  readonly server: {
+    readonly enabled: boolean
+    readonly cardUrl?: string
+    readonly skills: readonly string[]
+    readonly name?: string
+    readonly description?: string
+    readonly version?: string
+    readonly configured: boolean
+  }
   readonly tasks: readonly unknown[]
   readonly agents: readonly unknown[]
+  readonly inbounds: readonly unknown[]
 }
 
 interface AgentView {
@@ -83,6 +92,17 @@ interface AgentView {
   readonly skillCount: number
   readonly toolCount: number
   readonly lastError?: string
+}
+
+interface InboundPeerView {
+  readonly id: string
+  readonly label: string
+  readonly source?: string
+  readonly firstSeen?: string
+  readonly lastSeen?: string
+  readonly taskCount: number
+  readonly activeTaskIds: readonly string[]
+  readonly streaming: boolean
 }
 
 interface TaskView {
@@ -116,13 +136,26 @@ export function A2aSection(_props: SectionProps): ReactElement {
   const [agentName, setAgentName] = useState('')
   const [agentUrl, setAgentUrl] = useState('')
   const [busy, setBusy] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [idName, setIdName] = useState('')
+  const [idDescription, setIdDescription] = useState('')
+  const [idVersion, setIdVersion] = useState('')
 
   useEffect(() => {
     let alive = true
     const tick = async (): Promise<void> => {
       try {
         const next = await fetchSnapshot()
-        if (alive) { setSnap(next); setError(undefined) }
+        if (alive) {
+          setSnap(next)
+          setError(undefined)
+          // Seed the identity form from the live card when not editing.
+          if (!editing) {
+            setIdName(next.server.name ?? '')
+            setIdDescription(next.server.description ?? '')
+            setIdVersion(next.server.version ?? '')
+          }
+        }
       } catch (err) {
         if (alive) setError((err as Error).message)
       }
@@ -150,6 +183,7 @@ export function A2aSection(_props: SectionProps): ReactElement {
 
   const server = snap?.server
   const agents = (snap?.agents ?? []) as readonly AgentView[]
+  const inbounds = (snap?.inbounds ?? []) as readonly InboundPeerView[]
   const tasks = (snap?.tasks ?? []) as readonly TaskView[]
 
   return createElement(
@@ -189,6 +223,69 @@ export function A2aSection(_props: SectionProps): ReactElement {
             `AgentCard: ${server.cardUrl ?? '(n/a)'}  ·  技能: ${server.skills.join(', ') || '(chat)'}`,
           )
         : null,
+    ),
+
+    // ── service identity (guided first-run + edit) ───────────────────────
+    createElement(
+      'div',
+      { className: 'dsh-a2a-card' },
+      server === undefined || (server as { configured?: boolean }).configured === false
+        ? createElement('h3', null, '服务身份（首次配置）')
+        : createElement('h3', null, '服务身份'),
+      createElement(
+        'form',
+        {
+          className: 'dsh-a2a-form',
+          onSubmit: (ev: { preventDefault(): void }) => {
+            ev.preventDefault()
+            void control({ action: 'identity.update', name: idName, description: idDescription, version: idVersion }).then(() => {
+              setEditing(false)
+            })
+          },
+        },
+        createElement('input', { value: idVersion, placeholder: '版本', onChange: (e: { target: { value: string } }) => setIdVersion(e.target.value), style: { width: '60px' } }),
+        createElement('input', { value: idName, placeholder: '服务名称', onChange: (e: { target: { value: string } }) => setIdName(e.target.value), style: { width: '160px' } }),
+        createElement('input', { value: idDescription, placeholder: '服务描述', onChange: (e: { target: { value: string } }) => setIdDescription(e.target.value), style: { width: '260px' } }),
+        createElement('button', { type: 'submit', className: 'primary', disabled: busy }, '保存身份'),
+      ),
+      createElement('div', { className: 'dsh-a2a-row muted' }, '名称、描述、版本即刻重建 AgentCard；技能始终从工具注册表派生。'),
+    ),
+
+    // ── inbound peers monitoring ─────────────────────────────────────────
+    createElement(
+      'div',
+      { className: 'dsh-a2a-card' },
+      createElement('h3', null, `入站连接（${inbounds.length}）`),
+      inbounds.length === 0
+        ? createElement('div', { className: 'muted' }, '当前无远程对端正在调用本服务。')
+        : createElement(
+            'table',
+            { className: 'dsh-a2a-table' },
+            createElement('thead', null,
+              createElement('tr', null,
+                createElement('th', null, '来源'),
+                createElement('th', null, '任务'),
+                createElement('th', null, '流式'),
+                createElement('th', null, '首次 / 最近'),
+                createElement('th', null, '操作'),
+              ),
+            ),
+            createElement('tbody', null,
+              ...inbounds.map((p) =>
+                createElement('tr', { key: p.id },
+                  createElement('td', null, p.source ?? p.label),
+                  createElement('td', null, `${p.taskCount}（活跃 ${p.activeTaskIds.length}）`),
+                  createElement('td', null, p.streaming ? '●' : '—'),
+                  createElement('td', null,
+                    createElement('span', { className: 'muted' }, `${p.firstSeen ?? ''} / ${p.lastSeen ?? ''}`),
+                  ),
+                  createElement('td', null,
+                    createElement('button', { disabled: busy, onClick: () => void control({ action: 'inbound.close', id: p.id }) }, '关闭'),
+                  ),
+                ),
+              ),
+            ),
+          ),
     ),
 
     // ── outbound agents ──────────────────────────────────────────────────

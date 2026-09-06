@@ -1,36 +1,33 @@
 # dsh-a2a
 
-Agent2Agent（A2A）v1.0 双端插件，用于 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)。
+Agent2Agent（A2A）v1.0 双端插件，用于 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) — [English](README.md) · **中文**
 
-> [English](README.md) | **中文**
+`@hanphone/dsh-a2a` 是一个独立开源的 A2A 插件，把 DeepSeek Harness profile 变成 A2A 一等公民：带持久化、受治理任务存储与实时派生 AgentCard 的入站服务端；远程技能映射为模型工具的出站客户端；以及无需改任何文件即可管理两端的 GUI 面板。
 
-`@hanphone/dsh-a2a` 把 DeepSeek Harness profile 变成 A2A 一等公民：
-
-- **入站服务端** —— 从实时工具注册表派生的 AgentCard、JSON-RPC + SSE、持久化任务存储、可插拔的会话/子代理执行器，以及带审计的策略门禁（`a2a/inbound-task`）。
-- **出站客户端** —— 持久化的多 Agent 注册表，远程技能映射为模型工具（`a2a__<name>__<skill>`），带每 agent 超时的同步调用。
-- **GUI 面板** —— Harness Web UI 设置中的 **A2A 连接** 页：开关入站服务端、管理出站 agent、查看与取消任务——无需改任何配置文件。
-
-设计决策见 [docs/architecture.md](docs/architecture.md)。当前范围为该文档中的 P0。
+架构与设计决策：[docs/architecture.md](docs/architecture.md)。
 
 ## 功能
 
-- **A2A v1.0 协议面** —— JSON-RPC 上的 `SendMessage`、`SendStreamingMessage`、`GetTask`、`ListTasks`、`CancelTask`、`GetExtendedAgentCard`、`SubscribeToTask`；SSE 流式带补发帧。
-- **动态 AgentCard** —— 技能从实时 `ctx.tools` 注册表派生（显式 id 清单，缺失引用大声失败），外加内置 `chat` 技能，装完即可直接验证。
-- **持久化任务存储** —— 任务存于 `a2a` 存储域（默认 json 后端，可按部署切 SQLite）；任务 id 服务端生成且跨重启存活。
-- **执行器** —— `session`（每个 `contextId` 一个 DSH 会话）与 `subagent`（委托 `ctx.subagents`，把工具调用过程流式回传）两种内置实现。
-- **受治理的入站** —— 每个入站任务都经过 `a2a/inbound-task` waterfall，策略插件可在执行前否决或审计。
-- **环境变量鉴权** —— 入站 Bearer token 只以环境变量名（`authTokenEnv`）引用，不以明文落配置。
-- **装完即用** —— `dsh plugin add` 后两端默认启用，无需手动 patch。
+- **A2A v1.0 协议面** — JSON-RPC 上的 `SendMessage`、`SendStreamingMessage`、`GetTask`、`ListTasks`、`CancelTask`、`GetExtendedAgentCard`、`SubscribeToTask`；SSE 流式带补发帧。
+- **动态 AgentCard** — 技能从实时 `ctx.tools` 注册表派生（显式 id 清单，缺失引用大声失败），外加内置 `chat` 技能；全新安装即可端到端验证。
+- **持久化任务存储** — 任务存于 `a2a` 存储域（默认 json 后端，可按部署切 SQLite）；服务端生成 id，跨重启存活。
+- **执行器** — `session`（每个 `contextId` 一个 DSH 会话）与 `subagent`（委托 `ctx.subagents`，把工具调用过程流式回传）。
+- **受治理入站** — 每个入站任务都经过 `a2a/inbound-task` waterfall，策略插件可否决或审计。
+- **入站连接监控** — 面板展示谁在调用本 DSH（来源、首/末次、任务数、活跃流），可关闭某个对端。
+- **运行时服务身份** — 在面板中编辑 AgentCard 的 name/description/version；卡片立即重建，身份跨重启持久化。
+- **引导式首次配置** — 全新安装显示预填身份表单（"服务身份"），一步发布服务。
+- **环境变量鉴权** — 入站 Bearer token 只以环境变量名（`authTokenEnv`）引用，不以明文落配置。
+- **装完即用** — `dsh plugin add` 后两端默认启用，无需手动 patch。
 
 ## 安装
 
-### 从 npm 发布版安装
+### 从 npm
 
 ```sh
 dsh plugin --profile web add @hanphone/dsh-a2a
 ```
 
-任意 profile 名均可：
+任意 profile 名均可（`web`、自定义 profile、headless 等）：
 
 ```sh
 dsh plugin --profile <name> add @hanphone/dsh-a2a
@@ -42,14 +39,14 @@ dsh plugin --profile <name> add @hanphone/dsh-a2a
 cd dsh-a2a
 pnpm build
 npm pack
-dsh plugin --profile <name> add <path-to>/hanphone-dsh-a2a-0.1.0.tgz
+dsh plugin --profile <name> add <path-to>/hanphone-dsh-a2a-0.2.0.tgz
 ```
 
 ## 快速开始
 
-1. **安装** —— `dsh plugin --profile web add @hanphone/dsh-a2a`。
-2. **重启 GUI** —— 浏览器端插件表在 host 启动时扫描，装完请重启一次 `pnpm dsh web`（或对应 profile 启动命令）。
-3. **打开 设置 → A2A 连接** —— 会看到入站服务端状态、出站 agent 列表与任务列表。
+1. **安装** — `dsh plugin --profile web add @hanphone/dsh-a2a`。
+2. **重启 GUI** — 浏览器端插件表在 host 启动时扫描，装完请重启一次（`pnpm dsh web` 或对应 profile 启动命令）。
+3. **打开 设置 → A2A 连接** — 面板展示入站服务端状态、服务身份（全新安装预填引导表单）、出站 agent 列表、入站对端连接、任务列表。
 
 入站服务端监听在 profile 的 webServer 上（默认 `http://127.0.0.1:3080`）：
 
@@ -69,15 +66,17 @@ curl -X POST http://127.0.0.1:3080/a2a \
 
 浏览器端在设置中注册 **A2A 连接** 页。无需改文件即可：
 
-- 开关入站服务端（`server.enable` / `server.disable`），
-- 列出、添加、启用/停用、刷新、删除出站 agent，
+- 开关入站服务端；
+- 查看与编辑服务身份（name/description/version）——AgentCard 立即重建，变更持久化；
+- 列出、添加、启用/停用、刷新、删除出站 agent；
+- 查看入站对端连接（来源、活动、任务）并关闭某个对端；
 - 查看与取消入站任务。
 
 所有面板流量都走 profile webServer 上的**仅回环** `/a2a/api` 路由——远程对端永远无法驱动它。
 
 ## 配置
 
-面板覆盖日常操作。面板不编辑的项（name/description、baseUrl、`authTokenEnv`、skills、executors、toolPrefix）通过 profile 用户 patch 层（`$DSH_HOME/profiles/<name>/cordis.patch.yml`）配置——保留方式：
+面板覆盖日常操作。面板不编辑的项（baseUrl、`authTokenEnv`、skills、executors、toolPrefix）通过 profile 用户 patch 层（`$DSH_HOME/profiles/<name>/cordis.patch.yml`）配置——保留方式：
 
 ```yaml
 - id: a2a
@@ -151,9 +150,9 @@ a2a status | enable | disable | card | agents |
 
 ## 工作原理
 
-- **入站** —— `POST /a2a`（JSON-RPC）与 `GET /.well-known/agent-card.json`；AgentCard 从实时工具注册表派生。任务流经 `a2a/inbound-task` → 执行器 → 任务存储，SSE 帧推送给订阅者。
-- **出站** —— `a2a` 域中的持久化 `agents` 表；`A2AClient` 发现 AgentCard，每个技能注册为一个工具。
-- **面板** —— 浏览器端（React，`settings.section`）经仅回环 `/a2a/api` 路由读写。
+- **入站** — `POST /a2a`（JSON-RPC）与 `GET /.well-known/agent-card.json`；AgentCard 从实时工具注册表派生并携带持久化服务身份。任务流经 `a2a/inbound-task` → 执行器 → 任务存储，SSE 帧推送给订阅者。
+- **出站** — `a2a` 域中的持久化 `agents` 表；`A2AClient` 发现 AgentCard，每个技能注册为一个工具。
+- **面板** — 浏览器端（React，`settings.section`）经仅回环 `/a2a/api` 路由读写；host 端喂给它 server/tasks/agents/入站对端/服务身份的快照。
 
 完整设计见 [docs/architecture.md](docs/architecture.md)。
 
@@ -161,19 +160,21 @@ a2a status | enable | disable | card | agents |
 
 ```
 src/
-  api.ts             # 回环面板 API (/a2a/api)
-  index.ts           # Cordis 插件入口 (apply)
-  protocol.ts        # A2A v1.0 协议常量与类型
-  jsonrpc.ts         # JSON-RPC 帧
-  server/            # 入站半区：store、card、a2a-server、routes、executors
-  outbound/          # 出站半区：A2AClient、registry、tools
-  client/            # 浏览器半区：设置面板 (React)
-  service.ts         # ctx.a2a 服务 facade
-  commands.ts        # /a2a 聊天命令
+  api.ts                  # 回环面板 API (/a2a/api)
+  index.ts                # Cordis 插件入口 (apply)
+  protocol.ts             # A2A v1.0 协议常量与类型
+  jsonrpc.ts              # JSON-RPC 帧
+  server/                 # 入站半区：store、card、a2a-server、routes、
+                          #   executors、inbound-registry、identity
+  outbound/               # 出站半区：A2AClient、registry、tools
+  client/                 # 浏览器半区：设置面板 (React)
+  service.ts              # ctx.a2a 服务 facade
+  commands.ts             # /a2a 聊天命令
 tests/
-  unit/              # protocol、framing、card、store、registry、server、client、api
-  composition/       # 在真实 Cordis Context 上以 stub 宿主服务跑 apply()
-cordis.patch.yml     # bundle patch（挂载插件，默认启用）
+  unit/                   # protocol、framing、card、store、registry、server、
+                          #   client、api、inbound-registry、identity
+  composition/            # 在真实 Cordis Context 上以 stub 宿主服务跑 apply()
+cordis.patch.yml          # bundle patch（挂载插件，默认启用）
 ```
 
 ## 开发

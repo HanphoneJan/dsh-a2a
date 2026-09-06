@@ -19,12 +19,23 @@ export type ApiAction =
   | { readonly action: 'agent.add'; readonly name: string; readonly agentCardUrl: string; readonly bearerTokenEnv?: string }
   | { readonly action: 'agent.remove' | 'agent.enable' | 'agent.disable' | 'agent.refresh'; readonly id: string }
   | { readonly action: 'task.cancel'; readonly id: string }
+  | { readonly action: 'identity.update'; readonly name?: string; readonly description?: string; readonly version?: string }
+  | { readonly action: 'inbound.close'; readonly id: string }
 
 /** One snapshot of the whole plugin for the dashboard. */
 export interface ApiSnapshot {
-  readonly server: { readonly enabled: boolean; readonly cardUrl?: string; readonly skills: readonly string[] }
+  readonly server: {
+    readonly enabled: boolean
+    readonly cardUrl?: string
+    readonly skills: readonly string[]
+    readonly name?: string
+    readonly description?: string
+    readonly version?: string
+    readonly configured: boolean
+  }
   readonly tasks: readonly unknown[]
   readonly agents: readonly unknown[]
+  readonly inbounds: readonly unknown[]
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -80,14 +91,24 @@ export async function handleApiRequest(
 
 function snapshotOf(impl: A2AServiceImpl): ApiSnapshot {
   const status = impl.status() as {
-    server: { enabled: boolean; cardUrl?: string; skills: readonly string[] }
+    server: {
+      enabled: boolean
+      cardUrl?: string
+      skills: readonly string[]
+      name?: string
+      description?: string
+      version?: string
+      configured: boolean
+    }
     tasks: number
     agents: readonly unknown[]
+    inbounds: readonly unknown[]
   }
   return {
     server: status.server,
     tasks: impl.listTasks() as readonly unknown[],
     agents: impl.agents() as readonly unknown[],
+    inbounds: status.inbounds ?? [],
   }
 }
 
@@ -109,6 +130,10 @@ async function dispatch(payload: ApiAction, impl: A2AServiceImpl): Promise<{ rea
       return impl.refreshAgentCard(payload.id)
     case 'task.cancel':
       return impl.cancelTask(payload.id)
+    case 'identity.update':
+      return impl.updateIdentity({ ...(payload.name !== undefined ? { name: payload.name } : {}), ...(payload.description !== undefined ? { description: payload.description } : {}), ...(payload.version !== undefined ? { version: payload.version } : {}) })
+    case 'inbound.close':
+      return impl.closeInbound(payload.id)
     default:
       return { ok: false, message: `unknown action ${String((payload as { action?: unknown }).action)}` }
   }

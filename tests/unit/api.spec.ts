@@ -46,7 +46,7 @@ function resCollector() {
 
 function facadeStub(overrides: Partial<A2AServiceImpl> = {}): A2AServiceImpl {
   return {
-    status: () => ({ server: { enabled: true, cardUrl: 'http://x/a2a', skills: ['chat'] }, tasks: 0, agents: [] }),
+    status: () => ({ server: { enabled: true, cardUrl: 'http://x/a2a', skills: ['chat'], configured: false }, tasks: 0, agents: [], inbounds: [] }),
     enableServer: vi.fn(async () => ({ ok: true, message: 'server enabled' })),
     getTask: () => undefined,
     listTasks: () => [],
@@ -56,6 +56,10 @@ function facadeStub(overrides: Partial<A2AServiceImpl> = {}): A2AServiceImpl {
     removeAgent: vi.fn(async () => ({ ok: true, message: 'removed' })),
     setAgentEnabled: vi.fn(async () => ({ ok: true, message: 'toggled' })),
     refreshAgentCard: vi.fn(async () => ({ ok: true, message: 'refreshed' })),
+    identity: () => ({ name: 'x', description: 'd', version: '0.1.0' }),
+    updateIdentity: vi.fn(async () => ({ ok: true, message: 'identity updated' })),
+    closeInbound: vi.fn(async () => ({ ok: true, message: 'peer closed' })),
+    inbounds: () => [],
     ...overrides,
   }
 }
@@ -102,5 +106,32 @@ describe('handleApiRequest', () => {
     const out = res.output()
     expect(out.status).toBe(409)
     expect(JSON.parse(out.body).message).toBe('task not found')
+  })
+
+  it('dispatches identity.update with the supplied patch', async () => {
+    const impl = facadeStub()
+    const res = resCollector()
+    await handleApiRequest(
+      reqWith('127.0.0.1', 'POST', JSON.stringify({ action: 'identity.update', name: 'New Agent', description: 'desc', version: '0.2.0' })),
+      res,
+      impl,
+    )
+    expect(res.output().status).toBe(200)
+    expect(impl.updateIdentity).toHaveBeenCalledWith({ name: 'New Agent', description: 'desc', version: '0.2.0' })
+  })
+
+  it('dispatches inbound.close with the peer id', async () => {
+    const impl = facadeStub()
+    const res = resCollector()
+    await handleApiRequest(reqWith('127.0.0.1', 'POST', JSON.stringify({ action: 'inbound.close', id: 'peer-1' })), res, impl)
+    expect(res.output().status).toBe(200)
+    expect(impl.closeInbound).toHaveBeenCalledWith('peer-1')
+  })
+
+  it('includes inbounds in the snapshot', async () => {
+    const impl = facadeStub({ status: () => ({ server: { enabled: true, configured: true }, tasks: 0, agents: [], inbounds: [{ id: 'p1' }] }) })
+    const res = resCollector()
+    await handleApiRequest(reqWith('127.0.0.1'), res, impl)
+    expect(JSON.parse(res.output().body).inbounds).toEqual([{ id: 'p1' }])
   })
 })

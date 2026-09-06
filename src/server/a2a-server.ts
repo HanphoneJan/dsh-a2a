@@ -70,13 +70,18 @@ export interface ServerResponseSpec {
 
 /** A2A JSON-RPC / SSE server over a structural request. */
 export class A2AServer {
-  readonly card: AgentCard
+  card: AgentCard
   private readonly listeners = new Set<(frame: StreamResponse) => void>()
   private readonly waiters = new Map<string, () => void>()
   private readonly running = new Map<string, AbortController>()
 
   constructor(private readonly opts: A2AServerOptions) {
     this.card = opts.card
+  }
+
+  /** Swap the served AgentCard (runtime identity edits). Routes re-read `server.card` on every request. */
+  setCard(next: AgentCard): void {
+    this.card = next
   }
 
   /**
@@ -226,7 +231,7 @@ export class A2AServer {
         const gateOutcome = await this.opts.gate(gateInputFrom(message, null))
         if (!gateOutcome.ok) throw rpcFault(A2A_ERROR_CODES.INVALID_PARAMS, gateOutcome.reason)
         const record = this.ensureTask(message, null)
-        this.noteInbound({ method }, method, [record.taskId], false)
+        // handle() records this inbound after dispatch with the real source.
         await this.runTask(record)
         const settled = this.opts.store.get(record.taskId)
         return toTask(settled ?? record)
