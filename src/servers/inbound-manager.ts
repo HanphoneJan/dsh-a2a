@@ -22,7 +22,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { buildCard } from '../server/card.ts'
 import { A2AServer } from '../server/a2a-server.ts'
 import { A2aRoutes } from '../server/routes.ts'
-import { ContextSessionPool, type AgentPresetsLike, type AgentRegistryLike, type SkillsLike } from '../server/exec/agent-runtime.ts'
+import { ContextSessionPool, type AgentPresetsLike, type AgentRegistryLike, type CredentialsLike, type SkillsLike } from '../server/exec/agent-runtime.ts'
 import { createSessionExecutor } from '../server/exec/session.ts'
 import { createSubagentExecutor, type SubagentsLike } from '../server/exec/subagent.ts'
 import { ExecutorSet } from '../server/executor.ts'
@@ -50,6 +50,7 @@ export interface InboundManagerHost {
   readonly agents?: AgentRegistryLike
   readonly agentPresets?: AgentPresetsLike
   readonly skills?: SkillsLike
+  readonly credentials?: CredentialsLike
   readonly subagents?: SubagentsLike
   readonly sessionCwd: string
   readonly defaultBaseUrl: string
@@ -147,8 +148,33 @@ export async function derivePresetSkills(
   }
 }
 
-/** Assemble one live instance (skills already derived from the preset). */
-function assemble(record: InboundServerRecord, skills: readonly AgentSkill[], host: InboundManagerHost): LiveInboundServer {
+/** The managed env-var name backing one inbound instance's auth token. */
+export function inboundAuthEnv(id: string): string {
+  return `A2A_INBOUND_${id.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}`
+}
+
+/**
+ * Resolve one inbound instance's bearer token: the credentials service first
+ * (per-call layered read; the GUI writes here), then the process environment
+ * (external `export` of the same name keeps working).
+ */
+export async function resolveAuthToken(
+  credentials: CredentialsLike | undefined,
+  envName: string | undefined,
+): Promise<string | undefined> {
+  if (envName === undefined) return undefined
+  try {
+    const stored = await credentials?.resolve(envName)
+    if (stored !== undefined && stored.value.length > 0) return stored.value
+  } catch {
+    // fall through to the process environment
+  }
+  const direct = process.env[envName]
+  return direct !== undefined && direct.length > 0 ? direct : undefined
+}
+
+/** Assemble one live instance (skills and auth token already resolved). */
+function assemble(record: InboundServerRecord, skills: readonly AgentSkill[], authToken: string | undefined, host: InboundManagerHost): LiveInboundServer {
   const endpointPath = record.endpointPath
   const cardPath = `${endpointPath.replace(/\/$/, '')}/agent-card.json`
   const preset = record.preset ?? host.defaultPresetId
@@ -159,9 +185,7 @@ function assemble(record: InboundServerRecord, skills: readonly AgentSkill[], ho
     description: record.description,
     version: record.version,
     skills,
-    ...(record.authTokenEnv !== undefined && process.env[record.authTokenEnv] !== undefined
-      ? { authToken: process.env[record.authTokenEnv]! }
-      : {}),
+    ...(authToken !== undefined ? { authToken } : {}),
   })
 
   // One preset-bound session pool per instance.
@@ -204,7 +228,7 @@ function assemble(record: InboundServerRecord, skills: readonly AgentSkill[], ho
     card,
     store: host.tasks,
     executors,
-    ...(card.securitySchemes !== undefined ? { authToken: 'configured' } : {}),
+    ...(authToken !== undefined ? { authToken } : {}),
     cardPath,
     gate,
     onInbound: (facts) => inbound.note({
@@ -304,7 +328,8 @@ export class InboundServerManager {
     for (const record of this.store.list()) {
       try {
         const skills = await derivePresetSkills(this.host.agentPresets, this.host.skills, record.preset ?? this.host.defaultPresetId)
-        const live = assemble(record, skills, this.host)
+        const token = await resolveAuthToken(this.host.credentials, record.authTokenEnv)
+        const live = assemble(record, skills, token, this.host)
         this.live.set(record.id, live)
         if (record.enabled) live.routes.enable()
       } catch (err) {
@@ -338,7 +363,8 @@ export class InboundServerManager {
     }
     try {
       const skills = await derivePresetSkills(this.host.agentPresets, this.host.skills, preset)
-      const live = assemble(record, skills, this.host)
+      const token = await resolveAuthToken(this.host.credentials, record.authTokenEnv)
+      const live = assemble(record, skills, token, this.host)
       await this.store.save(record)
       this.live.set(id, live)
       if (record.enabled) live.routes.enable()
@@ -366,7 +392,8 @@ export class InboundServerManager {
     try {
       await this.store.save(next)
       const skills = await derivePresetSkills(this.host.agentPresets, this.host.skills, next.preset ?? this.host.defaultPresetId)
-      const replaced = assemble(next, skills, this.host)
+      const token = await resolveAuthToken(this.host.credentials, next.authTokenEnv)
+      const replaced = assemble(next, skills, token, this.host)
       // Preserve the route registration state while swapping runtime halves.
       const wasEnabled = live.routes.active
       live.dispose()
@@ -375,6 +402,48 @@ export class InboundServerManager {
       return { ok: true, message: `inbound server ${id} updated` }
     } catch (err) {
       return { ok: false, message: `failed to update inbound server: ${String((err as Error).message)}` }
+    }
+  }
+
+  /**
+   * Set (or clear) an inbound instance's bearer token. The value is written to
+   * the credentials service under this instance's managed env-var name; the
+   * record stores only that name and the live instance is rebuilt.
+   */
+  async setAuth(id: string, token: string | undefined): Promise<OpResult> {
+    const live = this.live.get(id)
+    const stored = this.store.get(id)
+    if (live === undefined || stored === undefined) return { ok: false, message: `inbound server ${id} not found` }
+    const credentials = this.host.credentials
+    const envName = inboundAuthEnv(id)
+    try {
+      if (token === undefined || token.length === 0) {
+        if (credentials !== undefined) await credentials.unset(envName)
+        const { authTokenEnv: _dropped, ...rest } = stored
+        await this.store.save(rest)
+        const skills = await derivePresetSkills(this.host.agentPresets, this.host.skills, rest.preset ?? this.host.defaultPresetId)
+        const replaced = assemble(rest, skills, undefined, this.host)
+        const wasEnabled = live.routes.active
+        live.dispose()
+        this.live.set(id, replaced)
+        if (wasEnabled || rest.enabled) replaced.routes.enable()
+        return { ok: true, message: `inbound server ${id} auth cleared` }
+      }
+      if (credentials === undefined) {
+        return { ok: false, message: 'credentials service not mounted; cannot store the token (set the env var externally instead)' }
+      }
+      await credentials.set(envName, token)
+      const next: InboundServerRecord = { ...stored, authTokenEnv: envName }
+      await this.store.save(next)
+      const skills = await derivePresetSkills(this.host.agentPresets, this.host.skills, next.preset ?? this.host.defaultPresetId)
+      const replaced = assemble(next, skills, token, this.host)
+      const wasEnabled = live.routes.active
+      live.dispose()
+      this.live.set(id, replaced)
+      if (wasEnabled || next.enabled) replaced.routes.enable()
+      return { ok: true, message: `inbound server ${id} auth set (${envName})` }
+    } catch (err) {
+      return { ok: false, message: `failed to set inbound auth: ${String((err as Error).message)}` }
     }
   }
 

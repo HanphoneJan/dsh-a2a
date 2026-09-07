@@ -73,6 +73,16 @@ export interface SkillsLike {
   list(options: { readonly scope?: unknown }): Promise<readonly SkillRowLike[]>
 }
 
+/** Structural slice of `ctx.credentials` (env-var-name credential refs). */
+export interface CredentialsLike {
+  /** Resolve one env-var name to its current value (layered, per call). */
+  resolve(ref: string): Promise<{ readonly value: string } | undefined>
+  /** Store/overwrite a value for an env-var name in the managed layer. */
+  set(ref: string, value: string): Promise<void>
+  /** Clear a stored value for an env-var name. */
+  unset(ref: string): Promise<void>
+}
+
 /** Runtime options shared by the executors. */
 export interface AgentRuntimeOptions {
   /** Absolute cwd frozen into each spawned session's durable header. */

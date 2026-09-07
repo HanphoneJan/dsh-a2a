@@ -31,11 +31,15 @@ export interface A2AServiceLike {
   removeInboundServer(id: string): Promise<{ readonly ok: boolean; readonly message: string }>
   setInboundServerEnabled(id: string, enabled: boolean): Promise<{ readonly ok: boolean; readonly message: string }>
   updateInboundServer(id: string, patch: unknown): Promise<{ readonly ok: boolean; readonly message: string }>
+  setInboundAuth(id: string, token: string | undefined): Promise<{ readonly ok: boolean; readonly message: string }>
   listOutboundServers(): unknown
   createOutboundServer(input: unknown): Promise<{ readonly ok: boolean; readonly message: string }>
   removeOutboundServer(id: string): Promise<{ readonly ok: boolean; readonly message: string }>
   setOutboundServerEnabled(id: string, enabled: boolean): Promise<{ readonly ok: boolean; readonly message: string }>
   refreshOutboundServer(id: string): Promise<{ readonly ok: boolean; readonly message: string }>
+  setOutboundAuth(id: string, token: string | undefined): Promise<{ readonly ok: boolean; readonly message: string }>
+  discoverOutbound(url: string, bearerToken?: string): Promise<{ readonly ok: boolean; readonly message: string; readonly preview?: unknown }>
+  updateOutboundServer(id: string, patch: unknown): Promise<{ readonly ok: boolean; readonly message: string }>
   getTask(taskId: string): unknown
   listTasks(): unknown
   cancelTask(taskId: string): Promise<{ readonly ok: boolean; readonly message: string }>

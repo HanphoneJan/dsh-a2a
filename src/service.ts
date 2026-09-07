@@ -92,12 +92,20 @@ export interface A2AServiceImpl {
   removeInboundServer(id: string): Promise<OpResult>
   setInboundServerEnabled(id: string, enabled: boolean): Promise<OpResult>
   updateInboundServer(id: string, patch: { name?: string; description?: string; version?: string; endpointPath?: string; preset?: string; authTokenEnv?: string }): Promise<OpResult>
+  /** Set (or clear, when token is undefined) an inbound instance's bearer token. */
+  setInboundAuth(id: string, token: string | undefined): Promise<OpResult>
   // ── outbound server instances ───────────────────────────────────────
   listOutboundServers(): OutboundServerView[]
   createOutboundServer(input: OutboundCreateInput): Promise<OpResult>
   removeOutboundServer(id: string): Promise<OpResult>
   setOutboundServerEnabled(id: string, enabled: boolean): Promise<OpResult>
   refreshOutboundServer(id: string): Promise<OpResult>
+  /** Set (or clear, when token is undefined) an outbound instance's bearer token. */
+  setOutboundAuth(id: string, token: string | undefined): Promise<OpResult>
+  /** Read a remote AgentCard for the two-phase add preview (no state change). */
+  discoverOutbound(url: string, bearerToken?: string): Promise<OpResult & { readonly preview?: unknown }>
+  /** Edit an outbound instance's name/preset/timeout. */
+  updateOutboundServer(id: string, patch: { readonly name?: string; readonly preset?: string; readonly timeoutMs?: number }): Promise<OpResult>
   // ── tasks ───────────────────────────────────────────────────────────
   getTask(taskId: string): unknown
   listTasks(): unknown
@@ -144,6 +152,10 @@ export class A2AService extends Service {
     return this.impl.updateInboundServer(id, patch)
   }
 
+  async setInboundAuth(id: string, token: string | undefined): Promise<OpResult> {
+    return this.impl.setInboundAuth(id, token)
+  }
+
   listOutboundServers(): OutboundServerView[] {
     return this.impl.listOutboundServers()
   }
@@ -162,6 +174,18 @@ export class A2AService extends Service {
 
   async refreshOutboundServer(id: string): Promise<OpResult> {
     return this.impl.refreshOutboundServer(id)
+  }
+
+  async setOutboundAuth(id: string, token: string | undefined): Promise<OpResult> {
+    return this.impl.setOutboundAuth(id, token)
+  }
+
+  async discoverOutbound(url: string, bearerToken?: string): Promise<OpResult & { readonly preview?: unknown }> {
+    return this.impl.discoverOutbound(url, bearerToken)
+  }
+
+  async updateOutboundServer(id: string, patch: { readonly name?: string; readonly preset?: string; readonly timeoutMs?: number }): Promise<OpResult> {
+    return this.impl.updateOutboundServer(id, patch)
   }
 
   getTask(taskId: string): unknown {

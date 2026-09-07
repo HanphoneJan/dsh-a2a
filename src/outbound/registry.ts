@@ -79,8 +79,8 @@ export interface RegistryOptions {
   readonly store: AgentStore
   readonly toolPrefix?: string
   readonly defaultTimeoutMs?: number
-  /** Resolve a bearer token from an env-var name; undefined when unset. */
-  readonly tokenOf: (env: string | undefined) => string | undefined
+  /** Resolve a bearer token from an env-var name (layered); undefined when unset. */
+  readonly tokenOf: (env: string | undefined) => Promise<string | undefined> | string | undefined
   readonly onError?: (message: string) => void
 }
 
@@ -227,7 +227,7 @@ export class OutboundAgentRegistry {
   }
 
   private async connectRecord(record: OutboundAgentRecord): Promise<void> {
-    const token = this.opts.tokenOf(record.bearerTokenEnv)
+    const token = await this.opts.tokenOf(record.bearerTokenEnv)
     const client = await A2AClient.connect(record.agentCardUrl, {
       ...(token ? { bearerToken: token } : {}),
       timeoutMs: record.timeoutMs,

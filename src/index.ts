@@ -25,12 +25,12 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { openDomain, DomainTaskStore, type A2aDomain, type TaskStore } from './server/store.ts'
-import { probeService, type AgentPresetsLike, type AgentRegistryLike, type SkillsLike } from './server/exec/agent-runtime.ts'
+import { probeService, type AgentPresetsLike, type AgentRegistryLike, type CredentialsLike, type SkillsLike } from './server/exec/agent-runtime.ts'
 import type { SubagentsLike } from './server/exec/subagent.ts'
 import { handleApiRequest } from './api.ts'
 import { A2AService, type A2AServiceImpl, type InboundCreateInput, type InboundServerView, type OutboundCreateInput, type OpResult, type PresetView, type SkillView } from './service.ts'
 import { buildA2aCommand } from './commands.ts'
-import { InboundServerManager, DomainInboundStore, type InboundManagerHost, type WebServerLike as InboundWebServerLike } from './servers/inbound-manager.ts'
+import { InboundServerManager, DomainInboundStore, resolveAuthToken, type InboundManagerHost, type WebServerLike as InboundWebServerLike } from './servers/inbound-manager.ts'
 import { OutboundServerManager, DomainOutboundStore, type OutboundManagerHost, type OutboundServerView } from './servers/outbound-manager.ts'
 
 export const name = 'a2a'
@@ -75,6 +75,7 @@ export function apply(ctx: Context, config: A2AConfig) {
         | (AgentPresetsLike & { list(): Promise<Array<{ id: string; name?: string; description?: string }>>; readonly defaultId?: string })
         | undefined
       const skills = probeService(ctx, 'skills', 'list') as SkillsLike | undefined
+      const credentials = probeService(ctx, 'credentials', 'resolve') as CredentialsLike | undefined
       const subagents = probeService(ctx, 'subagents', 'start') as SubagentsLike | undefined
       const commandsRef = probeService(ctx, 'commands', 'register') as
         | { register(def: { name: string; description: string; handler(...args: unknown[]): unknown }): () => void }
@@ -91,6 +92,7 @@ export function apply(ctx: Context, config: A2AConfig) {
         ...(agents !== undefined ? { agents } : {}),
         ...(agentPresets !== undefined ? { agentPresets } : {}),
         ...(skills !== undefined ? { skills } : {}),
+        ...(credentials !== undefined ? { credentials } : {}),
         ...(subagents !== undefined ? { subagents } : {}),
         ...(agentPresets?.defaultId !== undefined ? { defaultPresetId: agentPresets.defaultId } : {}),
         resolveDefaultModel: () => resolveDefaultModel(ctx),
@@ -105,7 +107,8 @@ export function apply(ctx: Context, config: A2AConfig) {
       // ── outbound manager ──────────────────────────────────────────────
       const outboundHost: OutboundManagerHost = {
         registrar: { register: (def) => tools?.register(def) },
-        tokenOf: (env) => (env ? process.env[env] : undefined),
+        tokenOf: async (env) => (env ? await resolveAuthToken(credentials, env) : undefined),
+        ...(credentials !== undefined ? { credentials } : {}),
         onError: (message) => logger.warn(message),
         defaultTimeoutMs: config.defaultTimeoutMs,
       }
@@ -223,6 +226,9 @@ function makeFacade(host: FacadeHost): A2AServiceImpl {
     async updateInboundServer(id: string, patch: { name?: string; description?: string; version?: string; endpointPath?: string; preset?: string; authTokenEnv?: string }): Promise<OpResult> {
       return host.inboundManager.update(id, patch)
     },
+    async setInboundAuth(id: string, token: string | undefined): Promise<OpResult> {
+      return host.inboundManager.setAuth(id, token)
+    },
     // ── outbound ────────────────────────────────────────────────────────
     listOutboundServers(): OutboundServerView[] {
       return [...host.outboundManager.list()]
@@ -246,6 +252,15 @@ function makeFacade(host: FacadeHost): A2AServiceImpl {
     },
     async refreshOutboundServer(id: string): Promise<OpResult> {
       return host.outboundManager.refresh(id)
+    },
+    async setOutboundAuth(id: string, token: string | undefined): Promise<OpResult> {
+      return host.outboundManager.setAuth(id, token)
+    },
+    async discoverOutbound(url: string, bearerToken?: string): Promise<OpResult & { readonly preview?: unknown }> {
+      return host.outboundManager.discover(url, bearerToken)
+    },
+    async updateOutboundServer(id: string, patch: { readonly name?: string; readonly preset?: string; readonly timeoutMs?: number }): Promise<OpResult> {
+      return host.outboundManager.update(id, patch)
     },
     // ── tasks ───────────────────────────────────────────────────────────
     getTask(taskId: string): unknown {

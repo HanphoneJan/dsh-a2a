@@ -163,22 +163,32 @@ composition is the documented extension point.
 
 - **Browser half** (`src/client/`) — a React plugin registered as a
   `settings.section` ("A2A 连接") through `ctx.slots.inject`, loaded by the
-  DSH web shell via the client bundle. It renders the inbound/outbound server
-  lists (with preset pickers that only list real roster presets and default to
-  the deployment default, auth env inputs) and task/peer views; each inbound
-  row shows its preset-derived skill list instead of a skill-declaration form.
+  DSH web shell via the client bundle (styling in `client/dashboard.css.ts`,
+  `--dsw-alias-*` tokens with `@container` responsiveness). Three tabs:
+  inbound servers (preset pickers listing real roster presets defaulting to
+  the deployment default, preset-derived skill chips, Bearer Token entry),
+  outbound servers (two-phase discover→connect with card preview), and
+  activity (peers + tasks).
 - **Loopback API** (`/a2a/api`) — GET returns a snapshot (inbound/outbound
   server views, tasks, peers); `GET /a2a/api/presets` returns the agent-preset
   roster for the pickers; POST dispatches control actions
-  (inbound.create/update/remove/enable/disable, outbound.create/remove/
-  enable/disable/refresh, task.cancel, inbound.close). Non-loopback callers
-  get 403. The GUI, the `/a2a` command, and `ctx.a2a` consumers all share the
-  same facade implementation.
+  (inbound.create/update/remove/enable/disable/setAuth,
+  outbound.create/update/remove/enable/disable/refresh/setAuth/discover,
+  task.cancel, inbound.close). Non-loopback callers get 403. The GUI, the
+  `/a2a` command, and `ctx.a2a` consumers all share the same facade
+  implementation.
 
 ## Security model
 
-- Each inbound instance's bearer token is an **env-var name**
-  (`authTokenEnv`), resolved at boot; never stored as plaintext.
+- **Direct bearer-token entry, layered resolution.** The GUI's Bearer Token
+  field writes the token through the harness credentials service
+  (`ctx.credentials.set` → managed `.env`/credential store, directory `0o700`);
+  each instance record keeps only an auto-generated env-var name
+  (`A2A_INBOUND_<id>` / `A2A_OUTBOUND_<id>`). Runtime resolution
+  (`resolveAuthToken`) layers credentials → process environment per operation,
+  so externally exported env vars keep working. A token value never lands in
+  the `a2a` domain, plugin config, or the AgentCard, and the GUI never echoes
+  it back.
 - The GUI dashboard API is **loopback-only**; remote peers cannot drive it.
 - The AgentCard advertises only the scheme declaration, never the token value.
 

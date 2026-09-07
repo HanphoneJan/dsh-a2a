@@ -8,7 +8,7 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import { buildCard } from '../../src/server/card.ts'
-import { chatFallbackSkills, derivePresetSkills } from '../../src/servers/inbound-manager.ts'
+import { chatFallbackSkills, derivePresetSkills, inboundAuthEnv, resolveAuthToken } from '../../src/servers/inbound-manager.ts'
 import type { AgentPresetsLike, SkillRowLike, SkillsLike } from '../../src/server/exec/agent-runtime.ts'
 
 function fakePresets(overrides: Partial<AgentPresetsLike> = {}): AgentPresetsLike {
@@ -53,6 +53,37 @@ describe('derivePresetSkills (preset-derived declarations, "everything is a plug
   it('falls back to chat when the preset roster offers no standing mount', async () => {
     const derived = await derivePresetSkills(fakePresets({ standingKeyFor: undefined }), fakeSkills([{ name: 'x', description: 'd' }]), 'standard')
     expect(derived).toEqual(chatFallbackSkills())
+  })
+})
+
+describe('auth token resolution (credentials service → process env)', () => {
+  it('builds a legal managed env-var name from an instance id', () => {
+    expect(inboundAuthEnv('ptc-service-07ef507d')).toBe('A2A_INBOUND_PTC_SERVICE_07EF507D')
+  })
+
+  it('resolves through the credentials service first', async () => {
+    const credentials = {
+      resolve: vi.fn(async (ref: string) => (ref === 'A2A_INBOUND_X' ? { value: 'stored' } : undefined)),
+      set: vi.fn(async () => {}),
+      unset: vi.fn(async () => {}),
+    }
+    process.env['A2A_INBOUND_X'] = 'env'
+    try {
+      expect(await resolveAuthToken(credentials, 'A2A_INBOUND_X')).toBe('stored')
+      expect(credentials.resolve).toHaveBeenCalledWith('A2A_INBOUND_X')
+    } finally {
+      delete process.env['A2A_INBOUND_X']
+    }
+  })
+
+  it('falls back to the process environment without a credentials service', async () => {
+    process.env['A2A_EXTERNAL_TOKEN'] = 'env-value'
+    try {
+      expect(await resolveAuthToken(undefined, 'A2A_EXTERNAL_TOKEN')).toBe('env-value')
+      expect(await resolveAuthToken(undefined, undefined)).toBeUndefined()
+    } finally {
+      delete process.env['A2A_EXTERNAL_TOKEN']
+    }
   })
 })
 

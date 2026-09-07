@@ -17,6 +17,8 @@
  */
 
 import { OutboundAgentRegistry, type AgentStore } from '../outbound/registry.ts'
+import { A2AClient } from '../outbound/calls.ts'
+import type { CredentialsLike } from '../server/exec/agent-runtime.ts'
 import type { OutboundAgentRecord, OutboundServerRecord } from '../server/store.ts'
 
 /** Tool-registrar slice (structural `ctx.tools.register`). */
@@ -27,7 +29,9 @@ export interface ToolRegistrar {
 /** Host slices one manager needs. */
 export interface OutboundManagerHost {
   readonly registrar: ToolRegistrar
-  readonly tokenOf: (env: string | undefined) => string | undefined
+  /** Resolve a bearer token from an env-var name (layered); may be async. */
+  readonly tokenOf: (env: string | undefined) => Promise<string | undefined> | string | undefined
+  readonly credentials?: CredentialsLike
   readonly onError: (message: string) => void
   readonly defaultTimeoutMs: number
 }
@@ -136,6 +140,20 @@ export interface OutboundCreateInput {
   readonly preset?: string
   readonly enabled?: boolean
   readonly timeoutMs?: number
+}
+
+/** Discovered remote card preview (two-phase add). */
+export interface OutboundDiscoverPreview {
+  readonly name: string
+  readonly version?: string
+  readonly description?: string
+  readonly endpoint: string
+  readonly skills: readonly { readonly id: string; readonly name: string; readonly description?: string }[]
+}
+
+/** The managed env-var name backing one outbound instance's auth token. */
+export function outboundAuthEnv(id: string): string {
+  return `A2A_OUTBOUND_${id.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}`
 }
 
 /** Manages the live set of outbound connection instances. */
@@ -257,6 +275,60 @@ export class OutboundServerManager {
     return registry.setEnabled(view.id, enabled)
   }
 
+  /** Read a remote AgentCard for the two-phase add preview (no state change). */
+  async discover(agentCardUrl: string, bearerToken?: string): Promise<OpResult & { readonly preview?: OutboundDiscoverPreview }> {
+    try {
+      const client = await A2AClient.connect(agentCardUrl, {
+        ...(bearerToken !== undefined && bearerToken.length > 0 ? { bearerToken } : {}),
+        timeoutMs: this.host.defaultTimeoutMs,
+      })
+      const url = client.card.supportedInterfaces?.[0]?.url ?? agentCardUrl
+      return {
+        ok: true,
+        message: `discovered "${client.card.name}"`,
+        preview: {
+          name: client.card.name,
+          ...(client.card.version !== undefined ? { version: client.card.version } : {}),
+          ...(client.card.description != null ? { description: client.card.description } : {}),
+          endpoint: url,
+          skills: (client.card.skills ?? []).map((s) => ({
+            id: s.id,
+            name: s.name,
+            ...(s.description != null ? { description: s.description } : {}),
+          })),
+        },
+      }
+    } catch (err) {
+      return { ok: false, message: `failed to discover ${agentCardUrl}: ${String((err as Error).message)}` }
+    }
+  }
+
+  /** Edit a live instance's name/preset/timeout (persist + rebuild if connected). */
+  async update(id: string, patch: { readonly name?: string; readonly preset?: string; readonly timeoutMs?: number }): Promise<OpResult> {
+    const registry = this.registries.get(id)
+    const stored = this.records.get(id)
+    if (registry === undefined || stored === undefined) return { ok: false, message: `outbound server ${id} not found` }
+    const next: OutboundServerRecord = {
+      ...stored,
+      name: patch.name ?? stored.name,
+      ...(patch.preset !== undefined ? { preset: patch.preset } : {}),
+      timeoutMs: patch.timeoutMs ?? stored.timeoutMs,
+    }
+    try {
+      await this.records.save(next)
+      const rebuilt = this.makeRegistry(next)
+      await registry.disposeAll()
+      this.registries.set(id, rebuilt)
+      if (next.enabled) {
+        const result = await rebuilt.add(this.toSpec(next))
+        if (!result.ok) this.host.onError(`[a2a:out:${id}] update rebuild: ${result.message}`)
+      }
+      return { ok: true, message: `outbound server ${id} updated` }
+    } catch (err) {
+      return { ok: false, message: `failed to update outbound server: ${String((err as Error).message)}` }
+    }
+  }
+
   async remove(id: string): Promise<OpResult> {
     const registry = this.registries.get(id)
     if (registry === undefined) return { ok: false, message: `outbound server ${id} not found` }
@@ -274,6 +346,45 @@ export class OutboundServerManager {
     const view = registry.list()[0]
     if (view === undefined) return { ok: false, message: `outbound server ${id} has no connected agent` }
     return registry.refresh(view.id)
+  }
+
+  /**
+   * Set (or clear) an outbound instance's bearer token: written to the
+   * credentials service under this instance's managed env-var name, the record
+   * stores only that name, and the connection is rebuilt so the new token
+   * takes effect.
+   */
+  async setAuth(id: string, token: string | undefined): Promise<OpResult> {
+    const registry = this.registries.get(id)
+    const record = this.records.get(id)
+    if (registry === undefined || record === undefined) return { ok: false, message: `outbound server ${id} not found` }
+    const credentials = this.host.credentials
+    const envName = outboundAuthEnv(id)
+    try {
+      let next: OutboundServerRecord
+      if (token === undefined || token.length === 0) {
+        if (credentials !== undefined) await credentials.unset(envName)
+        const { bearerTokenEnv: _dropped, ...rest } = record
+        next = rest
+      } else {
+        if (credentials === undefined) {
+          return { ok: false, message: 'credentials service not mounted; cannot store the token (set the env var externally instead)' }
+        }
+        await credentials.set(envName, token)
+        next = { ...record, bearerTokenEnv: envName }
+      }
+      await this.records.save(next)
+      const rebuilt = this.makeRegistry(next)
+      await registry.disposeAll()
+      this.registries.set(id, rebuilt)
+      if (next.enabled) {
+        const result = await rebuilt.add(this.toSpec(next))
+        if (!result.ok) this.host.onError(`[a2a:out:${id}] auth rebuild: ${result.message}`)
+      }
+      return { ok: true, message: `outbound server ${id} auth ${token ? 'set' : 'cleared'} (${envName})` }
+    } catch (err) {
+      return { ok: false, message: `failed to set outbound auth: ${String((err as Error).message)}` }
+    }
   }
 
   async disposeAll(): Promise<void> {

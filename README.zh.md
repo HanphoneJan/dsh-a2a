@@ -17,7 +17,7 @@ Agent2Agent（A2A）v1.0.1 双端插件，用于 [DeepSeek Harness](https://gith
 - **执行器** — `session`（每个 `contextId` 一个 DSH 会话）与 `subagent`（委托 `ctx.subagents`，工具调用过程流式回传）。
 - **受治理入站** — 每个入站任务经过 `a2a/inbound-task` waterfall，策略插件可否决或审计。
 - **入站连接监控** — 面板展示每个实例的对端连接，可关闭某个对端。
-- **环境变量鉴权** — 每个实例的 Bearer token 只以环境变量名（`authTokenEnv`）引用，不落明文。
+- **直接填 Bearer Token** — GUI 的 Bearer Token 输入框把每个实例的 token 经 harness 凭据服务写入托管 `.env`/凭据库（`0o700`）；记录只保留自动生成的变量名，token 明文绝不进 a2a 域或 AgentCard。运行时读取分层（凭据 → 进程环境），外部 export 同名变量仍兼容。
 - **最小插件配置** — 实例经 GUI 创建并存于域中；插件 `Config` 只承载宿主级默认值（`baseUrl`、`subagentProvider`、`defaultTimeoutMs`）。
 
 ## 安装
@@ -66,12 +66,11 @@ curl -X POST http://127.0.0.1:3080/a2a/<id> \
 
 ## GUI 面板
 
-浏览器端在设置中注册 **A2A 连接** 页。无需改文件即可：
+浏览器端在设置中注册 **A2A 连接** 页，分三个 Tab。无需改文件即可：
 
-- **入站 Servers** — 创建入站 server（名称/描述/版本、agent preset 选择器——只列真实 roster 预设并预选部署默认、鉴权 env），启停、编辑、删除；每行显示端点、preset、preset 派生的技能与实时 AgentCard URL。
-- **出站 Servers** — 添加出站连接（名称、远端 AgentCard URL、preset 选择器、Bearer env、超时），启停、刷新、删除；每行显示连接状态与工具注册数。
-- **任务** — 查看与取消入站任务（每个任务携带来源 server）。
-- **入站连接** — 查看哪些远程对端在调用各实例，可关闭某个对端。
+- **入站 Servers** — 创建入站 server（名称/描述/版本、agent preset 选择器——只列真实 roster 预设并预选部署默认、Bearer Token 输入框），启停、编辑（含清除鉴权）、删除；每张卡片显示端点、preset 徽章、鉴权状态、preset 派生技能 chips 与实时 AgentCard URL。
+- **出站 Servers** — 两阶段添加出站连接：输入远端 AgentCard URL（± Bearer Token）→「导入」预览远端卡片（名称/版本/技能/端点）→「连接」确认；启停、刷新、编辑（名称/preset/超时/token）、删除。卡片显示连接状态点、工具数与错误。
+- **连接与任务** — 入站对端表（谁在调用、任务数、流式、关闭控制）与任务列表（按来源查看、取消）。
 
 所有面板流量走 profile webServer 上的**仅回环** `/a2a/api` 路由——远程对端永远无法驱动它。
 

@@ -53,11 +53,15 @@ function facadeStub(overrides: Partial<A2AServiceImpl> = {}): A2AServiceImpl {
     removeInboundServer: vi.fn(async () => ({ ok: true, message: 'removed' })),
     setInboundServerEnabled: vi.fn(async () => ({ ok: true, message: 'toggled' })),
     updateInboundServer: vi.fn(async () => ({ ok: true, message: 'updated' })),
+    setInboundAuth: vi.fn(async () => ({ ok: true, message: 'auth set' })),
     listOutboundServers: () => [],
     createOutboundServer: vi.fn(async () => ({ ok: true, message: 'created', id: 'out-1' })),
     removeOutboundServer: vi.fn(async () => ({ ok: true, message: 'removed' })),
     setOutboundServerEnabled: vi.fn(async () => ({ ok: true, message: 'toggled' })),
     refreshOutboundServer: vi.fn(async () => ({ ok: true, message: 'refreshed' })),
+    setOutboundAuth: vi.fn(async () => ({ ok: true, message: 'auth set' })),
+    discoverOutbound: vi.fn(async () => ({ ok: true, message: 'discovered', preview: { name: 'remote' } })),
+    updateOutboundServer: vi.fn(async () => ({ ok: true, message: 'updated' })),
     getTask: () => undefined,
     listTasks: () => [],
     cancelTask: vi.fn(async () => ({ ok: false, message: 'nope' })),
@@ -128,6 +132,25 @@ describe('handleApiRequest', () => {
     expect(impl.createOutboundServer).toHaveBeenCalledWith({
       name: 'remote', agentCardUrl: 'https://x/card.json', preset: 'ptc',
     })
+  })
+
+  it('dispatches inbound.setAuth with the token (and clears when empty)', async () => {
+    const impl = facadeStub()
+    const res = resCollector()
+    await handleApiRequest(reqWith('127.0.0.1', 'POST', JSON.stringify({ action: 'inbound.setAuth', id: 'in-1', token: 'sec' })), res, impl)
+    expect(impl.setInboundAuth).toHaveBeenCalledWith('in-1', 'sec')
+    await handleApiRequest(reqWith('127.0.0.1', 'POST', JSON.stringify({ action: 'inbound.setAuth', id: 'in-1' })), res, impl)
+    expect(impl.setInboundAuth).toHaveBeenLastCalledWith('in-1', undefined)
+  })
+
+  it('dispatches outbound.discover and outbound.update', async () => {
+    const impl = facadeStub()
+    const res = resCollector()
+    await handleApiRequest(reqWith('127.0.0.1', 'POST', JSON.stringify({ action: 'outbound.discover', agentCardUrl: 'https://x/card.json', token: 'sec' })), res, impl)
+    expect(res.output().status).toBe(200)
+    expect(impl.discoverOutbound).toHaveBeenCalledWith('https://x/card.json', 'sec')
+    await handleApiRequest(reqWith('127.0.0.1', 'POST', JSON.stringify({ action: 'outbound.update', id: 'out-1', name: 'n2', preset: 'ptc', timeoutMs: 5000 })), res, impl)
+    expect(impl.updateOutboundServer).toHaveBeenCalledWith('out-1', { name: 'n2', preset: 'ptc', timeoutMs: 5000 })
   })
 
   it('returns 409 with the facade message when a control action fails', async () => {

@@ -49,8 +49,12 @@ Architecture and design decisions: [docs/architecture.md](docs/architecture.md).
   `a2a/inbound-task` waterfall so policy plugins can veto or audit.
 - **Inbound connection monitoring** — the dashboard shows which remote peers
   are talking to each instance and can close a peer.
-- **Auth by environment variable** — each instance's bearer token is
-  referenced by env-var name (`authTokenEnv`), never stored as plaintext.
+- **Direct bearer-token entry** — the GUI's Bearer Token field writes each
+  instance's token through the harness credentials service (managed `.env` /
+  credential store, `0o700`); the record keeps only an auto-generated env-var
+  name and the value never lands in the a2a domain or the AgentCard. Runtime
+  resolution layers credentials → process environment, so externally exported
+  env vars keep working.
 - **Minimal plugin config** — instances are created through the GUI and live
   in the domain; the plugin `Config` only carries host-level defaults
   (`baseUrl`, `subagentProvider`, `defaultTimeoutMs`).
@@ -105,20 +109,21 @@ curl -X POST http://127.0.0.1:3080/a2a/<id> \
 
 ## GUI dashboard
 
-The browser half registers an **A2A 连接** page under Settings. From it you
-can, without touching any file:
+The browser half registers an **A2A 连接** page under Settings, organized in
+three tabs. From it you can, without touching any file:
 
-- **入站 Servers** — create inbound servers (name/description/version, agent
+- **入站 Servers** — create inbound servers (name/description/version, a
   preset picker listing real roster presets with the deployment default
-  preselected, auth env), start/stop, edit, and remove them; each row shows
-  its endpoint, preset, preset-derived skills and live AgentCard URL.
-- **出站 Servers** — add outbound connections (name, remote AgentCard URL,
-  preset picker, bearer env, timeout), start/stop, refresh, and remove them;
-  each row shows connection state and tool registration counts.
-- **任务** — view and cancel inbound tasks (each task carries its source
-  server).
-- **入站连接** — see which remote peers are talking to the instances and
-  close one.
+  preselected, and a Bearer Token field), start/stop, edit (including clearing
+  auth), and remove them; each card shows its endpoint, preset badge,
+  auth state, preset-derived skill chips and live AgentCard URL.
+- **出站 Servers** — add outbound connections with a two-phase flow: enter
+  the remote AgentCard URL (± bearer token) → **导入** to preview the remote
+  card (name/version/skills/endpoint) → **连接** to confirm; start/stop,
+  refresh, edit (name/preset/timeout/token) and remove them. Cards show
+  connection state (state dot), tool counts and errors.
+- **连接与任务** — the inbound-peer table (who is calling, task counts,
+  streaming, close control) and the task list (per-source view, cancel).
 
 All dashboard traffic goes through the **loopback-only** `/a2a/api` route —
 remote peers can never drive it.

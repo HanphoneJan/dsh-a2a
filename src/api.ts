@@ -18,8 +18,12 @@ import type { A2AServiceImpl } from './service.ts'
 export type ApiAction =
   | { readonly action: 'inbound.create'; readonly name: string; readonly description: string; readonly version: string; readonly endpointPath?: string; readonly preset?: string; readonly authTokenEnv?: string; readonly enabled?: boolean }
   | { readonly action: 'inbound.remove' | 'inbound.enable' | 'inbound.disable' | 'inbound.update'; readonly id: string; readonly name?: string; readonly description?: string; readonly version?: string; readonly endpointPath?: string; readonly preset?: string; readonly authTokenEnv?: string }
+  | { readonly action: 'inbound.setAuth'; readonly id: string; readonly token?: string }
   | { readonly action: 'outbound.create'; readonly name: string; readonly agentCardUrl: string; readonly bearerTokenEnv?: string; readonly preset?: string; readonly enabled?: boolean; readonly timeoutMs?: number }
   | { readonly action: 'outbound.remove' | 'outbound.enable' | 'outbound.disable' | 'outbound.refresh'; readonly id: string }
+  | { readonly action: 'outbound.setAuth'; readonly id: string; readonly token?: string }
+  | { readonly action: 'outbound.discover'; readonly agentCardUrl: string; readonly token?: string }
+  | { readonly action: 'outbound.update'; readonly id: string; readonly name?: string; readonly preset?: string; readonly timeoutMs?: number }
   | { readonly action: 'task.cancel'; readonly id: string }
   | { readonly action: 'inbound.close'; readonly id: string }
 
@@ -125,6 +129,8 @@ async function dispatch(payload: ApiAction, impl: A2AServiceImpl): Promise<{ rea
         ...(payload.preset !== undefined ? { preset: payload.preset } : {}),
         ...(payload.authTokenEnv !== undefined ? { authTokenEnv: payload.authTokenEnv } : {}),
       })
+    case 'inbound.setAuth':
+      return impl.setInboundAuth(payload.id, payload.token !== undefined && payload.token.length > 0 ? payload.token : undefined)
     case 'outbound.create':
       return impl.createOutboundServer({
         name: payload.name,
@@ -142,6 +148,16 @@ async function dispatch(payload: ApiAction, impl: A2AServiceImpl): Promise<{ rea
       return impl.setOutboundServerEnabled(payload.id, false)
     case 'outbound.refresh':
       return impl.refreshOutboundServer(payload.id)
+    case 'outbound.setAuth':
+      return impl.setOutboundAuth(payload.id, payload.token !== undefined && payload.token.length > 0 ? payload.token : undefined)
+    case 'outbound.discover':
+      return impl.discoverOutbound(payload.agentCardUrl, payload.token !== undefined && payload.token.length > 0 ? payload.token : undefined)
+    case 'outbound.update':
+      return impl.updateOutboundServer(payload.id, {
+        ...(payload.name !== undefined ? { name: payload.name } : {}),
+        ...(payload.preset !== undefined ? { preset: payload.preset } : {}),
+        ...(payload.timeoutMs !== undefined ? { timeoutMs: payload.timeoutMs } : {}),
+      })
     case 'task.cancel':
       return impl.cancelTask(payload.id)
     case 'inbound.close':

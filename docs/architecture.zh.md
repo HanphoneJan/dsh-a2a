@@ -93,12 +93,12 @@ SubscribeToTask / SendStreamingMessage 在订阅时补发当前状态帧，然�
 
 ## GUI 面板
 
-- **浏览器半区**（`src/client/`）— React 插件，经 `ctx.slots.inject` 注册为 `settings.section`（"A2A 连接"），由 DSH web shell 加载其客户端 bundle。渲染入站/出站 server 列表（preset 选择器只列真实 roster 预设并默认选中部署默认、鉴权 env 输入）与任务/对端视图；每行入站展示其 preset 派生的技能列表，而非技能宣告表单。
-- **回环 API**（`/a2a/api`）— GET 返回快照（入站/出站 server 视图、任务、对端）；`GET /a2a/api/presets` 返回 agent-preset 名单供选择器使用；POST 派发控制动作（inbound.create/update/remove/enable/disable、outbound.create/remove/enable/disable/refresh、task.cancel、inbound.close）。非回环调用 403。GUI、`/a2a` 命令与 `ctx.a2a` 消费方共用同一 facade 实现。
+- **浏览器半区**（`src/client/`）— React 插件，经 `ctx.slots.inject` 注册为 `settings.section`（"A2A 连接"），由 DSH web shell 加载其客户端 bundle（样式在 `client/dashboard.css.ts`，`--dsw-alias-*` token + `@container` 响应式）。三个 Tab：入站 Servers（preset 选择器只列真实 roster 预设并默认选中部署默认、派生技能 chips、Bearer Token 输入）、出站 Servers（两阶段"导入→预览→连接"）、连接与任务（对端 + 任务）。
+- **回环 API**（`/a2a/api`）— GET 返回快照（入站/出站 server 视图、任务、对端）；`GET /a2a/api/presets` 返回 agent-preset 名单供选择器使用；POST 派发控制动作（inbound.create/update/remove/enable/disable/setAuth、outbound.create/update/remove/enable/disable/refresh/setAuth/discover、task.cancel、inbound.close）。非回环调用 403。GUI、`/a2a` 命令与 `ctx.a2a` 消费方共用同一 facade 实现。
 
 ## 安全模型
 
-- 每个入站实例的 Bearer token 是**环境变量名**（`authTokenEnv`），启动时解析；绝不落配置明文。
+- **直接填 Bearer Token，分层读取。** GUI 的 Bearer Token 输入框把 token 经 harness 凭据服务（`ctx.credentials.set` → 托管 `.env`/凭据库，目录 `0o700`）写入；实例记录只保留自动生成的变量名（`A2A_INBOUND_<id>` / `A2A_OUTBOUND_<id>`）。运行时 `resolveAuthToken` 每操作分层读取（凭据 → 进程环境），外部 export 同名变量仍兼容。token 明文绝不进 `a2a` 域、插件配置或 AgentCard，GUI 不回显。
 - GUI 面板 API 仅**回环**；远程对端无法驱动。
 - AgentCard 只声明安全方案，绝不暴露 token 值。
 

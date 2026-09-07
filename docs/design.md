@@ -7,6 +7,10 @@
 > 2. **preset 确定 → 技能确定(一切皆插件)**:技能宣告**纯自动**,从该 preset 的技能目录派生——`agentPresets.standingKeyFor(preset)` 取得该 preset standing mount 的 scope key,再 `ctx.skills.list({ scope })` 取模型可调(`invocation.modelInvocable`)条目,填入 AgentCard;创建者不再手写宣告文字。远端用 `metadata.skill` 指定技能,任务进该 preset 会话执行,模型经会话内的 `tool-skill` 装载并运行该技能(闭环)。
 > 3. **需求 6 的"创建者输入,默认取 preset 名"按以上 2 修订**:技能来源是 preset 组合,不是自由文本;原先的实现("宣告即声明"手写列表 + `defaultSkillFor` 兜底)已删除。
 
+> **2026-09-07 GUI 打磨与鉴权填入方案(与用户讨论,待实施)**：对标 ryubyte/dsh-a2a 的成熟 GUI 并**超越之**,两项方案在此定稿——
+> 1. **GUI 全面打磨**(§9 重写):Tab 分区信息架构、完整 `--dsw-alias-*` 样式系统(独立 `dashboard.css.ts` 模块,含状态点/hover-focus/`@container` 响应式/空态/徽章)、出站"导入→预览→连接"两阶段流程、每区块空态引导。功能面(多实例 CRUD/preset/派生技能)本就超越 ryubyte,本轮让观感与交互同级且更强。
+> 2. **鉴权填入优化(无模式切换,§10.1 修订)**:GUI 表单就是**一个"Bearer Token(可选)"输入框**(空=匿名),不设"变量名/直接填"模式切换。填写保存时插件自动生成变量名(`A2A_INBOUND_<id>` / `A2A_OUTBOUND_<id>`),经 harness `ctx.credentials.set(credentialRef(name), value)` 写入用户层 `.env`/凭据存储(0o700 管理);实例记录只存该变量名。运行时统一 `ctx.credentials.resolve(name)` **分层读取**(进程环境 → 凭据存储 → `.env`),因此既支持 GUI 直填,也兼容外部 export 同名变量;token 明文绝不进 a2a 域/AgentCard,GUI 不回显 token 值(优于 ryubyte 的明文落 `a2a.json`)。
+
 历史:v0.2 文档(单实例、工具白名单派生技能)已废弃,由本稿取代;旧版配置不迁移,直接删除。
 
 ---
@@ -79,7 +83,7 @@
 - `name` / `description` / `version`: 身份(AgentCard 头部)
 - `endpointPath`: 独立端点,默认 `/a2a/<id>`
 - `preset`: **必填**的 agent preset id(如 `standard`/`ptc`);创建时未选 = 部署默认(`agentPresets.defaultId`)。该实例的入站任务会话全部按此 preset 组装
-- `authTokenEnv`: 可选,环境变量名(每实例独立鉴权)
+- `authTokenEnv`: 可选,环境变量名(每实例独立鉴权;也可经 GUI 直接填 token,由插件写入凭据层,§10.1)
 - `skills`: **派生视图(§5),不落库**——由 `preset` 实时派生,创建者不输入
 - `enabled`: 开关
 
@@ -114,7 +118,7 @@ GUI 可:创建(选 preset/设鉴权 env)、启用/停用、删除、编辑。删
 - `id`: 稳定标识(`a2a-out-<uuid>` 或用户命名)
 - `name`: 展示名(工具命名空间)
 - `agentCardUrl`: 远端 AgentCard 地址
-- `bearerTokenEnv`: 可选,环境变量名
+- `bearerTokenEnv`: 可选,环境变量名(或经 GUI 直接填 token,由插件写入凭据层,§10.1)
 - `preset`: **必填**,本端在与该远端交互时按该 preset 组装(调用远端时本地维护的会话);创建时未选 = 部署默认
 - `enabled` / `timeoutMs`
 
@@ -211,12 +215,37 @@ TaskRecord 增加可选 `serverId`,标识来自哪个入站实例;`jobs`/`pushCo
 
 ## 9. GUI(settings.section "A2A 连接")
 
-分栏:
-- **入站 Servers**:列表(名/端点/preset/启停/宣告文字/鉴权 env)+ 新建表单(选 preset、填技能宣告、可选鉴权 env)
-- **出站 Servers**:列表(名/远端 URL/预设/启停/超时)+ 新建(填 URL、选 preset、可选 token env)
-- **任务**:按实例过滤/取消
-- **入站监控**:每实例对端列表(来源/首末次/任务/关闭)
-- **服务身份**:实例 name/description/version 编辑(按实例)
+浏览器端注册 **A2A 连接** 设置页(React,`src/client/`)。对标 ryubyte/dsh-a2a 的成熟面板并超越之(功能面本就更广:多入站/多出站 CRUD、preset 选择、派生技能、鉴权 env;本轮让观感与交互同级):
+
+### 9.1 信息架构(Tab 分区)
+
+- 页首 **intro** 一行引导文案 + 错误/通知条;
+- **Tab 分区**(下划线样式,与应用内设置页一致):
+  - **入站 Servers** — 实例列表(名称/端点/preset 徽章/派生技能 chips/状态点/启停-编辑-删除) + 新建/编辑表单(名称/描述/版本、preset 下拉,只列真实 roster 预设、默认选中部署默认、无"默认"占位、鉴权填入);技能随 preset 派生展示(不可手输);
+  - **出站 Servers** — 连接列表(名称/远端 URL/状态点/技能数/工具数/最近活动/启停-刷新-删除-编辑) + **两阶段添加**(§9.3);
+  - **连接与任务** — 入站对端表(来源/地址/首次连接/最近活动/任务/流/操作) + 任务表(按实例过滤/取消);
+- 每区标题带**计数徽章**;页尾 **footer**:快照时间 + 每 3 秒自动刷新。
+
+### 9.2 样式系统(独立模块)
+
+- 新增 **`src/client/dashboard.css.ts`**(独立样式模块,idempotent `<style>` 注入,类名 `a2a-` 前缀防碰撞);
+- 全面使用 `--dsw-alias-*` 设计 token:label-primary/secondary/tertiary、bg-layer-2、border-l2/l3、state-success/warn/error、button-primary、interactive-bg-hover、brand-primary;另用 `--ds-font-family-code`(mono);
+- **状态点**(8px 圆点:connected 绿 / disconnected 灰 / reconnecting 橙 / disabled 橙)代替纯文字徽章;
+- 按钮 hover/focus-visible/disabled + transition;输入框/下拉/文本域统一样式;空态与 hint 容器;`@container`(inline-size)**按设置抽屉宽度响应式**(非浏览器视口);
+- 移除既有 inline `style` 属性与内联样式字符串。
+
+### 9.3 出站两阶段添加(超越 ryubyte 的同类流程)
+
+1. 输入远端 AgentCard URL(+ 可选 Bearer Token)→「导入」;
+2. 预览卡片:名称/版本/状态点/描述/技能列表/端点(hook `discover` 仅读卡片不改状态);
+3. 「连接」确认建立(`add`)或「取消」。
+
+### 9.4 鉴权填入(§10.1)
+
+- 入站创建/编辑与出站添加表单提供**一个**「Bearer Token(可选)」password 输入框(空 = 匿名/清除),**无"变量名/直接填"模式切换**;
+- 填写保存 → 插件自动生成变量名(`A2A_INBOUND_<id>` / `A2A_OUTBOUND_<id>`),调用 `ctx.credentials.set(ref, value)` 写入用户层 `.env`/凭据存储;实例记录只存该变量名;
+- 清空保存 → `ctx.credentials.unset(ref)` 并移除记录变量名(恢复匿名);
+- 编辑时**不回显 token 值**,仅显示"已配置鉴权 (Bearer) / 未配置"。
 
 所有写操作经 loopback-only `/a2a/api`。
 
@@ -224,10 +253,17 @@ TaskRecord 增加可选 `serverId`,标识来自哪个入站实例;`jobs`/`pushCo
 
 ## 10. 安全性
 
-- token 走环境变量名(每实例 `authTokenEnv`),不落明文
+### 10.1 token 存储与读取(直接填,层级兼容)
+
+- **GUI 直接填 Bearer Token**(唯一交互):填写保存 → 插件自动生成变量名(`A2A_INBOUND_<id>` / `A2A_OUTBOUND_<id>`),调用 harness `ctx.credentials.set(credentialRef(name), value)` 写入用户层 `.env`/凭据存储(目录 0o700 管理);实例记录只存该变量名;
+- **运行时统一 `ctx.credentials.resolve(name)` 分层读取**(每操作重解析):进程环境(外部 `export` 同名变量)→ 凭据存储 → `.env` 回退;故外部部署仍可用旧式"预置环境变量 + 记录变量名"方式,与 GUI 直填并存;
+- **硬约束(优于 ryubyte 的明文落 `a2a.json`)**:token 明文只存在于凭据服务管理的层,**绝不写入 `a2a` 域表/插件配置/AgentCard**;记录与卡片始终只有变量名;GUI 不反向回显 token 值。
+
+### 10.2 其余
+
 - `/a2a/api` 仅回环
 - 每入站实例独立鉴权
-- AgentCard 只声明安全方案,不暴露 token 值
+- AgentCard 只声明安全方案(bearer scheme),不暴露 token 值
 
 ---
 
@@ -288,3 +324,5 @@ src/
 3. 技能宣告 = preset 技能目录纯自动派生(standingKeyFor + `ctx.skills.list`,过滤 `modelInvocable`),创建者不手写 —— **已确认(2026-09-06,B' 方案)**
 4. 旧版本完全删除,不迁移 —— **已确认**
 5. 协议权威 = `.research/A2A`(官方 1.0.1) —— **已确认**(方法名/枚举/结构已按此对齐)
+6. GUI 打磨方案(§9:Tab 分区、样式系统、两阶段连接、状态点、空态/引导;目标超越 ryubyte/dsh-a2a) —— **方案已定(2026-09-07,待实施)**
+7. 鉴权填入优化(§10.1:直接填 Bearer Token 经 `ctx.credentials.set` 写入 .env,记录仅存变量名、token 不落域明文) —— **方案已定(2026-09-07,待实施)**
