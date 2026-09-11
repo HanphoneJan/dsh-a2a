@@ -47,10 +47,20 @@ export interface A2AServerOptions {
   readonly executors: ExecutorSet
   /** Present when inbound bearer auth is configured. */
   readonly authToken?: string
+  /**
+   * This instance's id, stamped onto every task record it creates so views
+   * can attribute a task (and its session) to the inbound instance it came
+   * through. Absent in unit harnesses → records stay unattributed.
+   */
+  readonly serverId?: string
   /** Policy gate: skill allow-list + the `a2a/inbound-task` waterfall. */
   readonly gate: (input: GateInput) => Promise<GateResult>
   readonly onInbound?: (facts: InboundFacts) => void
   readonly onTaskSettled?: (taskId: string) => void
+  /** One SSE subscription opened for a task (per subscriber, so counts). */
+  readonly onStreamOpen?: (info: { readonly taskId: string; readonly contextId: string }) => void
+  /** One SSE subscription for a task closed (terminal frame delivered). */
+  readonly onStreamClose?: (taskId: string) => void
   /** AgentCard route path for this instance; default = well-known A2A path. */
   readonly cardPath?: string
 }
@@ -211,6 +221,9 @@ export class A2AServer {
     const sub = (frame: StreamResponse): void => onEvent(`data: ${JSON.stringify(frame)}\n\n`)
     this.listeners.add(sub)
     try {
+      // The session registry derives "streaming" per context from these
+      // per-task subscription counts; record is defined past the branch above.
+      this.opts.onStreamOpen?.({ taskId: record.taskId, contextId: record.contextId })
       // Catch the subscriber up: the initial WORKING frame may have been
       // emitted before this subscription landed, so always deliver the
       // current status first (a settled task streams its terminal state).
@@ -223,6 +236,7 @@ export class A2AServer {
       if (finalRecord !== undefined) onEvent(`data: ${JSON.stringify({ task: toTask(finalRecord) })}\n\n`)
     } finally {
       this.listeners.delete(sub)
+      this.opts.onStreamClose?.(record.taskId)
     }
     return { status: 200 }
   }
@@ -274,6 +288,7 @@ export class A2AServer {
 
   /** Create (or continue) the task record for one message. */
   private ensureTask(message: Message, remotePeerId: string | null): TaskRecord {
+    const serverId = this.opts.serverId
     if (message.taskId !== undefined) {
       const existing = this.opts.store.get(message.taskId)
       if (existing !== undefined) {
@@ -282,13 +297,14 @@ export class A2AServer {
           skill: existing.skill,
           parts: message.parts,
           remotePeerId,
+          ...(serverId !== undefined ? { serverId } : {}),
         })
         return created
       }
     }
     const contextId = message.contextId ?? crypto.randomUUID()
     const skill = (message.metadata?.['skill'] as string | undefined) ?? 'chat'
-    return this.opts.store.create({ contextId, skill, parts: message.parts, remotePeerId })
+    return this.opts.store.create({ contextId, skill, parts: message.parts, remotePeerId, ...(serverId !== undefined ? { serverId } : {}) })
   }
 
   /** Run one task to a terminal state, emitting status/artifact frames. */

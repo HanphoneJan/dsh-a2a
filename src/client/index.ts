@@ -5,7 +5,8 @@
  * A2A composition across three tabs: inbound server instances (create/edit,
  * each with its own agent preset — skills derive automatically — and an
  * optional bearer token), outbound server connections (two-phase
- * discover→connect, auth, preset, timeout), and connection/task activity.
+ * discover→connect, auth, preset, timeout), and connection/session/task
+ * activity (per-context session monitoring with cancel/close).
  *
  * Styling lives in dashboard.css.ts, built entirely on the product's
  * `--dsw-alias-*` design tokens with `@container` responsiveness. All data and
@@ -89,6 +90,7 @@ export interface ApiSnapshot {
   readonly outbounds: readonly OutboundServerView[]
   readonly tasks: readonly unknown[]
   readonly peers: readonly unknown[]
+  readonly sessions: readonly SessionView[]
 }
 
 interface DiscoverPreview {
@@ -116,6 +118,22 @@ interface TaskView {
   readonly serverId?: string
   readonly status?: { readonly state: string }
   readonly metadata?: { readonly skill?: string }
+}
+
+/** One aggregated inbound session row (mirrors the host SessionView). */
+interface SessionView {
+  readonly contextId: string
+  readonly sessionId: string
+  readonly serverId?: string
+  readonly serverName?: string
+  readonly preset?: string
+  readonly status: string
+  readonly taskCount: number
+  readonly activeCount: number
+  readonly firstSeen: string
+  readonly lastSeen: string
+  readonly streaming: boolean
+  readonly live: boolean
 }
 
 async function fetchSnapshot(): Promise<ApiSnapshot> {
@@ -344,6 +362,7 @@ export function A2aSection(_props: SectionProps): ReactElement {
   const outbounds = snap?.outbounds ?? []
   const peers = (snap?.peers ?? []) as readonly InboundPeerView[]
   const tasks = (snap?.tasks ?? []) as readonly TaskView[]
+  const sessions = (snap?.sessions ?? []) as readonly SessionView[]
 
   const h = (text: string, count?: number): ReactElement => createElement(
     'div', { className: 'dsh-a2a-h3' },
@@ -365,7 +384,7 @@ export function A2aSection(_props: SectionProps): ReactElement {
       createElement('div', { className: 'dsh-a2a-tabs' },
         createElement('button', { className: 'dsh-a2a-tab', 'data-active': String(tab === 'inbound'), onClick: () => setTab('inbound') }, `入站 Servers（${inbounds.length}）`),
         createElement('button', { className: 'dsh-a2a-tab', 'data-active': String(tab === 'outbound'), onClick: () => setTab('outbound') }, `出站 Servers（${outbounds.length}）`),
-        createElement('button', { className: 'dsh-a2a-tab', 'data-active': String(tab === 'activity'), onClick: () => setTab('activity') }, `连接与任务（${peers.length}）`),
+        createElement('button', { className: 'dsh-a2a-tab', 'data-active': String(tab === 'activity'), onClick: () => setTab('activity') }, `连接与任务（${peers.length} 连接 · ${sessions.length} 会话）`),
       ),
 
       // ══ tab: inbound servers ══════════════════════════════════════════
@@ -516,6 +535,43 @@ export function A2aSection(_props: SectionProps): ReactElement {
                           createElement('td', null, p.streaming ? '●' : '—'),
                           createElement('td', null, createElement('span', { className: 'dsh-a2a-card-sub' }, `${p.firstSeen ?? ''} / ${p.lastSeen ?? ''}`)),
                           createElement('td', null, createElement('button', { className: 'dsh-a2a-btn', disabled: busy, onClick: () => { void control({ action: 'inbound.close', id: p.id }) } }, '关闭')),
+                        )),
+                      ),
+                    ),
+                  ),
+            ),
+            createElement('div', { className: 'dsh-a2a-crew' },
+              h('入站会话（按 contextId）', sessions.length),
+              sessions.length === 0
+                ? empty('暂无会话。其他 A2A 客户端带 contextId 调用本服务后，这里会出现一条会话记录。')
+                : createElement('div', { className: 'dsh-a2a-table-wrap' },
+                    createElement('table', { className: 'dsh-a2a-table' },
+                      createElement('thead', null, createElement('tr', null,
+                        createElement('th', null, '会话'),
+                        createElement('th', null, '实例'),
+                        createElement('th', null, 'Preset'),
+                        createElement('th', null, '状态'),
+                        createElement('th', null, '任务'),
+                        createElement('th', null, '流式'),
+                        createElement('th', null, '首次 / 最近'),
+                        createElement('th', null, '操作'),
+                      )),
+                      createElement('tbody', null,
+                        ...sessions.map((s) => createElement('tr', { key: s.contextId },
+                          createElement('td', null, createElement('span', { className: 'dsh-a2a-card-sub dsh-a2a-mono' }, s.contextId)),
+                          createElement('td', null, s.serverName ?? s.serverId ?? '-'),
+                          createElement('td', null, s.preset ?? '-'),
+                          createElement('td', null,
+                            createElement('span', { 'data-state': s.status === 'running' ? 'connected' : undefined, className: 'dsh-a2a-dot' }),
+                            ` ${s.status === 'running' ? '运行中' : '空闲'}`,
+                          ),
+                          createElement('td', null, `${s.taskCount}（活跃 ${s.activeCount}）`),
+                          createElement('td', null, s.streaming ? '●' : '—'),
+                          createElement('td', null, createElement('span', { className: 'dsh-a2a-card-sub' }, `${s.firstSeen} / ${s.lastSeen}`)),
+                          createElement('td', null,
+                            createElement('button', { className: 'dsh-a2a-btn', disabled: busy || s.activeCount === 0, onClick: () => { void control({ action: 'session.cancel', id: s.contextId }) } }, '取消活跃'),
+                            createElement('button', { className: 'dsh-a2a-btn', disabled: busy, onClick: () => { void control({ action: 'session.close', id: s.contextId }) } }, '关闭'),
+                          ),
                         )),
                       ),
                     ),

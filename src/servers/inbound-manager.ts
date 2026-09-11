@@ -27,6 +27,7 @@ import { createSessionExecutor } from '../server/exec/session.ts'
 import { createSubagentExecutor, type SubagentsLike } from '../server/exec/subagent.ts'
 import { ExecutorSet } from '../server/executor.ts'
 import { LiveInboundRegistry } from '../server/inbound-registry.ts'
+import { ContextSessionRegistry } from '../server/session-registry.ts'
 import type { TaskStore, InboundServerRecord } from '../server/store.ts'
 import type { AgentSkill } from '../protocol.ts'
 import type { GateInput, GateResult } from '../server/a2a-server.ts'
@@ -66,6 +67,7 @@ export interface InboundManagerHost {
 /** One live inbound instance's runtime handle. */
 export interface LiveInboundServer {
   readonly id: string
+  readonly name: string
   readonly record: InboundServerRecord
   /** Effective preset id (record's or the deployment default). */
   readonly preset: string | undefined
@@ -76,6 +78,10 @@ export interface LiveInboundServer {
   readonly routes: A2aRoutes
   readonly inbound: LiveInboundRegistry
   readonly executors: ExecutorSet
+  /** Live per-context session observation (SSE streaming per task). */
+  readonly sessions: ContextSessionRegistry
+  /** Preset-bound per-context session pool; absent = no agent loop mounted. */
+  readonly sessionPool?: ContextSessionPool
   readonly endpointPath: string
   readonly cardPath: string
   dispose(): void
@@ -189,6 +195,7 @@ function assemble(record: InboundServerRecord, skills: readonly AgentSkill[], au
   })
 
   // One preset-bound session pool per instance.
+  const sessions = new ContextSessionRegistry()
   const sessionPool = host.agents
     ? new ContextSessionPool(host.agents, {
       cwd: host.sessionCwd,
@@ -198,6 +205,14 @@ function assemble(record: InboundServerRecord, skills: readonly AgentSkill[], au
       // AgentRuntimeOptions.resolveAgentOptions signature under
       // exactOptionalPropertyTypes.
       resolveAgentOptions: () => host.resolveDefaultModel?.(),
+      // First open of a context's session: persist the contextId → sessionId
+      // binding so the durable store agrees with the pool. The write is
+      // memory-first (write-chain visible); a durability failure must not fail
+      // the task that just opened the session — log and continue.
+      onSessionOpened: (info) => host.tasks.setContextSession(info.contextId, info.sessionId)
+        .catch((err: unknown) => {
+          host.logger.error(`[a2a:${record.id}] context binding persist failed: ${String(err)}`)
+        }),
     })
     : undefined
   const sessionExecutor = sessionPool ? createSessionExecutor(sessionPool) : refuseExecutor('no agent loop mounted')
@@ -231,6 +246,9 @@ function assemble(record: InboundServerRecord, skills: readonly AgentSkill[], au
     ...(authToken !== undefined ? { authToken } : {}),
     cardPath,
     gate,
+    // Stamp this instance onto its task records (session views attribute
+    // contexts to the inbound instance they arrived through).
+    serverId: record.id,
     onInbound: (facts) => inbound.note({
       method: facts.method,
       ...(facts.source !== undefined ? { source: facts.source } : {}),
@@ -241,11 +259,16 @@ function assemble(record: InboundServerRecord, skills: readonly AgentSkill[], au
       host.logger.info(`[a2a:${record.id}] task settled ${taskId}`)
       inbound.settle(taskId)
     },
+    // Feed the per-instance session registry so the session view's
+    // "streaming" column reflects live SSE subscriptions per task.
+    onStreamOpen: ({ taskId }) => sessions.noteStreamOpen(taskId),
+    onStreamClose: (taskId) => sessions.noteStreamClose(taskId),
   })
   const routes = new A2aRoutes(host.webServer, server, cardPath)
 
   return {
     id: record.id,
+    name: record.name,
     record,
     preset,
     skills,
@@ -253,11 +276,14 @@ function assemble(record: InboundServerRecord, skills: readonly AgentSkill[], au
     server,
     routes,
     inbound,
+    sessions,
+    ...(sessionPool !== undefined ? { sessionPool } : {}),
     executors,
     endpointPath,
     cardPath,
     dispose: () => {
       routes.dispose()
+      sessions.clear()
       void executors.disposeAll().catch(() => {})
     },
   }

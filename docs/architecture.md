@@ -20,7 +20,7 @@ connection.
 ┌─ GUI (browser, settings.section "A2A 连接") ────────────────────────────┐
 │  inbound server instances (create/preset/skills/auth/start/stop/edit)   │
 │  outbound server instances (create/URL/preset/auth/timeout/start/stop)  │
-│  tasks (per-instance view/cancel) · inbound peer monitoring             │
+│  tasks (per-instance view/cancel) · inbound peers · sessions            │
 └───────────────────────────────────────┬─────────────────────────────────┘
                                         │ loopback-only /a2a/api
 ┌─ Host plane ──────────────────────────▼─────────────────────────────────┐
@@ -129,6 +129,44 @@ subscribe, then stream updates and the terminal task.
   `artifact` events. Without an agent loop the server answers with a readable
   refusal.
 
+### Inbound session layer (per contextId)
+
+The session layer makes the per-context DSH sessions observable and
+reclaimable, without touching the A2A protocol surface (protocol only knows
+tasks + contextId).
+
+- **Binding** — the first time a context's session opens, the pool's
+  `onSessionOpened` hook (fires exactly on `justOpened`) persists the
+  `contextId → sessionId` binding through `TaskStore.setContextSession`
+  (memory-first, so the domain's write-chain stays visible). The binding write
+  never fails an in-flight task — a durability failure is logged.
+- **Views** — `SessionView` rows are aggregated by `contextId` from the shared
+  task store (counts, running/idle, first/last activity) folded over live
+  observations: per-instance `ContextSessionRegistry` streaming counts (fed by
+  `A2AServer` SSE open/close hooks) and pool handle presence. Data-source
+  priority is live-first, task-store derivation as fallback: a composition
+  without an agent loop (no pool) still renders the session table from task
+  records; rows survive restarts as degraded (no handles/streaming) because
+  tasks are durable — only the in-memory observations reset, consistent with
+  the peer registry.
+- **Reclamation** — `cancelSessionTasks(contextId)` aborts every non-terminal
+  task of the context through the existing `A2AServer.abort` path (no new
+  infrastructure); `closeSession(contextId)` additionally disposes the context's
+  live handle(s) via `ContextSessionPool.disposeContext` and drops them from the
+  pool. **Close semantics**: close is an in-memory resource release, NOT a
+  conversation tombstone — A2A has no "closed context" notion, so the next task
+  on the same contextId re-opens a fresh handle through `agentFor` and is never
+  refused. Whether the reopened DSH session resumes persisted history is host
+  behavior outside this plugin's control.
+- **Attribution** — each `A2AServer` stamps its instance id onto the task
+  records it creates (`TaskStore.create.serverId`), so a session row (and the
+  task list's source column) can name the inbound instance it arrived through.
+
+The facade exposes `listSessions` / `cancelSessionTasks` / `closeSession`;
+sessions also ride the `status()` snapshot (`sessions` field) and the loopback
+API (`session.cancel` / `session.close`, loopback-only like every control
+action).
+
 ### Task store and domain
 
 Tasks and bindings live in the `a2a` storage domain (`DomainFacility.open` →
@@ -168,15 +206,15 @@ composition is the documented extension point.
   inbound servers (preset pickers listing real roster presets defaulting to
   the deployment default, preset-derived skill chips, Bearer Token entry),
   outbound servers (two-phase discover→connect with card preview), and
-  activity (peers + tasks).
+  activity (peers + sessions + tasks, stacked as separate crew sections).
 - **Loopback API** (`/a2a/api`) — GET returns a snapshot (inbound/outbound
-  server views, tasks, peers); `GET /a2a/api/presets` returns the agent-preset
-  roster for the pickers; POST dispatches control actions
+  server views, tasks, peers, sessions); `GET /a2a/api/presets` returns the
+  agent-preset roster for the pickers; POST dispatches control actions
   (inbound.create/update/remove/enable/disable/setAuth,
   outbound.create/update/remove/enable/disable/refresh/setAuth/discover,
-  task.cancel, inbound.close). Non-loopback callers get 403. The GUI, the
-  `/a2a` command, and `ctx.a2a` consumers all share the same facade
-  implementation.
+  task.cancel, inbound.close, session.cancel/session.close). Non-loopback
+  callers get 403. The GUI, the `/a2a` command, and `ctx.a2a` consumers all
+  share the same facade implementation.
 
 ## Security model
 
@@ -215,14 +253,22 @@ aggregate first.
 - OAuth 2.0 / per-client credentials, gRPC binding;
 - an interoperability conformance suite (spec audit + cross-tests instead);
 - persisted inbound-peer history (peers are live-connection records by
-  design).
+  design);
+- **session persistence/recovery** — session data is all in memory and resets
+  on process restart (DSH sessions cannot be resurrected); the durable task
+  store is the only history that survives, rendered as degraded rows;
+- **session editing / preset hot-swap** — the session layer is observe +
+  reclaim only; preset changes are instance edits in the inbound-servers tab,
+  not per-session operations.
 
 ## Tests
 
 - `tests/unit/` — protocol constants, JSON-RPC/SSE framing, card assembly and
   skill defaults, store (incl. write-chain visibility regressions), executor
   resolution, A2A server (dispatch, gate, auth, cancel, streaming), inbound
-  registry, outbound client and registry (stubbed fetch), dashboard API.
+  registry, session registry (streaming counting, view aggregation incl. the
+  degraded no-pool path), agent session pool (has/disposeContext/reopen),
+  outbound client and registry (stubbed fetch), dashboard API.
 - `tests/composition/` — boots `apply()` on a real Cordis `Context` with stub
   host services: multi-instance assembly, per-instance route registration,
   the declared-skill gate, `a2a/inbound-task` vetoes, task persistence,

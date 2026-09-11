@@ -14,6 +14,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { apply, Config } from '../../src/index.ts'
 import type { DomainFacility } from '@deepseek-ai/dsh-storage-domain'
 import type { InboundTaskDecision } from '../../src/events.ts'
+import { a2aDomainSpec } from '../../src/server/store.ts'
+import { TaskState } from '../../src/protocol.ts'
 
 /** A minimal in-memory kv table matching the storage-domain KvTable contract. */
 function fakeTable() {
@@ -171,6 +173,44 @@ async function sendMessage(ctx: Context, webServer: ReturnType<typeof fakeWebSer
   return JSON.parse(response()!.body)
 }
 
+/** SendMessage variant carrying an explicit contextId (drives the session layer). */
+function sendWithContext(route: { readonly kind: 'exact' | 'prefix'; readonly path: string; readonly handler: (...args: unknown[]) => unknown }, contextId: string, text: string, id = 10) {
+  // url comes from the route's own path (the registered endpoint).
+  return invoke(route, JSON.stringify({
+    jsonrpc: '2.0', id, method: 'SendMessage',
+    params: { message: { messageId: `mc-${id}`, role: 'user', parts: [{ text }], contextId } },
+  }), route.path)
+}
+
+/**
+ * Minimal agent registry stub: sessions reply instantly by default, or hang on
+ * an externally released `whenIdle` (to hold tasks in WORKING for cancel
+ * tests). Records every create call to observe close→reopen behavior.
+ */
+function fakeAgents() {
+  const creates: string[] = []
+  let hang = false
+  const releases: Array<() => void> = []
+  const create = vi.fn(async (opts: { sessionId: string }) => {
+    creates.push(opts.sessionId)
+    const agent = {
+      session: { deriveMessages: () => [{ role: 'assistant' as const, content: [{ type: 'text', text: 'hi from agent' }] }] },
+      send: () => {},
+      whenIdle: hang
+        ? () => new Promise<void>((resolve) => { releases.push(resolve) })
+        : async () => {},
+      cancel: () => {},
+    }
+    return { agent, dispose: async () => {} }
+  })
+  return {
+    create,
+    creates,
+    releaseAll: () => { for (const resolve of releases.splice(0)) resolve() },
+    setHang: (value: boolean) => { hang = value },
+  }
+}
+
 describe('plugin composition (multi-instance)', () => {
   it('boots with no instances and registers the dashboard api', async () => {
     const { ctx, webServer, commands } = harness()
@@ -287,5 +327,133 @@ describe('plugin composition (multi-instance)', () => {
     const { ctx } = harness()
     await waitForFacade(ctx)
     expect(await ctx.a2a.presets()).toEqual([])
+  })
+
+  it('surfaces per-context sessions with an agent loop and persists the binding', async () => {
+    const ctx = new Context()
+    contexts.push(ctx)
+    const storageDomain = fakeStorageDomain()
+    const webServer = fakeWebServer()
+    const tools = fakeTools()
+    const commands = fakeCommands()
+    const agents = fakeAgents()
+    ctx.provide('storageDomain', storageDomain)
+    ctx.provide('webServer', webServer as never)
+    ctx.provide('tools', tools as never)
+    ctx.provide('commands', commands as never)
+    ctx.provide('agents', agents as never)
+    apply(ctx, Config())
+    await waitForFacade(ctx)
+
+    const created = await ctx.a2a.createInboundServer({ name: 'Main', description: 'main', version: '1.0.0', enabled: true })
+    expect(created.ok).toBe(true)
+    const id = (ctx.a2a.listInboundServers() as Array<{ id: string }>)[0]!.id
+    const route = webServer.routes.find((r) => r.path === `/a2a/${id}` && r.kind === 'prefix')!
+
+    const contextId = 'ctx-fixed'
+    // The hang-less fake replies immediately: task completes with the reply text.
+    const first = await (async () => {
+      const pending = sendWithContext(route, contextId, 'hello')
+      const [result] = await Promise.all([pending.result, vi.waitFor(() => { expect(pending.response()).toBeDefined() })])
+      await result
+      return JSON.parse(pending.response()!.body)
+    })()
+    expect(first.result.status.state).toBe(TaskState.COMPLETED)
+
+    // The session view aggregates one row per contextId with live pool info.
+    let sessions = ctx.a2a.listSessions()
+    expect(sessions).toHaveLength(1)
+    const view = sessions[0]!
+    expect(view.contextId).toBe(contextId)
+    expect(view.sessionId).toBe(`a2a-${contextId}`)
+    expect(view.serverId).toBe(id)
+    expect(view.serverName).toBe('Main')
+    expect(view.status).toBe('idle')
+    expect(view.taskCount).toBe(1)
+    expect(view.activeCount).toBe(0)
+    expect(view.live).toBe(true)
+    expect(view.streaming).toBe(false)
+
+    // The first open persisted the contextId → sessionId binding durably
+    // (write-chain visible through the domain's own handle).
+    const handle = await (storageDomain.open as ReturnType<typeof vi.fn>)(a2aDomainSpec)
+    const contextsTable = (handle as { table(name: string): { get(key: string): string | undefined } }).table('contexts')
+    expect(JSON.parse(contextsTable.get(`ctx:${contextId}`)!)).toEqual({ sessionId: `a2a-${contextId}` })
+
+    // The view also degrades after close: row remains (task history) but no handle.
+    await ctx.a2a.closeSession(contextId)
+    sessions = ctx.a2a.listSessions()
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0]!.live).toBe(false)
+    expect(sessions[0]!.activeCount).toBe(0)
+  })
+
+  it('cancels a context\'s active tasks and reopens the session on the next task', async () => {
+    const ctx = new Context()
+    contexts.push(ctx)
+    const storageDomain = fakeStorageDomain()
+    const webServer = fakeWebServer()
+    const tools = fakeTools()
+    const commands = fakeCommands()
+    const agents = fakeAgents()
+    agents.setHang(true)
+    ctx.provide('storageDomain', storageDomain)
+    ctx.provide('webServer', webServer as never)
+    ctx.provide('tools', tools as never)
+    ctx.provide('commands', commands as never)
+    ctx.provide('agents', agents as never)
+    apply(ctx, Config())
+    await waitForFacade(ctx)
+
+    const created = await ctx.a2a.createInboundServer({ name: 'Main', description: 'main', version: '1.0.0', enabled: true })
+    expect(created.ok).toBe(true)
+    const id = (ctx.a2a.listInboundServers() as Array<{ id: string }>)[0]!.id
+    const route = webServer.routes.find((r) => r.path === `/a2a/${id}` && r.kind === 'prefix')!
+    const contextId = 'ctx-live'
+
+    // Fire the message; the hanging whenIdle keeps the task WORKING.
+    const pending = sendWithContext(route, contextId, 'work')
+    const tasks = () => ctx.a2a.listTasks() as Array<{ taskId: string; contextId: string; state: string }>
+    await vi.waitFor(() => {
+      expect(tasks().some((t) => t.contextId === contextId && t.state === TaskState.WORKING)).toBe(true)
+    })
+    let sessions = ctx.a2a.listSessions()
+    expect(sessions[0]!.status).toBe('running')
+    expect(sessions[0]!.activeCount).toBe(1)
+
+    // Cancel-all aborts the context's active tasks; the session stays open.
+    const cancel = await ctx.a2a.cancelSessionTasks(contextId)
+    expect(cancel.ok).toBe(true)
+    expect(cancel.message).toMatch(/canceled 1 active task/)
+    const canceledTask = tasks().find((t) => t.contextId === contextId)!
+    expect(canceledTask.state).toBe(TaskState.CANCELED)
+    sessions = ctx.a2a.listSessions()
+    expect(sessions[0]!.status).toBe('idle')
+    expect(sessions[0]!.activeCount).toBe(0)
+    expect(sessions[0]!.live).toBe(true)
+
+    // Close disposes the handle; the next task reopens a fresh one.
+    await ctx.a2a.closeSession(contextId)
+    sessions = ctx.a2a.listSessions()
+    expect(sessions[0]!.live).toBe(false)
+
+    // Release the drained turn so the first response finishes cleanly.
+    agents.releaseAll()
+    await pending.result
+
+    expect(agents.creates).toEqual([`a2a-${contextId}`])
+    // The next task reopens a fresh handle; un-hang so it can settle.
+    agents.setHang(false)
+    const again = await (async () => {
+      const second = sendWithContext(route, contextId, 'again')
+      await vi.waitFor(() => expect(second.response()).toBeDefined())
+      return JSON.parse(second.response()!.body)
+    })()
+    expect(again.result.status.state).toBe(TaskState.COMPLETED)
+    // A second open ⇒ a second create (close is a release, not a tombstone).
+    expect(agents.creates).toEqual([`a2a-${contextId}`, `a2a-${contextId}`])
+    sessions = ctx.a2a.listSessions()
+    expect(sessions[0]!.live).toBe(true)
+    expect(sessions[0]!.taskCount).toBe(2)
   })
 })

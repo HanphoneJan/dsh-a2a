@@ -49,6 +49,13 @@ Architecture and design decisions: [docs/architecture.md](docs/architecture.md).
   `a2a/inbound-task` waterfall so policy plugins can veto or audit.
 - **Inbound connection monitoring** — the dashboard shows which remote peers
   are talking to each instance and can close a peer.
+- **Inbound session layer (per context)** — each A2A conversation
+  (`contextId`) maps to one live DSH session (`a2a-<contextId>`); the GUI
+  aggregates sessions by contextId (status, task counts, streaming, first/last
+  activity) and can cancel a session's active tasks or close its live session
+  — close is an in-memory release, the next task on the same contextId simply
+  re-opens a fresh one. All-in-memory, like the peer registry; without an
+  agent loop the table still renders from task records (degraded).
 - **Direct bearer-token entry** — the GUI's Bearer Token field writes each
   instance's token through the harness credentials service (managed `.env` /
   credential store, `0o700`); the record keeps only an auto-generated env-var
@@ -123,7 +130,9 @@ three tabs. From it you can, without touching any file:
   refresh, edit (name/preset/timeout/token) and remove them. Cards show
   connection state (state dot), tool counts and errors.
 - **连接与任务** — the inbound-peer table (who is calling, task counts,
-  streaming, close control) and the task list (per-source view, cancel).
+  streaming, close control), the per-context session table (status dot,
+  task/active counts, streaming, first/last activity, cancel-active / close
+  buttons), and the task list (per-source view, cancel).
 
 All dashboard traffic goes through the **loopback-only** `/a2a/api` route —
 remote peers can never drive it.
@@ -182,7 +191,8 @@ A `/a2a` chat command mirrors the dashboard (a text backup to the GUI):
 a2a status | presets | peers |
     inbound list|create|remove|enable|disable |
     outbound list|create|remove|enable|disable|refresh |
-    tasks | task get|cancel <id> | help
+    tasks | task get|cancel <id> |
+    sessions | session cancel|close <contextId> | help
 ```
 
 ## How it works
@@ -191,7 +201,9 @@ a2a status | presets | peers |
   session pool + `A2AServer` + routes per instance. Each instance persists in
   the `inbound_servers` table and serves its own endpoint + AgentCard. Tasks
   flow through `a2a/inbound-task` → executor → task store, with SSE frames
-  streamed to subscribers.
+  streamed to subscribers. A per-instance session registry observes SSE
+  lifecycle hooks; the facade folds those live observations over the shared
+  task store into per-`contextId` session views.
 - **Outbound** — an `OutboundServerManager` owns every connection: one
   `OutboundAgentRegistry` with an isolated agent store per instance,
   persisted in the `outbound_servers` table. `A2AClient` discovers an
@@ -214,7 +226,7 @@ src/
     inbound-manager.ts    #   inbound server instances (CRUD, routes, lifecycle)
     outbound-manager.ts   #   outbound connection instances (CRUD, tools)
   server/                 # single-instance internals: store, card, a2a-server,
-                          #   routes, executors, inbound-registry
+                          #   routes, executors, inbound-registry, session-registry
   outbound/               # outbound internals: A2AClient, registry, tools
   client/                 # browser half: settings dashboard (React)
   service.ts              # ctx.a2a service facade

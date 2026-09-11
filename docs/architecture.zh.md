@@ -14,7 +14,7 @@ Agent2Agent（A2A）v1.0.1 双端插件，用于 DeepSeek Harness。
 ┌─ GUI（浏览器, settings.section "A2A 连接"） ─────────────────────────────┐
 │  入站 server 实例（创建/preset/技能/鉴权/启停/编辑）                       │
 │  出站 server 实例（创建/URL/preset/鉴权/超时/启停）                       │
-│  任务（按实例查看/取消）· 入站对端监控                                    │
+│  任务（按实例查看/取消）· 入站对端 · 会话                                 │
 └───────────────────────────────────────┬─────────────────────────────────┘
                                         │ loopback-only /a2a/api
 ┌─ Host 半区 ───────────────────────────▼─────────────────────────────────┐
@@ -77,6 +77,17 @@ SubscribeToTask / SendStreamingMessage 在订阅时补发当前状态帧，然�
 - **session** — 每个 `contextId` 一个 DSH 会话，按实例 preset 组装；结果 = 落定回复。
 - **subagent** — 委托 `ctx.subagents`，工具调用过程以 `artifact` 事件流式回传。没有 agent 循环时 server 仍以可读拒绝应答。
 
+### 入站会话层（按 contextId）
+
+会话层让每个 contextId 的 DSH 会话可观测、可回收，且完全不动 A2A 协议面（协议只认识 task/contextId）。
+
+- **绑定** — 某 context 的会话首次打开时，会池的 `onSessionOpened` 钩子（恰在 `justOpened` 时触发）经 `TaskStore.setContextSession` 持久化 `contextId → sessionId` 绑定（内存先行，保持域写链可见）。绑定写入失败绝不放倒进行中的任务——记录日志继续。
+- **视图** — `SessionView` 行按 `contextId` 聚合：共享任务存储给出计数、running/idle、首次/最近活动，再折叠活跃观测——每实例 `ContextSessionRegistry` 的流式计数（由 `A2AServer` 的 SSE 开/关钩子喂养）与会池句柄存在性。数据来源优先级：实时优先、任务存储推导兜底；没有 agent 循环（无会池）的组合仍能从任务记录渲染会话表；重启后因任务持久化而行的降级形态仍在（无句柄/无流式），只有内存观测被清空，与对端注册表一致。
+- **回收** — `cancelSessionTasks(contextId)` 经既有 `A2AServer.abort` 路径中止该 context 的全部非终态任务（不新造基础设施）；`closeSession(contextId)` 额外经 `ContextSessionPool.disposeContext` 释放该 context 的活跃句柄并移出会池。**关闭语义**：关闭是内存级资源释放，**不是**会话墓碑——A2A 没有"已关闭上下文"概念，同一 contextId 之后再来任务经 `agentFor` 自动重开新句柄、永不拒绝；重开后的 DSH 会话是否恢复持久化历史属宿主行为，不在本插件控制内。
+- **归属** — 每个 `A2AServer` 把它创建的每条任务记录盖上实例 id（`TaskStore.create.serverId`），会话行（以及任务列表的来源列）因此能点名任务来自哪个入站实例。
+
+facade 暴露 `listSessions` / `cancelSessionTasks` / `closeSession`；会话也随 `status()` 快照（`sessions` 字段）与回环 API（`session.cancel` / `session.close`，与所有控制动作一样仅回环）输出。
+
 ### 任务存储与域
 
 任务与绑定存于 `a2a` 存储域（`DomainFacility.open` → `Domain` → 类型化 `KvTable`），JSON 编码记录。表：`tasks`（每条记录带可选来源实例 `serverId`）、`contexts`、`agents`（按实例的出站 agent 记录）、`identity`、`inbound_servers`、`outbound_servers`。`DomainTaskStore` 自持写链可见的活跃视图，使同步读能看到自身写入。
@@ -93,8 +104,8 @@ SubscribeToTask / SendStreamingMessage 在订阅时补发当前状态帧，然�
 
 ## GUI 面板
 
-- **浏览器半区**（`src/client/`）— React 插件，经 `ctx.slots.inject` 注册为 `settings.section`（"A2A 连接"），由 DSH web shell 加载其客户端 bundle（样式在 `client/dashboard.css.ts`，`--dsw-alias-*` token + `@container` 响应式）。三个 Tab：入站 Servers（preset 选择器只列真实 roster 预设并默认选中部署默认、派生技能 chips、Bearer Token 输入）、出站 Servers（两阶段"导入→预览→连接"）、连接与任务（对端 + 任务）。
-- **回环 API**（`/a2a/api`）— GET 返回快照（入站/出站 server 视图、任务、对端）；`GET /a2a/api/presets` 返回 agent-preset 名单供选择器使用；POST 派发控制动作（inbound.create/update/remove/enable/disable/setAuth、outbound.create/update/remove/enable/disable/refresh/setAuth/discover、task.cancel、inbound.close）。非回环调用 403。GUI、`/a2a` 命令与 `ctx.a2a` 消费方共用同一 facade 实现。
+- **浏览器半区**（`src/client/`）— React 插件，经 `ctx.slots.inject` 注册为 `settings.section`（"A2A 连接"），由 DSH web shell 加载其客户端 bundle（样式在 `client/dashboard.css.ts`，`--dsw-alias-*` token + `@container` 响应式）。三个 Tab：入站 Servers（preset 选择器只列真实 roster 预设并默认选中部署默认、派生技能 chips、Bearer Token 输入）、出站 Servers（两阶段"导入→预览→连接"）、连接与任务（对端 + 会话 + 任务，分别以 crew 区块纵向堆叠）。
+- **回环 API**（`/a2a/api`）— GET 返回快照（入站/出站 server 视图、任务、对端、会话）；`GET /a2a/api/presets` 返回 agent-preset 名单供选择器使用；POST 派发控制动作（inbound.create/update/remove/enable/disable/setAuth、outbound.create/update/remove/enable/disable/refresh/setAuth/discover、task.cancel、inbound.close、session.cancel/session.close）。非回环调用 403。GUI、`/a2a` 命令与 `ctx.a2a` 消费方共用同一 facade 实现。
 
 ## 安全模型
 
@@ -116,9 +127,11 @@ SubscribeToTask / SendStreamingMessage 在订阅时补发当前状态帧，然�
 - 出站 preset 衔接会话组装接缝（P0 时 preset 为持久化元数据）；
 - OAuth 2.0 / 每客户端凭据、gRPC 绑定；
 - 互操作 conformance 套件（以规范审计 + 交叉测试替代）；
-- 入站对端历史持久化（对端按设计是活跃连接的瞬时记录）。
+- 入站对端历史持久化（对端按设计是活跃连接的瞬时记录）；
+- **会话持久化/恢复** — 会话数据全在内存，进程重启即清空（DSH 会话不可复活）；唯一跨重启的历史是持久化任务存储，展现为降级行；
+- **会话编辑 / preset 热切换** — 会话层只做观察 + 回收；preset 的修改是"入站 Servers"页的实例编辑，不是按会话的操作。
 
 ## 测试
 
-- `tests/unit/` — 协议常量、JSON-RPC/SSE 帧、卡片组装与技能默认值、store（含写链可见性回归）、执行器解析、A2A server（dispatch、gate、auth、cancel、streaming）、入站注册表、出站 client 与注册表（stub fetch）、面板 API。
+- `tests/unit/` — 协议常量、JSON-RPC/SSE 帧、卡片组装与技能默认值、store（含写链可见性回归）、执行器解析、A2A server（dispatch、gate、auth、cancel、streaming）、入站注册表、会话注册表（流式计数、视图聚合含无会池降级路径）、agent 会话池（has/disposeContext/重开）、出站 client 与注册表（stub fetch）、面板 API。
 - `tests/composition/` — 在真实 Cordis `Context` 上以 stub 宿主服务跑 `apply()`：多实例组装、按实例路由注册、宣告技能门禁、`a2a/inbound-task` 否决、任务持久化、出站工具注册、实例 CRUD/删除。

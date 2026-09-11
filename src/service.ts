@@ -6,6 +6,9 @@
  */
 
 import { Service, type Context } from '@deepseek-ai/cordis'
+import type { SessionView } from './server/session-registry.ts'
+
+export type { SessionView }
 
 /** A result with a user-facing message. */
 export interface OpResult {
@@ -110,6 +113,17 @@ export interface A2AServiceImpl {
   getTask(taskId: string): unknown
   listTasks(): unknown
   cancelTask(taskId: string): Promise<OpResult>
+  // ── inbound sessions (per contextId) ────────────────────────────────
+  /** Aggregate session views (live observations + task-store derivation). */
+  listSessions(): SessionView[]
+  /** Cancel every non-terminal task of one context (session stays open). */
+  cancelSessionTasks(contextId: string): Promise<OpResult>
+  /**
+   * Cancel the context's active tasks, dispose its live session handle(s) and
+   * drop them from the pools. The next task on the same contextId re-opens a
+   * fresh handle (close is a resource release, not a conversation tombstone).
+   */
+  closeSession(contextId: string): Promise<OpResult>
   // ── inbound peer monitoring (per instance) ──────────────────────────
   inbounds(): unknown
   closeInbound(peerId: string): Promise<OpResult>
@@ -198,6 +212,18 @@ export class A2AService extends Service {
 
   async cancelTask(taskId: string): Promise<OpResult> {
     return this.impl.cancelTask(taskId)
+  }
+
+  listSessions(): SessionView[] {
+    return this.impl.listSessions()
+  }
+
+  async cancelSessionTasks(contextId: string): Promise<OpResult> {
+    return this.impl.cancelSessionTasks(contextId)
+  }
+
+  async closeSession(contextId: string): Promise<OpResult> {
+    return this.impl.closeSession(contextId)
   }
 
   inbounds(): unknown {

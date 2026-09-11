@@ -26,6 +26,7 @@ export type ApiAction =
   | { readonly action: 'outbound.update'; readonly id: string; readonly name?: string; readonly preset?: string; readonly timeoutMs?: number }
   | { readonly action: 'task.cancel'; readonly id: string }
   | { readonly action: 'inbound.close'; readonly id: string }
+  | { readonly action: 'session.cancel' | 'session.close'; readonly id: string }
 
 /** One snapshot of the whole plugin for the dashboard. */
 export interface ApiSnapshot {
@@ -33,6 +34,7 @@ export interface ApiSnapshot {
   readonly outbounds: readonly unknown[]
   readonly tasks: readonly unknown[]
   readonly peers: readonly unknown[]
+  readonly sessions: readonly unknown[]
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -92,13 +94,15 @@ export async function handleApiRequest(
 }
 
 function snapshotOf(impl: A2AServiceImpl): ApiSnapshot {
-  const status = impl.status() as { inbounds: readonly unknown[]; outbounds: readonly unknown[]; tasks: number; peers?: readonly unknown[] }
+  const status = impl.status() as { inbounds: readonly unknown[]; outbounds: readonly unknown[]; tasks: number; peers?: readonly unknown[]; sessions?: readonly unknown[] }
   return {
     inbounds: status.inbounds ?? [],
     outbounds: status.outbounds ?? [],
     tasks: impl.listTasks() as readonly unknown[],
     // `status()` may already carry aggregated peers; fall back to the facade.
     peers: (status.peers ?? impl.inbounds()) as readonly unknown[],
+    // `status()` carries the aggregated session views when mounted.
+    sessions: (status.sessions ?? impl.listSessions()) as readonly unknown[],
   }
 }
 
@@ -162,6 +166,10 @@ async function dispatch(payload: ApiAction, impl: A2AServiceImpl): Promise<{ rea
       return impl.cancelTask(payload.id)
     case 'inbound.close':
       return impl.closeInbound(payload.id)
+    case 'session.cancel':
+      return impl.cancelSessionTasks(payload.id)
+    case 'session.close':
+      return impl.closeSession(payload.id)
     default:
       return { ok: false, message: `unknown action ${String((payload as { action?: unknown }).action)}` }
   }

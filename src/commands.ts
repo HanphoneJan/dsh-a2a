@@ -84,10 +84,18 @@ export function buildA2aCommand(impl: A2AServiceImpl): CommandDefinition {
           if (action === 'cancel' && id) return outcome(await impl.cancelTask(id))
           return error('usage: /a2a task get|cancel <taskId>')
         }
+        case 'sessions':
+          return success(JSON.stringify(impl.listSessions(), null, 2))
+        case 'session': {
+          const [action, id] = rest
+          if (action === 'cancel' && id) return outcome(await impl.cancelSessionTasks(id))
+          if (action === 'close' && id) return outcome(await impl.closeSession(id))
+          return error('usage: /a2a session cancel|close <contextId>')
+        }
         case 'peers':
           return success(JSON.stringify(impl.inbounds(), null, 2))
         case 'help':
-          return success('a2a: status | presets | inbound list/create/remove/enable/disable | outbound list/create/remove/enable/disable/refresh | tasks | task get/cancel <id> | peers | help')
+          return success('a2a: status | presets | inbound list/create/remove/enable/disable | outbound list/create/remove/enable/disable/refresh | tasks | task get/cancel <id> | sessions | session cancel/close <contextId> | peers | help')
         default:
           return error(`unknown a2a verb "${verb}" (try /a2a help)`)
       }

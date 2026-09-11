@@ -156,6 +156,31 @@ export class ContextSessionPool {
     return { agent: handle.agent, sessionId, justOpened: true }
   }
 
+  /** True while this pool holds a live handle for the context. */
+  has(contextId: string): boolean {
+    return this.handles.has(contextId)
+  }
+
+  /**
+   * Dispose ONE context's session (the caller aborts its active tasks first).
+   * Removes the handle and its serialization tail, lets an in-flight turn
+   * drain, then disposes the handle. Returns whether a handle was held.
+   *
+   * Close is an in-memory resource release, NOT a conversation tombstone: the
+   * A2A protocol has no "closed context" notion, so the next task on the same
+   * contextId simply re-opens a fresh handle through `agentFor` (and the host
+   * agent runtime may or may not resume persisted history — host behavior).
+   */
+  async disposeContext(contextId: string): Promise<boolean> {
+    const handle = this.handles.get(contextId)
+    if (handle === undefined) return false
+    this.handles.delete(contextId)
+    const tail = this.tails.get(contextId)
+    this.tails.delete(contextId)
+    await Promise.allSettled([tail ?? Promise.resolve(), handle.dispose()])
+    return true
+  }
+
   /** Run one turn on a context's session, serialized behind its tail. */
   async runTurn(contextId: string, prompt: string, signal: AbortSignal): Promise<string> {
     const { agent, sessionId, justOpened } = await this.agentFor(contextId)

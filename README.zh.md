@@ -17,6 +17,7 @@ Agent2Agent（A2A）v1.0.1 双端插件，用于 [DeepSeek Harness](https://gith
 - **执行器** — `session`（每个 `contextId` 一个 DSH 会话）与 `subagent`（委托 `ctx.subagents`，工具调用过程流式回传）。
 - **受治理入站** — 每个入站任务经过 `a2a/inbound-task` waterfall，策略插件可否决或审计。
 - **入站连接监控** — 面板展示每个实例的对端连接，可关闭某个对端。
+- **入站会话层（按 contextId）** — 每条 A2A 对话（`contextId`）对应一个活跃 DSH 会话（`a2a-<contextId>`）；GUI 按 contextId 聚合会话（状态、任务数、流式、首次/最近活动），可取消该会话的全部活跃任务或关闭其活跃会话——关闭是内存级释放，同一 contextId 再来任务时自动重开新会话。会话数据全在内存（与对端注册表一致）；没有 agent 循环时表格仍从任务记录降级展示。
 - **直接填 Bearer Token** — GUI 的 Bearer Token 输入框把每个实例的 token 经 harness 凭据服务写入托管 `.env`/凭据库（`0o700`）；记录只保留自动生成的变量名，token 明文绝不进 a2a 域或 AgentCard。运行时读取分层（凭据 → 进程环境），外部 export 同名变量仍兼容。
 - **最小插件配置** — 实例经 GUI 创建并存于域中；插件 `Config` 只承载宿主级默认值（`baseUrl`、`subagentProvider`、`defaultTimeoutMs`）。
 
@@ -70,7 +71,7 @@ curl -X POST http://127.0.0.1:3080/a2a/<id> \
 
 - **入站 Servers** — 创建入站 server（名称/描述/版本、agent preset 选择器——只列真实 roster 预设并预选部署默认、Bearer Token 输入框），启停、编辑（含清除鉴权）、删除；每张卡片显示端点、preset 徽章、鉴权状态、preset 派生技能 chips 与实时 AgentCard URL。
 - **出站 Servers** — 两阶段添加出站连接：输入远端 AgentCard URL（± Bearer Token）→「导入」预览远端卡片（名称/版本/技能/端点）→「连接」确认；启停、刷新、编辑（名称/preset/超时/token）、删除。卡片显示连接状态点、工具数与错误。
-- **连接与任务** — 入站对端表（谁在调用、任务数、流式、关闭控制）与任务列表（按来源查看、取消）。
+- **连接与任务** — 入站对端表（谁在调用、任务数、流式、关闭控制）、按 contextId 的会话表（状态点、任务/活跃数、流式、首次/最近活动、取消活跃/关闭按钮）与任务列表（按来源查看、取消）。
 
 所有面板流量走 profile webServer 上的**仅回环** `/a2a/api` 路由——远程对端永远无法驱动它。
 
@@ -117,12 +118,13 @@ base 类 profile 全部挂载：`webServer`（`@deepseek-ai/dsh-host-webserver`�
 a2a status | presets | peers |
     inbound list|create|remove|enable|disable |
     outbound list|create|remove|enable|disable|refresh |
-    tasks | task get|cancel <id> | help
+    tasks | task get|cancel <id> |
+    sessions | session cancel|close <contextId> | help
 ```
 
 ## 工作原理
 
-- **入站** — `InboundServerManager` 拥有每个实例：每实例 = preset 化会话池 + `A2AServer` + 路由。实例持久化于 `inbound_servers` 表，各自服务独立端点与 AgentCard。任务流经 `a2a/inbound-task` → 执行器 → 任务存储，SSE 帧推送给订阅者。
+- **入站** — `InboundServerManager` 拥有每个实例：每实例 = preset 化会话池 + `A2AServer` + 路由。实例持久化于 `inbound_servers` 表，各自服务独立端点与 AgentCard。任务流经 `a2a/inbound-task` → 执行器 → 任务存储，SSE 帧推送给订阅者。每实例的会话注册表观察 SSE 生命周期钩子；facade 把这些活跃观测与共享任务存储折叠成按 `contextId` 的会话视图。
 - **出站** — `OutboundServerManager` 拥有每个连接：每实例一个带独立 agent 存储的 `OutboundAgentRegistry`，实例持久化于 `outbound_servers` 表。`A2AClient` 发现 AgentCard，每个技能注册为一个工具。
 - **面板** — 浏览器端（React，`settings.section`）经仅回环 `/a2a/api` 路由读写；host 端喂给它入站/出站 server 视图与 preset 名单（`/a2a/api/presets`）。
 
@@ -140,7 +142,7 @@ src/
     inbound-manager.ts    #   入站 server 实例（CRUD、路由、生命周期）
     outbound-manager.ts   #   出站连接实例（CRUD、工具）
   server/                 # 单实例内部件：store、card、a2a-server、
-                          #   routes、executors、inbound-registry
+                          #   routes、executors、inbound-registry、session-registry
   outbound/               # 出站内部件：A2AClient、registry、tools
   client/                 # 浏览器半区：设置面板 (React)
   service.ts              # ctx.a2a 服务 facade

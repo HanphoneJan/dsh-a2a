@@ -65,6 +65,9 @@ function facadeStub(overrides: Partial<A2AServiceImpl> = {}): A2AServiceImpl {
     getTask: () => undefined,
     listTasks: () => [],
     cancelTask: vi.fn(async () => ({ ok: false, message: 'nope' })),
+    listSessions: () => [],
+    cancelSessionTasks: vi.fn(async () => ({ ok: true, message: 'canceled' })),
+    closeSession: vi.fn(async () => ({ ok: true, message: 'closed' })),
     closeInbound: vi.fn(async () => ({ ok: true, message: 'peer closed' })),
     inbounds: () => [],
     ...overrides,
@@ -170,13 +173,40 @@ describe('handleApiRequest', () => {
     expect(impl.closeInbound).toHaveBeenCalledWith('peer-1')
   })
 
-  it('includes inbounds/outbounds/tasks in the snapshot', async () => {
-    const impl = facadeStub({ status: () => ({ inbounds: [{ id: 'in-1' }], outbounds: [{ id: 'out-1' }], tasks: 0, peers: [{ id: 'p1' }] }) })
+  it('dispatches session.cancel and session.close by context id', async () => {
+    const impl = facadeStub()
+    const res = resCollector()
+    await handleApiRequest(reqWith('127.0.0.1', 'POST', JSON.stringify({ action: 'session.cancel', id: 'ctx-1' })), res, impl)
+    expect(res.output().status).toBe(200)
+    expect(impl.cancelSessionTasks).toHaveBeenCalledWith('ctx-1')
+    await handleApiRequest(reqWith('127.0.0.1', 'POST', JSON.stringify({ action: 'session.close', id: 'ctx-1' })), res, impl)
+    expect(res.output().status).toBe(200)
+    expect(impl.closeSession).toHaveBeenCalledWith('ctx-1')
+  })
+
+  it('includes inbounds/outbounds/tasks/peers/sessions in the snapshot', async () => {
+    const impl = facadeStub({
+      status: () => ({
+        inbounds: [{ id: 'in-1' }],
+        outbounds: [{ id: 'out-1' }],
+        tasks: 0,
+        peers: [{ id: 'p1' }],
+        sessions: [{ contextId: 'c1' }],
+      }),
+    })
     const res = resCollector()
     await handleApiRequest(reqWith('127.0.0.1'), res, impl)
     const body = JSON.parse(res.output().body)
     expect(body.inbounds).toEqual([{ id: 'in-1' }])
     expect(body.outbounds).toEqual([{ id: 'out-1' }])
     expect(body.peers).toEqual([{ id: 'p1' }])
+    expect(body.sessions).toEqual([{ contextId: 'c1' }])
+  })
+
+  it('falls back to the facade listSessions when status carries none', async () => {
+    const impl = facadeStub({ status: () => ({ inbounds: [], outbounds: [], tasks: 0 }), listSessions: () => [{ contextId: 'from-facade' }] })
+    const res = resCollector()
+    await handleApiRequest(reqWith('127.0.0.1'), res, impl)
+    expect(JSON.parse(res.output().body).sessions).toEqual([{ contextId: 'from-facade' }])
   })
 })

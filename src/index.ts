@@ -26,6 +26,8 @@ import { join } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { openDomain, DomainTaskStore, type A2aDomain, type TaskStore } from './server/store.ts'
 import { probeService, type AgentPresetsLike, type AgentRegistryLike, type CredentialsLike, type SkillsLike } from './server/exec/agent-runtime.ts'
+import { aggregateSessionViews, type SessionView } from './server/session-registry.ts'
+import { isTerminal } from './protocol.ts'
 import type { SubagentsLike } from './server/exec/subagent.ts'
 import { handleApiRequest } from './api.ts'
 import { A2AService, type A2AServiceImpl, type InboundCreateInput, type InboundServerView, type OutboundCreateInput, type OpResult, type PresetView, type SkillView } from './service.ts'
@@ -178,12 +180,33 @@ function makeFacade(host: FacadeHost): A2AServiceImpl {
     }
   }
 
+  // Cancel every non-terminal task of one context through whichever instance
+  // owns the shared task store (abort is idempotent per task record).
+  const cancelContextTasks = (contextId: string): number => {
+    let canceled = 0
+    for (const task of host.store.list()) {
+      if (task.contextId !== contextId || isTerminal(task.state)) continue
+      for (const live of host.inboundManager.list()) {
+        if (live.server.abort(task.taskId)) {
+          canceled += 1
+          break
+        }
+      }
+    }
+    return canceled
+  }
+
+  // Aggregate the session layer: live observations (streaming, pool handles)
+  // folded over the shared task store, grouped by contextId.
+  const sessionViews = (): SessionView[] => aggregateSessionViews(host.store.list(), host.inboundManager.list())
+
   return {
     status(): unknown {
       return {
         inbounds: host.inboundManager.list().map((live) => inboundView(live.id)).filter((v): v is InboundServerView => v !== undefined),
         outbounds: host.outboundManager.list(),
         tasks: host.store.list().length,
+        sessions: sessionViews(),
       }
     },
     async presets(): Promise<PresetView[]> {
@@ -272,6 +295,40 @@ function makeFacade(host: FacadeHost): A2AServiceImpl {
     async cancelTask(taskId: string): Promise<OpResult> {
       const live = host.inboundManager.list().find((l) => l.server.abort(taskId))
       return { ok: live !== undefined, message: live !== undefined ? `task ${taskId} canceled` : `task ${taskId} not found or already terminal` }
+    },
+    // ── inbound sessions (per contextId) ────────────────────────────────
+    listSessions(): SessionView[] {
+      return sessionViews()
+    },
+    async cancelSessionTasks(contextId: string): Promise<OpResult> {
+      const canceled = cancelContextTasks(contextId)
+      return {
+        ok: true,
+        message: canceled > 0
+          ? `session ${contextId}: canceled ${canceled} active task(s)`
+          : `session ${contextId}: no active tasks`,
+      }
+    },
+    async closeSession(contextId: string): Promise<OpResult> {
+      const canceled = cancelContextTasks(contextId)
+      // Dispose every live handle for the context across instances; the next
+      // task on the same contextId re-opens a fresh handle (never refused —
+      // A2A has no closed-context concept, see session-registry docs).
+      let closed = 0
+      for (const live of host.inboundManager.list()) {
+        if (live.sessionPool !== undefined && live.sessionPool.has(contextId)) {
+          await live.sessionPool.disposeContext(contextId)
+          closed += 1
+        }
+      }
+      const parts: string[] = [
+        ...(canceled > 0 ? [`canceled ${canceled} active task(s)`] : []),
+        ...(closed > 0 ? [`closed ${closed} live session(s)`] : []),
+      ]
+      return {
+        ok: true,
+        message: parts.length > 0 ? `session ${contextId}: ${parts.join('; ')}` : `session ${contextId}: no active tasks or live sessions`,
+      }
     },
     // ── inbound peers (aggregated across instances) ─────────────────────
     inbounds(): unknown {
