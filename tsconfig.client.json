@@ -20,6 +20,9 @@
     { "path": "../deepseek-harness/vendor/cordis" },
     { "path": "../deepseek-harness/packages/client/ui-renderer" },
     { "path": "../deepseek-harness/packages/client/ui-slots" },
-    { "path": "../deepseek-harness/packages/client/ui-settings" }
+    // dsh-harness 0.1.7 splits ui-settings into a solution tsconfig.json
+    // (files: []) over tsconfig.host.json + tsconfig.client.json; reference the
+    // composite client half directly instead of the solution directory.
+    { "path": "../deepseek-harness/packages/client/ui-settings/tsconfig.client.json" }
   ]
 }
