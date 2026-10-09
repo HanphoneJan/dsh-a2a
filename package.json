@@ -1,6 +1,6 @@
 {
   "name": "@hanphone/dsh-a2a",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Agent2Agent (A2A) v1.0.1 dual-end plugin for DeepSeek Harness: multiple inbound servers (per-instance agent presets; skills derived from each preset's skill directory), multiple outbound connections, GUI-managed instance lifecycle.",
   "type": "module",
   "license": "MIT",
@@ -56,15 +56,15 @@
       "platform": "web"
     }
   },
-  "//peers": "A2A runs inside a DSH harness composition: the host provides these. Local typecheck resolves them through tsconfig paths to the harness checkout, not from node_modules. cordis ~4.0.2 accepts the 0.1.7 host's 4.0.4; the dsh-* ranges state the DSH runtime versions this plugin supports for the 0.1.7 peer-compatibility preflight.",
+  "//peers": "A2A runs inside a DSH harness composition: the host provides these. Local typecheck resolves them through tsconfig paths to the harness checkout, not from node_modules. The dsh-* ranges state the DSH runtime versions this plugin supports; the DSH 0.1.7+ peer-compatibility preflight evaluates only @deepseek-ai/dsh and @deepseek-ai/dsh-*, with prereleases participating. cordis and schemastery are declared for install-time peer resolution: the stable ranges cover the 4.0.x/3.x line and the trailing exact prereleases cover the vendored 4.0.5-alpha.1/3.18.5-alpha.1 in the 0.2.1-alpha harness.",
   "peerDependencies": {
-    "@deepseek-ai/cordis": "~4.0.2",
-    "@deepseek-ai/dsh-commands": ">=0.1.3 <0.2",
-    "@deepseek-ai/dsh-storage-domain": ">=0.1.3 <0.2",
-    "@deepseek-ai/schemastery": "3.*"
+    "@deepseek-ai/cordis": "~4.0.2 || 4.0.5-alpha.1",
+    "@deepseek-ai/dsh-commands": ">=0.1.3 <0.3",
+    "@deepseek-ai/dsh-storage-domain": ">=0.1.3 <0.3",
+    "@deepseek-ai/schemastery": "3.* || 3.18.5-alpha.1"
   },
   "dependencies": {
-    "zod": "^4.4.3"
+    "zod": "~4.4.3"
   },
   "devDependencies": {
     "@types/node": "^22.20.0",

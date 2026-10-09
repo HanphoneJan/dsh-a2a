@@ -12,6 +12,8 @@ started, stopped, edited and removed entirely from the GUI — no config-file
 editing.
 
 Architecture and design decisions: [docs/architecture.md](docs/architecture.md).
+Tracking DeepSeek Harness releases:
+[docs/harness-compatibility.md](docs/harness-compatibility.md).
 
 ## Features
 

@@ -1,0 +1,15 @@
+{
+  // Resolution facade for the test program. Vite 8's native tsconfig-paths
+  // support applies a tsconfig's `paths` only to files it includes, and the
+  // build config at ../tsconfig.json includes `src` alone; without this file a
+  // spec that imports `@deepseek-ai/cordis` directly (not through src) falls
+  // through to node_modules, which holds no harness packages. Inherits the
+  // harness checkout's paths through ../tsconfig.json.
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": true,
+    "rootDir": ".."
+  },
+  "include": ["."]
+}

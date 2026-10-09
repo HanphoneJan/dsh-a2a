@@ -5,3 +5,9 @@
 # by the DSH composition that loads the plugin.
 packages:
   - "."
+
+# The harness-provided @deepseek-ai/* peers have no registry version inside
+# their truthful ranges, so pnpm must neither auto-install them nor reify the
+# dependency tree before a script run.
+autoInstallPeers: false
+verifyDepsBeforeRun: false

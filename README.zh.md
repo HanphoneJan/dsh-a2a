@@ -5,6 +5,7 @@ Agent2Agent（A2A）v1.0.1 双端插件，用于 [DeepSeek Harness](https://gith
 `@hanphone/dsh-a2a` 是一个独立开源的 A2A 插件，把 DeepSeek Harness profile 变成多面手 A2A 一等公民：能**同时对外发布多个入站 A2A server**，每个绑定一个自己的 agent preset、拥有独立端点 / AgentCard / 派生技能 / 鉴权；也能**同时接入多个出站 A2A server**，每个独立 preset，远端技能映射为模型工具。所有 server 实例的创建、启停、编辑、删除全部在 GUI 完成——无需改任何配置文件。
 
 架构与设计决策：[docs/architecture.md](docs/architecture.md)。
+跟随 DeepSeek Harness 版本更新：[docs/harness-compatibility.md](docs/harness-compatibility.md)。
 
 ## 功能
 
