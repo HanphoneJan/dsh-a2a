@@ -130,9 +130,34 @@ pnpm pack --pack-destination <dir>
 
 | dsh-a2a | Harness verified against | Changes required | Evidence |
 |---|---|---|---|
+| 0.3.6 | 0.2.1-rc.2 | none — peer ranges, zod pin, build layout, and manifest contract already compatible; version bump and record only | clean-cache `pnpm typecheck` host+client zero errors; `pnpm test` 110/110; full `pnpm build` produced `lib/index.js`+`lib/client.js`+`lib/types` |
 | 0.3.5 | 0.2.1-alpha.2 | peer ranges widened to the 0.2 line; zod pinned to the harness's zod line; tests-scoped tsconfig for Vite 8 path resolution | `pnpm typecheck` host+client clean; `pnpm test` 110/110; full `pnpm build` produced `lib/index.js`+`lib/client.js`+`lib/types`; `dsh web` boots and serves |
 | 0.3.4 | 0.1.7-rc.2 | `tsconfig.client.json` reference fix; peer ranges made truthful | typecheck host+client clean; `vitest run` 110/110; full `pnpm build` succeeded |
 | 0.3.3 | 0.1.5-rc.2 | none — code and metadata already compatible | consumer `pnpm typecheck` clean |
+
+### 0.3.6 details
+
+The harness moved from `0.2.1-alpha.2` to `0.2.1-rc.2` (990 commits). No
+adaptation was needed; only the version bump and this record changed.
+
+1. `peerDependencies` still cover the new host. `vendor/cordis` moved
+   `4.0.5-alpha.1 → 4.0.5` and `vendor/schemastery` `3.18.5-alpha.1 → 3.18.5`,
+   both now stable and inside the existing `~4.0.2` and `3.*` ranges.
+   `@deepseek-ai/dsh-commands` and `@deepseek-ai/dsh-storage-domain` keep
+   `>=0.1.3 <0.3`, which covers the `0.2` line the preflight evaluates. The two
+   exact prerelease alternatives stay: they keep the plugin truthful for a host
+   still on the alpha line.
+2. `dependencies.zod` stays pinned to `~4.4.3`; the harness root still resolves
+   `zod@4.4.3`, so the two-copy `exactOptionalPropertyTypes` failure does not
+   return.
+3. Build layout is unchanged. `tsconfig.base.json` only gained `paths` aliases
+   (plugin-market, cua, remote-access, and others this plugin does not consume);
+   `tsconfig.base.client.json` and the referenced packages' tsconfig leaves are
+   unchanged, so the project references and the `ui-settings/tsconfig.client.json`
+   leaf reference still resolve.
+4. The manifest contract is unchanged: `DshClientManifest.inject`,
+   `DshBundleManifest.patch`, and the `- insert:` patch form have zero diff
+   across `alpha.2..rc.2`.
 
 ### 0.3.5 details
 
@@ -227,11 +252,12 @@ Two registries with different rules:
 ## Known limitations
 
 - Every harness version this plugin has been verified against is a prerelease
-  (`0.1.5-rc.2`, `0.1.7-rc.2`, `0.2.1-alpha.2`). The compatibility record names
-  the exact version rather than a range because no final release has been tested.
+  (`0.1.5-rc.2`, `0.1.7-rc.2`, `0.2.1-alpha.2`, `0.2.1-rc.2`). The compatibility
+  record names the exact version rather than a range because no final release has
+  been tested.
 - The plugin couples to harness packages by path through `../deepseek-harness`.
   A checkout at a different relative path needs the `tsconfig*.json` references
   updated.
-- `0.2.1-alpha.2` is the newest tag at the time of writing (confirmed with
+- `0.2.1-rc.2` is the newest tag at the time of writing (confirmed with
   `git ls-remote --tags origin`); the checkout is pinned to it plus the local
   `llm-pi-ai` `sessionHeader` patch.

@@ -99,9 +99,19 @@ pnpm pack --pack-destination <dir>
 
 | dsh-a2a | 验证所用 harness | 所需改动 | 证据 |
 |---|---|---|---|
+| 0.3.6 | 0.2.1-rc.2 | 无需改动——peer 范围、zod 收紧、构建布局与清单契约本已兼容；仅版本号与记录 | 清缓存后的 `pnpm typecheck`（host+client）零错误；`pnpm test` 110/110；完整 `pnpm build` 产出 `lib/index.js`+`lib/client.js`+`lib/types` |
 | 0.3.5 | 0.2.1-alpha.2 | peer 范围放宽到 0.2 线；zod 收紧到 harness 所在线；为 Vite 8 路径解析新增 tests 专属 tsconfig | `pnpm typecheck`（host+client）零错误；`pnpm test` 110/110；完整 `pnpm build` 产出 `lib/index.js`+`lib/client.js`+`lib/types`；`dsh web` 可启动并正常服务 |
 | 0.3.4 | 0.1.7-rc.2 | 修 `tsconfig.client.json` 引用；peer 范围改为真实区间 | typecheck（host+client）零错误；`vitest run` 110/110；完整 `pnpm build` 成功 |
 | 0.3.3 | 0.1.5-rc.2 | 无需改动——代码与元数据本已兼容 | 消费方 `pnpm typecheck` 零错误 |
+
+### 0.3.6 细节
+
+harness 从 `0.2.1-alpha.2` 升到 `0.2.1-rc.2`（990 个提交）。无需任何适配，只改了版本号与本文记录。
+
+1. `peerDependencies` 仍覆盖新宿主。`vendor/cordis` 由 `4.0.5-alpha.1 → 4.0.5`、`vendor/schemastery` 由 `3.18.5-alpha.1 → 3.18.5`，两者均已转正并落在既有的 `~4.0.2` 与 `3.*` 区间内。`@deepseek-ai/dsh-commands` 与 `@deepseek-ai/dsh-storage-domain` 保持 `>=0.1.3 <0.3`，覆盖预检所评估的 `0.2` 线。两个精确预发布备选保留：它们让插件对仍运行 alpha 线的宿主保持真实。
+2. `dependencies.zod` 继续收紧在 `~4.4.3`；harness 根仍解析到 `zod@4.4.3`，两份 zod 导致的 `exactOptionalPropertyTypes` 失败不会复现。
+3. 构建布局未变。`tsconfig.base.json` 只新增 `paths` 别名（plugin-market、cua、remote-access 等本插件未消费的包）；`tsconfig.base.client.json` 与被引用包的 tsconfig 叶子均未变，工程引用与 `ui-settings/tsconfig.client.json` 叶子引用仍然解析。
+4. 清单契约未变：`DshClientManifest.inject`、`DshBundleManifest.patch` 与 `- insert:` 补丁格式在 `alpha.2..rc.2` 之间零 diff。
 
 ### 0.3.5 细节
 
@@ -144,6 +154,6 @@ pnpm pack --pack-destination <dir>
 
 ## 已知限制
 
-- 本插件验证过的 harness 版本全是预发布版（`0.1.5-rc.2`、`0.1.7-rc.2`、`0.2.1-alpha.2`）。兼容记录写的是精确版本而非区间，因为尚无正式版被测过。
+- 本插件验证过的 harness 版本全是预发布版（`0.1.5-rc.2`、`0.1.7-rc.2`、`0.2.1-alpha.2`、`0.2.1-rc.2`）。兼容记录写的是精确版本而非区间，因为尚无正式版被测过。
 - 插件通过 `../deepseek-harness` 路径与 harness 包耦合。若 checkout 位于其它相对路径，需要同步修改 `tsconfig*.json` 的引用。
-- 截至撰写时，最新 tag 是 `0.2.1-alpha.2`（用 `git ls-remote --tags origin` 核实）；checkout 固定在该 tag 之上，并叠加本地 `llm-pi-ai` `sessionHeader` 补丁。
+- 截至撰写时，最新 tag 是 `0.2.1-rc.2`（用 `git ls-remote --tags origin` 核实）；checkout 固定在该 tag 之上，并叠加本地 `llm-pi-ai` `sessionHeader` 补丁。
