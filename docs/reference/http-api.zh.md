@@ -259,6 +259,32 @@ curl -N http://127.0.0.1:3080/a2a/<id> \
 
 `SubscribeToTask` 用同一传输，先补发当前状态，再流到终态。
 
+#### 2.4.1 流里到底有什么
+
+默认 `session` 执行器跑一轮，把最终回复作为一个 artifact 返回。它的流是**生命周期**，
+不是 token 级：
+
+- 初始 `statusUpdate`，状态 `TASK_STATE_WORKING`，带 task id；
+- `subagent` 执行器会在子任务结束时发一个 `artifactUpdate`；
+- 最终 `task`，带 artifact。
+
+模型的推理与工具调用不会投影到 A2A；DSH Web UI 单独展示。以落定任务为准，不要以中间帧为准。
+
+#### 2.4.2 断连与重连
+
+客户端断连**不会**取消任务。`SendMessage` 与 `SendStreamingMessage` 都会把执行器跑完并持久化任务；
+SSE 订阅只负责投递。
+
+- 从第一帧 `statusUpdate` 里记下 `taskId`。重连时用 `GetTask` 轮询，或 `SubscribeToTask` 从当前状态继续流。
+- `SubscribeToTask` 会补发当前状态并推送后续帧；它**不会**补发错过的中间帧，也没有
+  `Last-Event-ID` 或事件游标。
+- `SendMessage` 只在任务落定后返回任务。如果连接在响应前断开，客户端拿不到 task id。
+  没有幂等键：重发相同的 `messageId`/`taskId` 会创建新任务，不是续传。
+  需要恢复就用流式并持久化 id，或用 `ListTasks` 查最近任务。
+- 复用 `contextId` 延续活跃 DSH 对话；任务续传与对话连续性是两件事。新的 `contextId` 开启新对话。
+- DSH 进程重启会保留任务与 context 绑定，但不保留活跃会话或 SSE 订阅。
+  进程死亡时处于 `TASK_STATE_WORKING` 的任务没有崩溃恢复，可能一直停在该状态。
+
 ### 2.5 任务状态
 
 | 状态 | 终态？ | 含义 |

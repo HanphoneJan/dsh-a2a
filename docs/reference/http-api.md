@@ -271,6 +271,42 @@ Frames are unnamed SSE `data:` lines. Each payload is a `StreamResponse`:
 `SubscribeToTask` uses the same transport and replays the current status before
 streaming to the terminal state.
 
+#### 2.4.1 What the stream contains
+
+The default `session` executor runs one turn and returns the final reply as one
+artifact. Its stream is lifecycle, not token-by-token:
+
+- an initial `statusUpdate` with `TASK_STATE_WORKING` and the task id;
+- for the `subagent` executor, one `artifactUpdate` when the child finishes;
+- the final `task` with the artifact.
+
+The model's reasoning and tool calls are not projected onto A2A; the DSH Web UI
+shows those separately. Treat the settled task as the source of truth, not the
+intermediate frames.
+
+#### 2.4.2 Disconnect and reconnect
+
+A client disconnect does **not** cancel the task. `SendMessage` and
+`SendStreamingMessage` both run the executor to completion and persist the task;
+the SSE subscription is only delivery.
+
+- Capture the `taskId` from the first `statusUpdate` frame. On reconnect, call
+  `GetTask` to poll or `SubscribeToTask` to stream from the current status.
+- `SubscribeToTask` replays the current status and streams future frames. It
+  does **not** replay missed intermediate frames, and there is no
+  `Last-Event-ID` or event cursor.
+- `SendMessage` returns the task only after it settles. If the connection drops
+  before that response, the client has no task id. There is no idempotency key:
+  resending the same `messageId`/`taskId` creates a new task, not a resume. Use
+  streaming and persist the id if you need recovery, or use `ListTasks` to
+  inspect recent tasks.
+- Reusing `contextId` continues the live DSH conversation; task resumption and
+  conversation continuity are separate. A new `contextId` starts a new
+  conversation.
+- A DSH process restart persists tasks and context bindings, but not live
+  sessions or SSE subscriptions. A task that was `TASK_STATE_WORKING` when the
+  process died has no crash recovery and can remain stale in that state.
+
 ### 2.5 Task states
 
 | State | Terminal? | Meaning |
