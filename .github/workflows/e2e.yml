@@ -1,0 +1,80 @@
+name: A2A e2e
+
+# Reusable hermetic e2e: build one DeepSeek Harness tag, build the plugin, and
+# run the two-instance A2A smoke against it. Called by `ci.yml` for the pinned
+# version on pull requests and for the full harness matrix on schedules and
+# manual dispatch.
+#
+# The sibling-harness layout is mandatory: the plugin's tests resolve
+# @deepseek-ai/* through tsconfig paths and project references into
+# `../deepseek-harness`.
+
+on:
+  workflow_call:
+    inputs:
+      harness:
+        description: Harness release tag to build and verify against (for example dsh-v0.2.1-rc.2)
+        required: true
+        type: string
+
+env:
+  NODE_VERSION: '24'
+  PNPM_VERSION: '11.28.5'
+  HARNESS_REPO: deepseek-ai/deepseek-harness
+
+jobs:
+  e2e:
+    name: e2e (${{ inputs.harness }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Check out harness (${{ inputs.harness }})
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.HARNESS_REPO }}
+          ref: ${{ inputs.harness }}
+          path: deepseek-harness
+          fetch-depth: 1
+
+      - name: Check out plugin
+        uses: actions/checkout@v4
+        with:
+          path: dsh-a2a
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: |
+            deepseek-harness/pnpm-lock.yaml
+            dsh-a2a/pnpm-lock.yaml
+
+      - name: Install harness workspace
+        working-directory: deepseek-harness
+        run: pnpm install --frozen-lockfile
+
+      # `dsh web` and the JSONL session backend load built host artifacts and
+      # the native system addon; a source-only checkout cannot serve A2A.
+      - name: Build harness artifacts
+        working-directory: deepseek-harness
+        run: pnpm run build
+
+      - name: Install plugin workspace
+        working-directory: dsh-a2a
+        run: pnpm install --frozen-lockfile
+
+      - name: Build plugin
+        working-directory: dsh-a2a
+        run: pnpm build
+
+      - name: Hermetic two-instance A2A e2e
+        working-directory: dsh-a2a
+        env:
+          DSH_A2A_HARNESS_DIR: ${{ github.workspace }}/deepseek-harness
+        run: pnpm test:e2e
