@@ -40,7 +40,8 @@ tests/
 cordis.patch.yml     bundle patch (mounts the plugin core only)
 scripts/build-client.mjs  wraps the browser bundle for window.__ModuleLoader__
 scripts/e2e-a2a.mjs  hermetic two-instance A2A smoke against the built artifact
-docs/                architecture, harness compatibility, testing (all EN/ZH)
+docs/                public manual (README, guide/, reference/) plus
+                     architecture, harness compatibility, testing (all EN/ZH)
 ```
 
 ## Commands
@@ -102,7 +103,8 @@ pin still fights the host's copy at install time.
 - **Keep the plugin additive.** Prefer new opt-in config over changed defaults;
   the plugin runs inside someone else's profile composition.
 - **Editorial language of the codebase is English.** Public docs are an
-  EN/ZH pair (`README.md`/`README.zh.md`, `docs/architecture.md`/
+  EN/ZH pair (`README.md`/`README.zh.md`, `docs/README.md`/`.zh.md`,
+  `docs/guide/*` and `docs/reference/*` pairs, `docs/architecture.md`/
   `docs/architecture.zh.md`, `docs/harness-compatibility.md`/`.zh.md`); update
   both sides together and use the `**English** · [中文](…)` switcher line.
 - **`@hanphone/dsh-a2a` is the published identity.** The package name is read by

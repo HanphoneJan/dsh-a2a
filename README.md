@@ -237,8 +237,28 @@ tests/
   unit/                   # protocol, framing, card, store, registry, server,
                           #   client, api, inbound-registry, identity
   composition/            # apply() on a real Cordis Context with stub host services
+  integration/            # real agent loop + JSONL persistence, mock LLM
+  types/                  # compile-time mirror check against real DSH types
+scripts/
+  e2e-a2a.mjs             # hermetic two-instance A2A smoke
+docs/                     # public manual + architecture/compatibility/testing
 cordis.patch.yml          # bundle patch (mounts the plugin; instances are GUI-managed)
 ```
+
+## Documentation
+
+The public manual describes the current behavior in depth:
+
+- [Documentation index](docs/README.md)
+- [Getting started](docs/guide/getting-started.md)
+- [Concepts](docs/guide/concepts.md)
+- [Operations](docs/guide/operations.md)
+- [HTTP API and A2A protocol](docs/reference/http-api.md)
+- [Troubleshooting](docs/guide/troubleshooting.md)
+
+Deep dives: [Architecture](docs/architecture.md),
+[Harness compatibility](docs/harness-compatibility.md), and
+[Testing](docs/testing.md).
 
 ## Development
 

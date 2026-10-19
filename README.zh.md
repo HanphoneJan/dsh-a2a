@@ -152,8 +152,28 @@ tests/
   unit/                   # protocol、framing、card、store、registry、server、
                           #   client、api、inbound-registry、identity
   composition/            # 在真实 Cordis Context 上以 stub 宿主服务跑 apply()
+  integration/            # 真 agent loop + JSONL 持久化 + mock LLM
+  types/                  # 对真实 DSH 类型做编译期镜像检查
+scripts/
+  e2e-a2a.mjs             # 双实例 A2A hermetic 冒烟
+docs/                     # 公开手册 + 架构/兼容性/测试
 cordis.patch.yml          # bundle patch（挂载插件；实例由 GUI 管理）
 ```
+
+## 文档
+
+公开手册按当前行为展开：
+
+- [文档索引](docs/README.zh.md)
+- [快速开始](docs/guide/getting-started.zh.md)
+- [核心概念](docs/guide/concepts.zh.md)
+- [运维指南](docs/guide/operations.zh.md)
+- [HTTP API 与 A2A 协议](docs/reference/http-api.zh.md)
+- [排障](docs/guide/troubleshooting.zh.md)
+
+深入文档：[架构](docs/architecture.zh.md)、
+[Harness 兼容性](docs/harness-compatibility.zh.md)、
+[测试](docs/testing.zh.md)。
 
 ## 开发
 
