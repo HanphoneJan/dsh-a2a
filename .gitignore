@@ -142,7 +142,7 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
 
-# dsh-a2a build output + standalone dependency lockfile (independent project:
-# @deepseek-ai/* stay peer deps provided by the host composition)
+# dsh-a2a build output (independent project: @deepseek-ai/* stay peer deps
+# provided by the host composition). The standalone pnpm lockfile IS committed
+# so CI can install with --frozen-lockfile and reproduce the toolchain.
 lib/
-pnpm-lock.yaml
