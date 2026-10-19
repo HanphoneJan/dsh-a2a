@@ -63,11 +63,15 @@ function facadeStub(overrides: Partial<A2AServiceImpl> = {}): A2AServiceImpl {
     discoverOutbound: vi.fn(async () => ({ ok: true, message: 'discovered', preview: { name: 'remote' } })),
     updateOutboundServer: vi.fn(async () => ({ ok: true, message: 'updated' })),
     getTask: () => undefined,
-    listTasks: () => [],
+    listTasks: () => ({ tasks: [], total: 0, nextOffset: null }),
     cancelTask: vi.fn(async () => ({ ok: false, message: 'nope' })),
     listSessions: () => [],
     cancelSessionTasks: vi.fn(async () => ({ ok: true, message: 'canceled' })),
     closeSession: vi.fn(async () => ({ ok: true, message: 'closed' })),
+    sessionMessages: () => [],
+    metrics: () => ({}),
+    agentCard: () => undefined,
+    sendTestMessage: vi.fn(async () => ({})),
     closeInbound: vi.fn(async () => ({ ok: true, message: 'peer closed' })),
     inbounds: () => [],
     ...overrides,
@@ -208,5 +212,41 @@ describe('handleApiRequest', () => {
     const res = resCollector()
     await handleApiRequest(reqWith('127.0.0.1'), res, impl)
     expect(JSON.parse(res.output().body).sessions).toEqual([{ contextId: 'from-facade' }])
+  })
+})
+
+describe('dashboard read endpoints and test console', () => {
+  it('serves card, task, session and metrics reads', async () => {
+    const impl = facadeStub({
+      agentCard: () => ({ name: 'card' }),
+      getTask: () => ({ id: 'task-1' }),
+      sessionMessages: () => [{ role: 'assistant' }],
+      metrics: () => ({ requests: 3 }),
+    })
+    const card = resCollector()
+    await handleApiRequest(reqWith('127.0.0.1', 'GET', '', '/a2a/api/card?id=in-1'), card, impl)
+    expect(JSON.parse(card.output().body)).toEqual({ name: 'card' })
+    const task = resCollector()
+    await handleApiRequest(reqWith('127.0.0.1', 'GET', '', '/a2a/api/task?id=task-1'), task, impl)
+    expect(JSON.parse(task.output().body)).toEqual({ id: 'task-1' })
+    const session = resCollector()
+    await handleApiRequest(reqWith('127.0.0.1', 'GET', '', '/a2a/api/session?contextId=c&serverId=s'), session, impl)
+    expect(JSON.parse(session.output().body)).toEqual([{ role: 'assistant' }])
+    const metrics = resCollector()
+    await handleApiRequest(reqWith('127.0.0.1', 'GET', '', '/a2a/api/metrics'), metrics, impl)
+    expect(JSON.parse(metrics.output().body)).toEqual({ requests: 3 })
+  })
+
+  it('dispatches the inbound test console and returns the task', async () => {
+    const sendTestMessage = vi.fn(async () => ({ id: 'task-test' }))
+    const impl = facadeStub({ sendTestMessage })
+    const res = resCollector()
+    await handleApiRequest(
+      reqWith('127.0.0.1', 'POST', JSON.stringify({ action: 'inbound.sendTest', id: 'in-1', text: 'hello', contextId: 'ctx' })),
+      res,
+      impl,
+    )
+    expect(sendTestMessage).toHaveBeenCalledWith('in-1', { text: 'hello', contextId: 'ctx' })
+    expect(JSON.parse(res.output().body).task).toEqual({ id: 'task-test' })
   })
 })

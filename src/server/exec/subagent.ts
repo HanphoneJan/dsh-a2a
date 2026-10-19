@@ -8,7 +8,7 @@
  */
 
 import type { A2aExecutor, A2aExecutorInput, A2aExecutorOutput } from '../executor.ts'
-import { ContextSessionPool } from './agent-runtime.ts'
+import { ContextSessionPool, type AgentContentBlock } from './agent-runtime.ts'
 
 /** Structural slice of `ctx.subagents` this executor calls. */
 export interface SubagentsLike {
@@ -16,7 +16,7 @@ export interface SubagentsLike {
     name: string,
     request: {
       readonly label?: string
-      readonly prompt: readonly { readonly type: 'text'; readonly text: string }[]
+      readonly prompt: readonly AgentContentBlock[]
       readonly parent: unknown
       readonly signal: AbortSignal
     },
@@ -36,13 +36,14 @@ export function createSubagentExecutor(opts: SubagentExecutorOptions): A2aExecut
   return {
     name: 'subagent',
     async execute(input: A2aExecutorInput, execCtx): Promise<A2aExecutorOutput> {
-      if (!input.prompt) {
+      if (input.parts.length === 0) {
         return { parts: [{ text: 'No prompt provided.' }] }
       }
       const { agent } = await pool.agentFor(input.contextId)
+      const prompt = await pool.contentBlocks(input.parts)
       const run = await subagents.start(provider, {
         label: `a2a:${input.skill}`,
-        prompt: [{ type: 'text', text: input.prompt }],
+        prompt,
         parent: agent,
         signal: input.signal,
       })
@@ -60,7 +61,7 @@ export function createSubagentExecutor(opts: SubagentExecutorOptions): A2aExecut
         name: input.skill,
         lastChunk: true,
       })
-      return { parts: [{ text: text || '(subagent returned no output)' }] }
+      return { parts: [{ text: text || '(subagent returned no output)' }], appendResult: false }
     },
     disposeAll: () => pool.disposeAll(),
   }

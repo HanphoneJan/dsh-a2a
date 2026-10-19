@@ -3,7 +3,7 @@ name: 运维指南
 description: GUI 与 /a2a 命令参考、生命周期语义、配置、宿主服务、存储与对外暴露
 create-time: 2026-10-19
 update-time: 2026-10-19
-version: v0.3.8
+version: v0.4.0
 relative-docs:
   - docs/guide/concepts.zh.md
   - docs/reference/http-api.zh.md
@@ -15,7 +15,7 @@ relative-docs:
 [English](operations.md) · **中文**
 
 本页是日常参考：控件在哪、每个字段做什么、实例跨重启怎么表现、存储与安全怎么配。
-内容对应 `0.3.8` / DeepSeek Harness `0.2.1-rc.2`。
+内容对应 `0.4.0` / DeepSeek Harness `0.2.1-rc.2`。
 
 ## 1. 控制面
 
@@ -125,6 +125,11 @@ Token 通过凭据服务单独存储；编辑时 token 留空会保留原值。�
     baseUrl: http://127.0.0.1:3080   # 可选；省略时从 webServer 派生
     subagentProvider: in-process     # 默认
     defaultTimeoutMs: 60000          # 默认出站超时
+    inboundTimeoutMs: 600000         # 每个入站任务的执行预算；0 关闭
+    requestsPerMinute: 120           # 每个入站来源的限流；0 关闭
+    maxConcurrentTasks: 32           # 每个入站实例的并发上限；0 关闭
+    maxBodyBytes: 1048576            # 入站 HTTP 请求体上限
+    outboundRefreshMs: 300000        # AgentCard 自动刷新间隔；0 关闭
 ```
 
 | 字段 | 默认 | 含义 |
@@ -132,6 +137,11 @@ Token 通过凭据服务单独存储；编辑时 token 留空会保留原值。�
 | `baseUrl` | web server 端口，其次 `DSH_A2A_PORT`，最后 `3000` | 所有入站 AgentCard 的对外 base URL |
 | `subagentProvider` | `in-process` | subagent 执行器接缝的 provider 名 |
 | `defaultTimeoutMs` | `60000` | 出站连接每次调用的默认超时 |
+| `inboundTimeoutMs` | `600000` | 每个入站任务的执行预算；超时落 `FAILED` |
+| `requestsPerMinute` | `120` | 每个入站来源的滑动窗口限流；超限返回 HTTP 429 |
+| `maxConcurrentTasks` | `32` | 每个入站实例的并发任务上限 |
+| `maxBodyBytes` | `1048576` | 入站 A2A 请求体上限 |
+| `outboundRefreshMs` | `300000` | 启用中的出站连接自动刷新 AgentCard 的间隔 |
 
 入站会话工作目录是 `$DSH_HOME/a2a-sessions`（启动时创建）。`DSH_HOME` 默认 `~/.dsh`。
 
@@ -145,6 +155,7 @@ Token 通过凭据服务单独存储；编辑时 token 留空会保留原值。�
 | `storageDomain` | 两端 | 必需；插件不挂载 |
 | `webServer` | 入站路由、面板 API | 入站端点/卡片与面板 API 空闲 |
 | `agents` | 入站 session 执行器 | 入站任务走 `refuse` 执行器 |
+| `attachments` | 入站图片/文件 part | 原始附件降级为占位文本 |
 | `agentPresets` | preset 选择、技能派生 | preset 默认与派生技能退化为 `chat` |
 | `skills` | 技能派生 | 卡片回退到 `chat` |
 | `credentials` | token 存储/解析 | GUI 写 token 失败；外部 export 的环境变量仍可用 |
@@ -187,7 +198,7 @@ Token 通过凭据服务单独存储；编辑时 token 留空会保留原值。�
 
 - 面板 API 在设计上**仅回环**。把 web app 放到反向代理后面，也不会让 `/a2a/api` 可远程调用。
 - A2A 端点与 GUI 共用同一个 web server。如果把该 server 暴露到网络，给每个入站实例配置
-  Bearer Token，并在代理层终止 TLS。插件本身不提供 TLS 或限流。
+  Bearer Token，并在代理层终止 TLS。插件本身不提供 TLS；它自带进程内请求/请求体/并发限制，但没有分布式配额。
 - Token 通过凭据服务存储，按名称引用；绝不写入 `a2a` 域或 AgentCard。
 - 每个入站实例用不同 token，避免一次泄露就拿到所有已发布 agent 的访问权。
 - 出站 token 每次调用时解析，轮换凭据后下一次工具调用即生效，无需重启。

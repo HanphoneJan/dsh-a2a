@@ -3,7 +3,7 @@ name: 核心概念
 description: A2A 模型、入站 server、出站连接、preset、技能、任务、上下文、执行器与安全模型
 create-time: 2026-10-19
 update-time: 2026-10-19
-version: v0.3.8
+version: v0.4.0
 relative-docs:
   - docs/architecture.zh.md
   - docs/guide/operations.zh.md
@@ -14,7 +14,7 @@ relative-docs:
 
 [English](concepts.md) · **中文**
 
-本页定义手册后面会用到的术语，描述 `0.3.8` 的当前行为——也包括实现比协议更窄的地方。
+本页定义手册后面会用到的术语，描述 `0.4.0` 的当前行为——也包括实现比协议更窄的地方。
 
 ## 1. 一句话理解 A2A
 

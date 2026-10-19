@@ -64,6 +64,13 @@ export interface InboundServerView {
   readonly skills: readonly SkillView[]
 }
 
+export interface OutboundSkillView {
+  readonly id: string
+  readonly name: string
+  readonly description?: string
+  readonly enabled: boolean
+}
+
 export interface OutboundServerView {
   readonly id: string
   readonly name: string
@@ -74,7 +81,9 @@ export interface OutboundServerView {
   readonly state: string
   readonly skillCount: number
   readonly toolCount: number
+  readonly skills: readonly OutboundSkillView[]
   readonly lastError?: string
+  readonly lastCardAt?: string
 }
 
 export interface PresetView {
@@ -88,9 +97,42 @@ export interface PresetView {
 export interface ApiSnapshot {
   readonly inbounds: readonly InboundServerView[]
   readonly outbounds: readonly OutboundServerView[]
-  readonly tasks: readonly unknown[]
-  readonly peers: readonly unknown[]
+  readonly tasks: readonly TaskView[]
+  readonly taskTotal: number
+  readonly taskNextOffset: number | null
+  readonly peers: readonly InboundPeerView[]
   readonly sessions: readonly SessionView[]
+  readonly metrics: MetricsSnapshot
+}
+
+export interface MetricsSnapshot {
+  readonly requests: number
+  readonly authFailures: number
+  readonly tasks: {
+    readonly created: number
+    readonly completed: number
+    readonly failed: number
+    readonly canceled: number
+    readonly interrupted: number
+    readonly avgDurationMs: number
+    readonly maxDurationMs: number
+  }
+  readonly outbound: {
+    readonly calls: number
+    readonly errors: number
+    readonly avgDurationMs: number
+  }
+  readonly audit: readonly AuditEvent[]
+}
+
+export interface AuditEvent {
+  readonly at: string
+  readonly kind: string
+  readonly serverId?: string
+  readonly taskId?: string
+  readonly method?: string
+  readonly source?: string
+  readonly detail?: string
 }
 
 interface DiscoverPreview {
@@ -116,8 +158,10 @@ interface TaskView {
   readonly id: string
   readonly contextId?: string
   readonly serverId?: string
-  readonly status?: { readonly state: string }
-  readonly metadata?: { readonly skill?: string }
+  readonly status?: { readonly state: string; readonly message?: { readonly parts?: readonly { readonly text?: string }[] } }
+  readonly artifacts?: readonly { readonly artifactId?: string; readonly name?: string; readonly parts?: readonly unknown[] }[]
+  readonly error?: { readonly code: string; readonly message: string }
+  readonly metadata?: { readonly skill?: string; readonly serverId?: string }
 }
 
 /** One aggregated inbound session row (mirrors the host SessionView). */
@@ -136,10 +180,21 @@ interface SessionView {
   readonly live: boolean
 }
 
-async function fetchSnapshot(): Promise<ApiSnapshot> {
-  const res = await fetch('/a2a/api', { headers: { accept: 'application/json' } })
+async function fetchSnapshot(query: { readonly taskLimit?: number; readonly taskOffset?: number; readonly taskState?: string } = {}): Promise<ApiSnapshot> {
+  const params = new URLSearchParams()
+  if (query.taskLimit !== undefined) params.set('taskLimit', String(query.taskLimit))
+  if (query.taskOffset !== undefined) params.set('taskOffset', String(query.taskOffset))
+  if (query.taskState !== undefined && query.taskState.length > 0) params.set('taskState', query.taskState)
+  const suffix = params.size > 0 ? `?${params.toString()}` : ''
+  const res = await fetch(`/a2a/api${suffix}`, { headers: { accept: 'application/json' } })
   if (!res.ok) throw new Error(`snapshot HTTP ${res.status}`)
   return (await res.json()) as ApiSnapshot
+}
+
+async function fetchJson(path: string): Promise<unknown> {
+  const res = await fetch(path, { headers: { accept: 'application/json' } })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return await res.json()
 }
 
 async function fetchPresets(): Promise<PresetView[]> {
@@ -148,13 +203,13 @@ async function fetchPresets(): Promise<PresetView[]> {
   return (await res.json()) as PresetView[]
 }
 
-async function postControl(payload: Record<string, unknown>): Promise<{ readonly ok: boolean; readonly message: string; readonly preview?: unknown }> {
+async function postControl(payload: Record<string, unknown>): Promise<{ readonly ok: boolean; readonly message: string; readonly preview?: unknown; readonly task?: unknown }> {
   const res = await fetch('/a2a/api', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(payload),
   })
-  return (await res.json().catch(() => ({ ok: false, message: `HTTP ${res.status}` }))) as { ok: boolean; message: string; preview?: unknown }
+  return (await res.json().catch(() => ({ ok: false, message: `HTTP ${res.status}` }))) as { ok: boolean; message: string; preview?: unknown; task?: unknown }
 }
 
 function dotState(state: string): string {
@@ -178,6 +233,17 @@ export function A2aSection(_props: SectionProps): ReactElement {
   const [notice, setNotice] = useState<string | undefined>(undefined)
   const [busy, setBusy] = useState(false)
   const [tab, setTab] = useState<'inbound' | 'outbound' | 'activity'>('inbound')
+  const [taskFilter, setTaskFilter] = useState('')
+  const [taskLimit, setTaskLimit] = useState(50)
+  const [selectedTask, setSelectedTask] = useState<unknown>(undefined)
+  const [cardView, setCardView] = useState<unknown>(undefined)
+  const [conversation, setConversation] = useState<unknown>(undefined)
+  const [conversationKey, setConversationKey] = useState('')
+  const [testInbound, setTestInbound] = useState('')
+  const [testContext, setTestContext] = useState('')
+  const [testSkill, setTestSkill] = useState('chat')
+  const [testText, setTestText] = useState('')
+  const [testResult, setTestResult] = useState<unknown>(undefined)
 
   // Inbound create/edit form.
   const [editingIn, setEditingIn] = useState<string | null>(null)
@@ -197,12 +263,17 @@ export function A2aSection(_props: SectionProps): ReactElement {
   const [outToken, setOutToken] = useState('')
   const [discovered, setDiscovered] = useState<DiscoverPreview | null>(null)
   const [discovering, setDiscovering] = useState(false)
+  const [outDisabledSkills, setOutDisabledSkills] = useState<string[]>([])
+  const [outSkillOverrides, setOutSkillOverrides] = useState('{}')
 
   useEffect(() => {
     let alive = true
     const tick = async (): Promise<void> => {
       try {
-        const [next, presetRows] = await Promise.all([fetchSnapshot(), fetchPresets()])
+        const [next, presetRows] = await Promise.all([
+          fetchSnapshot({ taskLimit, ...(taskFilter !== '' ? { taskState: taskFilter } : {}) }),
+          fetchPresets(),
+        ])
         if (alive) {
           setSnap(next)
           setPresets(presetRows)
@@ -210,6 +281,8 @@ export function A2aSection(_props: SectionProps): ReactElement {
           const def = presetRows.find((p) => p.isDefault)?.id
           setInPreset((current) => current === '' && def !== undefined ? def : current)
           setOutPreset((current) => current === '' && def !== undefined ? def : current)
+          setTestInbound((current) => current === '' ? (next.inbounds[0]?.id ?? '') : current)
+          setTestSkill((current) => current === '' ? (next.inbounds[0]?.skills[0]?.id ?? 'chat') : current)
           setError(undefined)
         }
       } catch (err) {
@@ -222,15 +295,15 @@ export function A2aSection(_props: SectionProps): ReactElement {
       alive = false
       clearInterval(timer)
     }
-  }, [])
+  }, [taskFilter, taskLimit])
 
-  const control = async (payload: Record<string, unknown>): Promise<{ ok: boolean; message: string; preview?: unknown }> => {
+  const control = async (payload: Record<string, unknown>): Promise<{ ok: boolean; message: string; preview?: unknown; task?: unknown }> => {
     setBusy(true)
     try {
       const result = await postControl(payload)
       if (!result.ok) setError(result.message)
       else setNotice(result.message)
-      setSnap(await fetchSnapshot())
+      setSnap(await fetchSnapshot({ taskLimit, ...(taskFilter !== '' ? { taskState: taskFilter } : {}) }))
       return result
     } catch (err) {
       setError((err as Error).message)
@@ -238,6 +311,49 @@ export function A2aSection(_props: SectionProps): ReactElement {
     } finally {
       setBusy(false)
     }
+  }
+
+  const openTask = async (id: string): Promise<void> => {
+    try {
+      setSelectedTask(await fetchJson(`/a2a/api/task?id=${encodeURIComponent(id)}`))
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
+
+  const openCard = async (id: string): Promise<void> => {
+    try {
+      setCardView(await fetchJson(`/a2a/api/card?id=${encodeURIComponent(id)}`))
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
+
+  const openConversation = async (contextId: string, serverId?: string): Promise<void> => {
+    try {
+      const query = new URLSearchParams({ contextId })
+      if (serverId !== undefined) query.set('serverId', serverId)
+      setConversation(await fetchJson(`/a2a/api/session?${query.toString()}`))
+      setConversationKey(`${serverId ?? ''}/${contextId}`)
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
+
+  const submitTest = async (): Promise<void> => {
+    if (testInbound === '' || testText.trim() === '') return
+    const result = await control({
+      action: 'inbound.sendTest',
+      id: testInbound,
+      text: testText.trim(),
+      ...(testContext.trim() !== '' ? { contextId: testContext.trim() } : {}),
+      ...(testSkill.trim() !== '' ? { skill: testSkill.trim() } : {}),
+    })
+    if (result.ok) setTestResult(result.task)
+  }
+
+  const toggleOutboundSkill = (id: string): void => {
+    setOutDisabledSkills((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])
   }
 
   const beginCreateInbound = (): void => {
@@ -309,6 +425,13 @@ export function A2aSection(_props: SectionProps): ReactElement {
     if (!outName.trim() || !outUrl.trim() || busy) return
     const timeout = Number.parseInt(outTimeout, 10)
     const timeoutMs = Number.isFinite(timeout) && timeout > 0 ? timeout : undefined
+    let skillOverrides: Record<string, { name?: string; description?: string }> = {}
+    try {
+      if (outSkillOverrides.trim() !== '') skillOverrides = JSON.parse(outSkillOverrides) as Record<string, { name?: string; description?: string }>
+    } catch {
+      setError('skillOverrides must be valid JSON')
+      return
+    }
     if (editingOut !== null) {
       const updated = await control({
         action: 'outbound.update',
@@ -316,6 +439,8 @@ export function A2aSection(_props: SectionProps): ReactElement {
         ...(outName.trim() !== '' ? { name: outName.trim() } : {}),
         ...(outPreset !== '' ? { preset: outPreset } : {}),
         ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        disabledSkills: outDisabledSkills,
+        ...(Object.keys(skillOverrides).length > 0 ? { skillOverrides } : {}),
       })
       if (!updated.ok) return
       if (outToken.trim().length > 0) await control({ action: 'outbound.setAuth', id: editingOut, token: outToken.trim() })
@@ -328,6 +453,8 @@ export function A2aSection(_props: SectionProps): ReactElement {
       agentCardUrl: outUrl.trim(),
       ...(outPreset !== '' ? { preset: outPreset } : {}),
       ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      disabledSkills: outDisabledSkills,
+      ...(Object.keys(skillOverrides).length > 0 ? { skillOverrides } : {}),
     })
     if (!created.ok) return
     const fresh = await fetchSnapshot()
@@ -346,6 +473,8 @@ export function A2aSection(_props: SectionProps): ReactElement {
     setOutTimeout(String(v.timeoutMs))
     setOutToken('')
     setDiscovered(null)
+    setOutDisabledSkills(v.skills.filter((skill) => !skill.enabled).map((skill) => skill.id))
+    setOutSkillOverrides('{}')
   }
 
   const resetOutboundForm = (): void => {
@@ -356,6 +485,8 @@ export function A2aSection(_props: SectionProps): ReactElement {
     setOutTimeout('60000')
     setOutToken('')
     setDiscovered(null)
+    setOutDisabledSkills([])
+    setOutSkillOverrides('{}')
   }
 
   const inbounds = snap?.inbounds ?? []
@@ -363,6 +494,8 @@ export function A2aSection(_props: SectionProps): ReactElement {
   const peers = (snap?.peers ?? []) as readonly InboundPeerView[]
   const tasks = (snap?.tasks ?? []) as readonly TaskView[]
   const sessions = (snap?.sessions ?? []) as readonly SessionView[]
+  const metrics = snap?.metrics
+  const editingOutbound = outbounds.find((v) => v.id === editingOut)
 
   const h = (text: string, count?: number): ReactElement => createElement(
     'div', { className: 'dsh-a2a-h3' },
@@ -409,6 +542,8 @@ export function A2aSection(_props: SectionProps): ReactElement {
                           : null,
                         createElement('div', { className: 'dsh-a2a-btn-row' },
                           createElement('button', { className: 'dsh-a2a-btn', disabled: busy, onClick: () => { void control({ action: v.enabled ? 'inbound.disable' : 'inbound.enable', id: v.id }) } }, v.enabled ? '停用' : '启用'),
+                          createElement('button', { className: 'dsh-a2a-btn', disabled: busy, onClick: () => { void openCard(v.id) } }, 'Card'),
+                          createElement('button', { className: 'dsh-a2a-btn', disabled: busy, onClick: () => { setTestInbound(v.id); setTestSkill(v.skills[0]?.id ?? 'chat'); setTestResult(undefined) } }, '测试'),
                           createElement('button', { className: 'dsh-a2a-btn', disabled: busy, onClick: () => beginEditInbound(v) }, '编辑'),
                           createElement('button', { className: 'dsh-a2a-btn', disabled: busy, onClick: () => { void control({ action: 'inbound.remove', id: v.id }); if (editingIn === v.id) beginCreateInbound() } }, '删除'),
                         ),
@@ -439,6 +574,36 @@ export function A2aSection(_props: SectionProps): ReactElement {
               ),
               createElement('div', { className: 'dsh-a2a-hint' }, '技能由所绑 preset 自动派生（一切皆插件）；Bearer Token 可留空（匿名）。'),
             ),
+            createElement('div', { className: 'dsh-a2a-card' },
+              h('内置测试控制台', undefined),
+              createElement('div', { className: 'dsh-a2a-form' },
+                createElement('select', {
+                  className: 'dsh-a2a-select',
+                  value: testInbound,
+                  onChange: (e: { target: { value: string } }) => {
+                    setTestInbound(e.target.value)
+                    const inbound = inbounds.find((v) => v.id === e.target.value)
+                    setTestSkill(inbound?.skills[0]?.id ?? 'chat')
+                  },
+                }, ...inbounds.map((v) => createElement('option', { value: v.id, key: v.id }, v.name))),
+                createElement('input', { className: 'dsh-a2a-input', value: testSkill, placeholder: 'skill', style: { width: '120px' }, onChange: (e: { target: { value: string } }) => setTestSkill(e.target.value) }),
+                createElement('input', { className: 'dsh-a2a-input', value: testContext, placeholder: 'contextId（可选）', style: { width: '180px' }, onChange: (e: { target: { value: string } }) => setTestContext(e.target.value) }),
+                createElement('input', { className: 'dsh-a2a-input', value: testText, placeholder: '发送一条测试消息', style: { flex: 1, minWidth: '220px' }, onChange: (e: { target: { value: string } }) => setTestText(e.target.value) }),
+                createElement('button', { className: 'dsh-a2a-btn dsh-a2a-btn-primary', type: 'button', disabled: busy || testInbound === '' || testText.trim() === '', onClick: () => { void submitTest() } }, '发送'),
+              ),
+              testResult !== undefined
+                ? createElement('pre', { className: 'dsh-a2a-detail' }, JSON.stringify(testResult, null, 2))
+                : null,
+            ),
+            cardView !== undefined
+              ? createElement('div', { className: 'dsh-a2a-card' },
+                  h('AgentCard JSON'),
+                  createElement('pre', { className: 'dsh-a2a-detail' }, JSON.stringify(cardView, null, 2)),
+                  createElement('div', { className: 'dsh-a2a-btn-row' },
+                    createElement('button', { className: 'dsh-a2a-btn', type: 'button', onClick: () => setCardView(undefined) }, '关闭'),
+                  ),
+                )
+              : null,
           )
         : null,
 
@@ -480,6 +645,25 @@ export function A2aSection(_props: SectionProps): ReactElement {
                   ...presets.map((p) => createElement('option', { value: p.id, key: p.id, title: p.description ?? p.id }, p.name ?? p.id)),
                 ),
                 createElement('input', { className: 'dsh-a2a-input', value: outTimeout, placeholder: '超时 ms', style: { width: '90px' }, onChange: (e: { target: { value: string } }) => setOutTimeout(e.target.value) }),
+                editingOutbound !== undefined
+                  ? createElement('div', { className: 'dsh-a2a-skill-list' },
+                      createElement('div', { className: 'dsh-a2a-skill-list-title' }, '技能（勾选启用）'),
+                      ...editingOutbound.skills.map((skill) => createElement('label', { key: skill.id, className: 'dsh-a2a-skill-toggle' },
+                        createElement('input', {
+                          type: 'checkbox',
+                          checked: !outDisabledSkills.includes(skill.id),
+                          onChange: () => toggleOutboundSkill(skill.id),
+                        }),
+                        ` ${skill.name}${skill.description !== undefined ? ` — ${skill.description}` : ''}`,
+                      )),
+                      createElement('input', {
+                        className: 'dsh-a2a-input',
+                        value: outSkillOverrides,
+                        placeholder: 'per-skill 覆盖 JSON，如 {"chat":{"description":"..."}}',
+                        onChange: (e: { target: { value: string } }) => setOutSkillOverrides(e.target.value),
+                      }),
+                    )
+                  : null,
                 editingOut === null
                   ? createElement('button', { className: 'dsh-a2a-btn', type: 'submit', disabled: busy || discovering || !outUrl.trim() }, discovering ? '读取中…' : '导入')
                   : null,
@@ -516,7 +700,37 @@ export function A2aSection(_props: SectionProps): ReactElement {
       tab === 'activity'
         ? createElement('div', { className: 'dsh-a2a-stack' },
             createElement('div', { className: 'dsh-a2a-crew' },
-              h('入站连接（谁在调用本服务）', peers.length),
+              h('指标'),
+              metrics !== undefined
+                ? createElement('div', { className: 'dsh-a2a-metrics' },
+                    createElement('span', null, `请求 ${metrics.requests} · 鉴权失败 ${metrics.authFailures}`),
+                    createElement('span', null, `任务 ${metrics.tasks.created}（完成 ${metrics.tasks.completed} / 失败 ${metrics.tasks.failed} / 取消 ${metrics.tasks.canceled} / 中断 ${metrics.tasks.interrupted}）`),
+                    createElement('span', null, `平均 ${metrics.tasks.avgDurationMs}ms · 最长 ${metrics.tasks.maxDurationMs}ms`),
+                    createElement('span', null, `出站 ${metrics.outbound.calls}（错误 ${metrics.outbound.errors}，平均 ${metrics.outbound.avgDurationMs}ms）`),
+                  )
+                : empty('暂无指标。'),
+              metrics !== undefined && metrics.audit.length > 0
+                ? createElement('div', { className: 'dsh-a2a-table-wrap' },
+                    createElement('table', { className: 'dsh-a2a-table' },
+                      createElement('thead', null, createElement('tr', null,
+                        createElement('th', null, '时间'),
+                        createElement('th', null, '事件'),
+                        createElement('th', null, '实例 / 任务'),
+                        createElement('th', null, '详情'),
+                      )),
+                      createElement('tbody', null,
+                        ...metrics.audit.slice(-20).reverse().map((event, index) => createElement('tr', { key: `${event.at}-${index}` },
+                          createElement('td', null, event.at),
+                          createElement('td', null, event.kind),
+                          createElement('td', null, event.serverId ?? event.taskId ?? '-'),
+                          createElement('td', null, event.detail ?? event.method ?? event.source ?? '-'),
+                        )),
+                      ),
+                    ),
+                  )
+                : null,
+            ),
+            createElement('div', { className: 'dsh-a2a-crew' }, h('入站连接（谁在调用本服务）', peers.length),
               peers.length === 0
                 ? empty('暂无入站连接。其他 A2A 客户端调用本 DSH 的端点后会显示在这里。')
                 : createElement('div', { className: 'dsh-a2a-table-wrap' },
@@ -557,7 +771,7 @@ export function A2aSection(_props: SectionProps): ReactElement {
                         createElement('th', null, '操作'),
                       )),
                       createElement('tbody', null,
-                        ...sessions.map((s) => createElement('tr', { key: s.contextId },
+                        ...sessions.map((s) => createElement('tr', { key: `${s.serverId ?? ''}/${s.contextId}` },
                           createElement('td', null, createElement('span', { className: 'dsh-a2a-card-sub dsh-a2a-mono' }, s.contextId)),
                           createElement('td', null, s.serverName ?? s.serverId ?? '-'),
                           createElement('td', null, s.preset ?? '-'),
@@ -569,16 +783,42 @@ export function A2aSection(_props: SectionProps): ReactElement {
                           createElement('td', null, s.streaming ? '●' : '—'),
                           createElement('td', null, createElement('span', { className: 'dsh-a2a-card-sub' }, `${s.firstSeen} / ${s.lastSeen}`)),
                           createElement('td', null,
-                            createElement('button', { className: 'dsh-a2a-btn', disabled: busy || s.activeCount === 0, onClick: () => { void control({ action: 'session.cancel', id: s.contextId }) } }, '取消活跃'),
-                            createElement('button', { className: 'dsh-a2a-btn', disabled: busy, onClick: () => { void control({ action: 'session.close', id: s.contextId }) } }, '关闭'),
+                            createElement('button', { className: 'dsh-a2a-btn', disabled: busy || s.activeCount === 0, onClick: () => { void control({ action: 'session.cancel', id: s.contextId, ...(s.serverId !== undefined ? { serverId: s.serverId } : {}) }) } }, '取消活跃'),
+                            createElement('button', { className: 'dsh-a2a-btn', disabled: busy, onClick: () => { void openConversation(s.contextId, s.serverId) } }, '对话'),
+                            createElement('button', { className: 'dsh-a2a-btn', disabled: busy, onClick: () => { void control({ action: 'session.close', id: s.contextId, ...(s.serverId !== undefined ? { serverId: s.serverId } : {}) }) } }, '关闭'),
                           ),
                         )),
                       ),
                     ),
                   ),
             ),
+            conversation !== undefined
+              ? createElement('div', { className: 'dsh-a2a-crew' },
+                  h(`会话对话（${conversationKey}）`),
+                  createElement('pre', { className: 'dsh-a2a-detail' }, JSON.stringify(conversation, null, 2)),
+                )
+              : null,
             createElement('div', { className: 'dsh-a2a-crew' },
               h('任务', tasks.length),
+              createElement('div', { className: 'dsh-a2a-form' },
+                createElement('select', {
+                  className: 'dsh-a2a-select',
+                  value: taskFilter,
+                  onChange: (e: { target: { value: string } }) => { setTaskFilter(e.target.value); setTaskLimit(50) },
+                },
+                  createElement('option', { value: '' }, '全部状态'),
+                  createElement('option', { value: 'TASK_STATE_WORKING' }, 'WORKING'),
+                  createElement('option', { value: 'TASK_STATE_COMPLETED' }, 'COMPLETED'),
+                  createElement('option', { value: 'TASK_STATE_FAILED' }, 'FAILED'),
+                  createElement('option', { value: 'TASK_STATE_CANCELED' }, 'CANCELED'),
+                  createElement('option', { value: 'TASK_STATE_INPUT_REQUIRED' }, 'INPUT_REQUIRED'),
+                  createElement('option', { value: 'TASK_STATE_AUTH_REQUIRED' }, 'AUTH_REQUIRED'),
+                ),
+                createElement('span', { className: 'dsh-a2a-hint' }, `共 ${snap?.taskTotal ?? tasks.length} 条，显示 ${tasks.length}`),
+                snap?.taskNextOffset !== null && snap?.taskNextOffset !== undefined
+                  ? createElement('button', { className: 'dsh-a2a-btn', type: 'button', onClick: () => setTaskLimit((current) => current + 50) }, '加载更多')
+                  : null,
+              ),
               tasks.length === 0
                 ? empty('暂无任务。')
                 : createElement('div', { className: 'dsh-a2a-table-wrap' },
@@ -591,16 +831,19 @@ export function A2aSection(_props: SectionProps): ReactElement {
                         createElement('th', null, '操作'),
                       )),
                       createElement('tbody', null,
-                        ...tasks.slice(-20).reverse().map((t) => createElement('tr', { key: t.id },
-                          createElement('td', null, createElement('span', { className: 'dsh-a2a-card-sub dsh-a2a-mono' }, t.id)),
+                        ...tasks.map((t) => createElement('tr', { key: t.id },
+                          createElement('td', null, createElement('button', { className: 'dsh-a2a-link dsh-a2a-mono', type: 'button', onClick: () => { void openTask(t.id) } }, t.id)),
                           createElement('td', null, t.metadata?.skill ?? '-'),
-                          createElement('td', null, t.serverId ?? '-'),
+                          createElement('td', null, t.metadata?.serverId ?? t.serverId ?? '-'),
                           createElement('td', null, t.status?.state ?? '-'),
                           createElement('td', null, createElement('button', { className: 'dsh-a2a-btn', disabled: busy, onClick: () => { void control({ action: 'task.cancel', id: t.id }) } }, '取消')),
                         )),
                       ),
                     ),
                   ),
+              selectedTask !== undefined
+                ? createElement('pre', { className: 'dsh-a2a-detail' }, JSON.stringify(selectedTask, null, 2))
+                : null,
             ),
           )
         : null,

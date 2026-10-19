@@ -136,12 +136,26 @@ pnpm pack --pack-destination <dir>
 
 | dsh-a2a | Harness verified against | Changes required | Evidence |
 |---|---|---|---|
+| 0.4.0 | 0.2.1-rc.2 | A2A wire conformance: SendMessage `{task}` envelope, JSON-RPC SSE frames + event ids, ListTasks `totalSize`, A2A-Version validation, push methods return `-32003`; per-address rate limiting; running-task continuation rejection; artifact `append` semantics; outbound stream replay/Last-Event-ID; returnImmediately/historyLength; remove unused outbound handoff session | `pnpm typecheck` (host + client + mirror check) clean; `pnpm test` 159/159; `pnpm build` produced `lib/index.js`+`lib/client.js`; `pnpm test:e2e` passed inbound + outbound round trip against two real `0.2.1-rc.2` instances |
 | 0.3.8 | 0.2.1-rc.2 | CLI fix: `/a2a inbound create` and `outbound create` consumed an extra leading token; the inbound description is now joined from the remaining words; command-parser tests added | `pnpm typecheck` (host + client + mirror check) clean; `pnpm test` 121/121; `pnpm build` produced `lib/index.js`+`lib/client.js`; `pnpm test:e2e` passed inbound + outbound round trip against two real `0.2.1-rc.2` instances |
 | 0.3.7 | 0.2.1-rc.2 | source fix: inbound message `source.kind` `plugin` → producer-owned `a2a`; test-layer additions (mirror check, real-persistence suite, e2e smoke); `standardDecoratorPlugin` in `vitest.config.ts` | `pnpm typecheck` (host + client + mirror check) clean; `pnpm test` 114/114; `pnpm build` produced `lib/index.js`+`lib/client.js`; `pnpm test:e2e` passed inbound + outbound round trip against two real `0.2.1-rc.2` instances |
 | 0.3.6 | 0.2.1-rc.2 | none — peer ranges, zod pin, build layout, and manifest contract already compatible; version bump and record only | clean-cache `pnpm typecheck` host+client zero errors; `pnpm test` 110/110; full `pnpm build` produced `lib/index.js`+`lib/client.js`+`lib/types` |
 | 0.3.5 | 0.2.1-alpha.2 | peer ranges widened to the 0.2 line; zod pinned to the harness's zod line; tests-scoped tsconfig for Vite 8 path resolution | `pnpm typecheck` host+client clean; `pnpm test` 110/110; full `pnpm build` produced `lib/index.js`+`lib/client.js`+`lib/types`; `dsh web` boots and serves |
 | 0.3.4 | 0.1.7-rc.2 | `tsconfig.client.json` reference fix; peer ranges made truthful | typecheck host+client clean; `vitest run` 110/110; full `pnpm build` succeeded |
 | 0.3.3 | 0.1.5-rc.2 | none — code and metadata already compatible | consumer `pnpm typecheck` clean |
+
+### 0.4.0 details
+
+A protocol-conformance and hardening release. `SendMessage` now returns the
+spec oneof (`result.task` / `result.message`); streamed events are JSON-RPC
+result/error envelopes with SSE event ids; artifact chunks carry `append`
+semantics; `ListTasks` includes `totalSize`; `A2A-Version` is validated and
+returned; push-configuration methods return `PUSH_NOTIFICATION_NOT_SUPPORTED`
+(`-32003`). Rate limiting keys by client address, continuation of a running
+task is rejected rather than silently dropped, and the outbound client honors
+`Last-Event-ID` on stream reconnect. `returnImmediately`, `historyLength`, and
+text-only `acceptedOutputModes` are now implemented. The unused outbound
+hand-off session composition was removed.
 
 ### 0.3.8 details
 

@@ -3,7 +3,7 @@ name: Documentation
 description: Public manual for the @hanphone/dsh-a2a A2A plugin — installation, concepts, operations, HTTP API, and troubleshooting
 create-time: 2026-10-19
 update-time: 2026-10-19
-version: v0.3.8
+version: v0.4.0
 relative-docs:
   - docs/architecture.md
   - docs/harness-compatibility.md
@@ -21,7 +21,7 @@ agents to other A2A clients, and one or more **outbound connections** expose
 remote A2A skills as model tools inside DSH.
 
 This manual is written for the people who install, operate, and troubleshoot
-the plugin. It describes the current behavior of **v0.3.8** against DeepSeek
+the plugin. It describes the current behavior of **v0.4.0** against DeepSeek
 Harness **0.2.1-rc.2**. Internal design rationale lives in the architecture
 and design documents linked below.
 
@@ -59,7 +59,7 @@ commands you ran.
 
 ## Version and compatibility
 
-- Plugin: `@hanphone/dsh-a2a` `0.3.8`
+- Plugin: `@hanphone/dsh-a2a` `0.4.0`
 - Verified against: DeepSeek Harness `0.2.1-rc.2` (also exercised in CI against
   `0.2.1-alpha.2` and `0.1.7-rc.2`)
 - Protocol: A2A `1.0.1` JSON-RPC binding (the A2A version this implementation

@@ -122,7 +122,7 @@ GUI 可:创建(选 preset/设鉴权 env)、启用/停用、删除、编辑。删
 - `preset`: **必填**,本端在与该远端交互时按该 preset 组装(调用远端时本地维护的会话);创建时未选 = 部署默认
 - `enabled` / `timeoutMs`
 
-> **出站 preset 语义(已确认)**:需求 4 按用户确认的 (b) 解读——出站 server 的 preset 决定"与这个远端对话时本 DSH 维护的本地会话组装"。出站不宣告 AgentCard(无入站端点),preset 的技能目录仅作信息展示。
+> **出站 preset 语义(已确认)**:需求 4 按用户确认的 (b) 解读——出站 server 的 preset 决定"与这个远端对话时本 DSH 维护的本地会话组装"。当前版本仅持久化该元数据，尚未接线本地 hand-off 会话；出站不宣告 AgentCard。
 
 ### 4.2 出站技能 → 工具
 
@@ -160,10 +160,10 @@ AgentSkill(`AgentSkill`):`id, name(必填), description?, tags?, examples?, inpu
 
 | JSON-RPC Method | 状态 |
 |---|---|
-| `SendMessage` | 实现(含 `return_immediately`/`history_length`/`accepted_output_modes` 配置) |
+| `SendMessage` | 实现（`returnImmediately`/`historyLength`；`acceptedOutputModes` 仅文本） |
 | `SendStreamingMessage` | 实现(SSE) |
-| `GetTask` | 实现(含 `historyLength`) |
-| `ListTasks` | 实现(补 `contextId`/`status`/`pageSize`/`pageToken` 过滤分页) |
+| `GetTask` | 实现（`historyLength` 从持久化输入/输出重建 history） |
+| `ListTasks` | 实现(`contextId`/`status`/`pageSize`/`pageToken`/`statusTimestampAfter`/`includeArtifacts` 过滤分页) |
 | `CancelTask` | 实现 |
 | `SubscribeToTask` | 实现(SSE;终态任务返回 UnsupportedOperationError) |
 | `CreateTaskPushNotificationConfig` | P1(方法面声明,返回 PushNotificationNotSupportedError) |

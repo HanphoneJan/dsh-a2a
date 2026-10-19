@@ -89,6 +89,11 @@ const css = String.raw`
 .dsh-a2a-preview-meta { font-size: 12px; color: var(--dsw-alias-label-tertiary, #81858c); }
 .dsh-a2a-skill-list { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--dsw-alias-label-secondary, #61666b); }
 .dsh-a2a-skill-list-title { font-size: 12px; color: var(--dsw-alias-label-tertiary, #81858c); }
+.dsh-a2a-skill-toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dsw-alias-label-secondary, #61666b); }
+.dsh-a2a-metrics { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--dsw-alias-label-secondary, #61666b); }
+.dsh-a2a-detail { max-height: 320px; overflow: auto; margin: 8px 0 0; padding: 10px 12px; border-radius: 8px; background: var(--dsw-alias-bg-layer-2, rgba(127,127,127,.08)); color: var(--dsw-alias-label-primary, #0f1115); font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.dsh-a2a-link { background: none; border: none; padding: 0; color: var(--dsw-alias-brand-primary, #4a7dff); cursor: pointer; font-size: 12px; text-align: left; }
+.dsh-a2a-link:hover { text-decoration: underline; }
 
 /* tables */
 .dsh-a2a-table-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3)); }

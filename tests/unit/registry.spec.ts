@@ -37,7 +37,7 @@ function captureRegistrar() {
 function stubCardFetch(card: AgentCard, status = 200): void {
   vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
     if (init?.method === 'POST') {
-      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 'x', result: { id: 'a2a-1', status: { state: 'COMPLETED', timestamp: new Date().toISOString() } } }), { status: 200 })
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 'x', result: { id: 'a2a-1', status: { state: 'TASK_STATE_COMPLETED', timestamp: new Date().toISOString() }, artifacts: [{ artifactId: 'result', parts: [{ text: 'ok' }] }] } }), { status: 200 })
     }
     return new Response(JSON.stringify(card), { status, headers: { 'content-type': 'application/json' } })
   }))
@@ -187,5 +187,30 @@ describe('OutboundAgentRegistry', () => {
     await new Promise((r) => setTimeout(r, 10))
     expect(reg.registered).toEqual([])
     expect(second.list()).toEqual([])
+  })
+})
+describe('per-skill controls', () => {
+  it('skips disabled skills and applies name/description overrides', async () => {
+    stubCardFetch(cardWith([
+      { id: 'chat', name: 'Chat', description: 'original' },
+      { id: 'coding', name: 'Coding' },
+    ]))
+    const store = new MemoryAgentStore([])
+    const reg = captureRegistrar()
+    const registry = new OutboundAgentRegistry(options(store, reg))
+    const result = await registry.add({
+      name: 'remote',
+      agentCardUrl: 'https://remote.example/card.json',
+      disabledSkills: ['coding'],
+      skillOverrides: { chat: { name: 'Chat Override', description: 'overridden' } },
+    })
+    expect(result.ok).toBe(true)
+    expect(reg.registered.length).toBe(1)
+    const view = registry.list()[0]!
+    expect(view.skillCount).toBe(1)
+    expect(view.skills.find((s) => s.id === 'chat')).toMatchObject({ name: 'Chat Override', description: 'overridden', enabled: true })
+    expect(view.skills.find((s) => s.id === 'coding')?.enabled).toBe(false)
+    expect((reg.registered[0] as { name: string; description: string }).name).toMatch(/chat/)
+    expect((reg.registered[0] as { description: string }).description).toContain('overridden')
   })
 })

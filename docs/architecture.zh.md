@@ -38,7 +38,7 @@ Agent2Agent（A2A）v1.0.1 双端插件，用于 DeepSeek Harness。
 
 ## 协议面
 
-已实现方法：`SendMessage`（含 `return_immediately` / `history_length` / `accepted_output_modes`）、`SendStreamingMessage`（SSE）、`GetTask`（含 `historyLength`）、`ListTasks`（含 `contextId` / `status` / `pageSize` / `pageToken`）、`CancelTask`、`SubscribeToTask`（SSE；终态任务按规范应答）、`GetExtendedAgentCard`。Push 通知方法在方法面声明并按 `PushNotificationNotSupported` 应答。序列化按 ADR-001 ProtoJSON（`TASK_STATE_*` / `ROLE_USER` / `ROLE_AGENT`，camelCase 字段）；传输校验 `A2A-Version` 头；错误使用规范错误码表。
+已实现方法：`SendMessage`（`messageId` 幂等、`taskId` 续接）、`SendStreamingMessage`（SSE，assistant/工具增量 + 事件 id）、`GetTask`、`ListTasks`（`contextId` / `status` / `pageSize` / `pageToken` / `statusTimestampAfter` / `includeArtifacts`）、`CancelTask`、`SubscribeToTask`（SSE，支持进程内 `Last-Event-ID` 回放）、`GetExtendedAgentCard`。Push 通知方法在方法面声明并按 `PushNotificationNotSupported` 应答。序列化按 ADR-001 ProtoJSON（`TASK_STATE_*` / `ROLE_USER` / `ROLE_AGENT`，camelCase 字段）；传输校验 `A2A-Version` 头；错误使用规范错误码表。
 
 ## 入站半区
 
@@ -47,7 +47,7 @@ Agent2Agent（A2A）v1.0.1 双端插件，用于 DeepSeek Harness。
 `InboundServerManager` 拥有活跃实例集。每个持久化 `InboundServerRecord`（`inbound_servers` 表）在启动时成为一个活实例：
 
 - preset 化 `ContextSessionPool`（装有 `agents` 时）——会话按 `record.preset` 经 `agentPresets.resolve` + `mount` 组装；
-- 共享 `TaskStore` 上的 `A2AServer`，带独立端点（`/a2a/<id>`）与卡片路由（`/a2a/<id>/agent-card.json`）；
+- 共享域存储之上的 `ScopedTaskStore`（按实例 `serverId` 过滤）上的 `A2AServer`，带独立端点（`/a2a/<id>`）与卡片路由（`/a2a/<id>/agent-card.json`）；
 - `A2aRoutes` 注册（启停）、`ExecutorSet`（session/subagent）、`LiveInboundRegistry`（对端监控）。
 
 管理器拥有完整生命周期：`add`（持久化 + 组装 + 启用）、`update`（持久化 + 重建卡片 + 换装）、`setEnabled`（路由启停）、`remove`（dispose + 反持久化）。技能按实例从所绑 preset 的技能目录派生（见设计决策 §5），无 skills 服务时兜底内置 `chat`；门禁的宣告技能白名单即派生列表，远端技能调用总能落到该实例的 preset 会话内。
@@ -84,7 +84,7 @@ SubscribeToTask / SendStreamingMessage 在订阅时补发当前状态帧，然�
 - **绑定** — 某 context 的会话首次打开时，会池的 `onSessionOpened` 钩子（恰在 `justOpened` 时触发）经 `TaskStore.setContextSession` 持久化 `contextId → sessionId` 绑定（内存先行，保持域写链可见）。绑定写入失败绝不放倒进行中的任务——记录日志继续。
 - **视图** — `SessionView` 行按 `contextId` 聚合：共享任务存储给出计数、running/idle、首次/最近活动，再折叠活跃观测——每实例 `ContextSessionRegistry` 的流式计数（由 `A2AServer` 的 SSE 开/关钩子喂养）与会池句柄存在性。数据来源优先级：实时优先、任务存储推导兜底；没有 agent 循环（无会池）的组合仍能从任务记录渲染会话表；重启后因任务持久化而行的降级形态仍在（无句柄/无流式），只有内存观测被清空，与对端注册表一致。
 - **回收** — `cancelSessionTasks(contextId)` 经既有 `A2AServer.abort` 路径中止该 context 的全部非终态任务（不新造基础设施）；`closeSession(contextId)` 额外经 `ContextSessionPool.disposeContext` 释放该 context 的活跃句柄并移出会池。**关闭语义**：关闭是内存级资源释放，**不是**会话墓碑——A2A 没有"已关闭上下文"概念，同一 contextId 之后再来任务经 `agentFor` 自动重开新句柄、永不拒绝；重开后的 DSH 会话是否恢复持久化历史属宿主行为，不在本插件控制内。
-- **归属** — 每个 `A2AServer` 把它创建的每条任务记录盖上实例 id（`TaskStore.create.serverId`），会话行（以及任务列表的来源列）因此能点名任务来自哪个入站实例。
+- **归属与隔离** — 每个 `A2AServer` 把它创建的每条任务记录盖上实例 id（`TaskStore.create.serverId`），并通过 `ScopedTaskStore` 让 `GetTask`/`ListTasks`/`CancelTask`/`SubscribeToTask` 只能看到本实例任务；context 绑定与派生 session id 也带实例命名空间，两个实例可安全复用同一客户端 `contextId`。任务还有可配置执行超时，实例有请求/请求体/并发限制。
 
 facade 暴露 `listSessions` / `cancelSessionTasks` / `closeSession`；会话也随 `status()` 快照（`sessions` 字段）与回环 API（`session.cancel` / `session.close`，与所有控制动作一样仅回环）输出。
 
@@ -96,7 +96,7 @@ facade 暴露 `listSessions` / `cancelSessionTasks` / `closeSession`；会话也
 
 ### OutboundServerManager
 
-`OutboundServerManager` 拥有活跃连接集。每个持久化 `OutboundServerRecord`（`outbound_servers` 表）在启动时成为一个 `OutboundAgentRegistry`，带独立按实例 `AgentStore`（`agents` 表，键 `out:<id>`）。管理器拥有完整生命周期：`add`（持久化 + 连接）、`setEnabled`、`refresh`、`remove`（dispose + 反持久化）；`viewFor` 折合注册表视图与记录（GUI 读 `OutboundServerView`，含 `preset`）。
+`OutboundServerManager` 拥有活跃连接集。每个持久化 `OutboundServerRecord`（`outbound_servers` 表）在启动时成为一个 `OutboundAgentRegistry`，带独立按实例 `AgentStore`（`agents` 表，键 `out:<id>`）。管理器拥有完整生命周期：`add`（持久化 + 连接）、`setEnabled`、`refresh`、`remove`（dispose + 反持久化）；`viewFor` 折合注册表视图与记录（GUI 读 `OutboundServerView`，含 `preset` 与 per-skill 视图）。出站工具支持远端流式、abort 传播（`CancelTask`）、瞬时失败重试、`taskId` 续接；连接按配置间隔自动刷新 AgentCard；出站 `preset` 仍是未来本地衔接会话的持久化元数据；工具直接调用远端。
 
 ### 工具
 

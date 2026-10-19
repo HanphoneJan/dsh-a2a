@@ -3,7 +3,7 @@ name: 排障
 description: 空回复、401、卡片不可达、出站连接失败、工具缺失、版本预检与存储冲突的排查
 create-time: 2026-10-19
 update-time: 2026-10-19
-version: v0.3.8
+version: v0.4.0
 relative-docs:
   - docs/guide/getting-started.zh.md
   - docs/reference/http-api.zh.md
@@ -133,12 +133,12 @@ hermetic e2e 就是这么做的。
 - 流式路径只接受 `SendStreamingMessage` 与 `SubscribeToTask`；其他方法返回 method-not-found 错误帧。
 - 帧是未命名的 `data:` 行；用 `curl -N`，不要缓冲。
 - `SendMessage` 即使调用方期待流式也仍然阻塞；要流式就显式选流式方法。
-- `returnImmediately` 与 `historyLength` 在 `0.3.8` 未生效。
+- `returnImmediately` 与 `historyLength` 已实现；history 从持久化任务输入/输出重建。
 
 ## 10. 已知限制
 
-- 没有 push notifications、gRPC、HTTP+JSON 绑定、OAuth、mTLS 或限流。
-- `ListTasks` 返回全部任务，忽略过滤/分页。
+- 没有 push notifications、gRPC、HTTP+JSON 绑定、OAuth 或 mTLS。
+- 限流是进程内、按来源的；没有分布式配额。
 - `GetTask` 不返回 history 数组。
 - 活跃会话与对端只在内存；只有任务、绑定、实例跨重启保留。
 - `subagent` 执行器不会被默认技能表选中。
@@ -148,7 +148,7 @@ hermetic e2e 就是这么做的。
 
 请附上：
 
-- 插件版本（`0.3.8`）、harness 版本、操作系统；
+- 插件版本（`0.4.0`）、harness 版本、操作系统；
 - 精确的命令或面板操作；
 - 任务 JSON（`/a2a task get <id>`）与 AgentCard；
 - 入站是否配置鉴权、请求是否带 header（**不要贴 token**）；

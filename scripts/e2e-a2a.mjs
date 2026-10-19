@@ -224,9 +224,11 @@ async function sendMessage(base, endpointPath, text) {
   })
   const payload = await response.json()
   if (payload.error !== undefined) throw new Error(`SendMessage error: ${JSON.stringify(payload.error)}`)
-  const state = payload.result?.status?.state
+  if (payload.result?.task === undefined) throw new Error(`SendMessage result is not the spec {task} envelope: ${JSON.stringify(payload.result)}`)
+  const task = payload.result.task
+  const state = task?.status?.state
   if (state !== 'TASK_STATE_COMPLETED') throw new Error(`task did not complete: ${state}`)
-  return (payload.result?.artifacts ?? [])
+  return (task?.artifacts ?? [])
     .flatMap((artifact) => artifact.parts ?? [])
     .map((part) => part.text ?? '')
     .join('')

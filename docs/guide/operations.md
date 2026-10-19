@@ -3,7 +3,7 @@ name: Operations
 description: GUI and /a2a command reference, lifecycle semantics, configuration, host services, storage, and exposure
 create-time: 2026-10-19
 update-time: 2026-10-19
-version: v0.3.8
+version: v0.4.0
 relative-docs:
   - docs/guide/concepts.md
   - docs/reference/http-api.md
@@ -16,7 +16,7 @@ relative-docs:
 
 This page is the day-to-day reference: where the controls are, what each field
 does, how instances behave across restarts, and how to configure storage and
-security. It applies to `0.3.8` on DeepSeek Harness `0.2.1-rc.2`.
+security. It applies to `0.4.0` on DeepSeek Harness `0.2.1-rc.2`.
 
 ## 1. Control surfaces
 
@@ -153,6 +153,11 @@ by the panel.
     baseUrl: http://127.0.0.1:3080   # optional; derived from webServer when omitted
     subagentProvider: in-process     # default
     defaultTimeoutMs: 60000          # default outbound timeout
+    inboundTimeoutMs: 600000         # per inbound task; 0 disables
+    requestsPerMinute: 120           # per inbound source; 0 disables
+    maxConcurrentTasks: 32           # per inbound instance; 0 disables
+    maxBodyBytes: 1048576            # inbound HTTP body cap
+    outboundRefreshMs: 300000        # AgentCard auto-refresh; 0 disables
 ```
 
 | Field | Default | Meaning |
@@ -160,6 +165,11 @@ by the panel.
 | `baseUrl` | web server port, then `DSH_A2A_PORT`, then `3000` | Advertised base URL for every inbound AgentCard |
 | `subagentProvider` | `in-process` | Provider name for the subagent executor seam |
 | `defaultTimeoutMs` | `60000` | Default per-call timeout for outbound connections |
+| `inboundTimeoutMs` | `600000` | Per-task inbound execution budget; timeout settles the task `FAILED` |
+| `requestsPerMinute` | `120` | Sliding-window request cap per inbound source; over-limit gets HTTP 429 |
+| `maxConcurrentTasks` | `32` | Concurrent task cap per inbound instance; over-quota tasks fail readably |
+| `maxBodyBytes` | `1048576` | Maximum inbound A2A request body |
+| `outboundRefreshMs` | `300000` | Automatic AgentCard refresh interval for enabled outbound connections |
 
 The inbound session working directory is `$DSH_HOME/a2a-sessions` (created on
 startup). `DSH_HOME` defaults to `~/.dsh`.
@@ -174,6 +184,7 @@ idles the affected capability instead of failing the whole plugin.
 | `storageDomain` | both halves | Required; the plugin does not mount |
 | `webServer` | inbound routes, dashboard API | Inbound endpoints/card and the panel API are idle |
 | `agents` | inbound session executor | Inbound tasks run the `refuse` executor |
+| `attachments` | inbound image/file parts | Raw attachments degrade to placeholders |
 | `agentPresets` | preset selection, skill derivation | Preset defaults and derived skills degrade to `chat` |
 | `skills` | skill derivation | Card falls back to `chat` |
 | `credentials` | token storage/resolution | GUI token writes fail; externally exported env vars still work |
@@ -223,7 +234,8 @@ Operational notes:
   behind a reverse proxy does not make `/a2a/api` remotely callable.
 - The A2A endpoints ride the same web server as the GUI. If you expose that
   server to a network, configure a bearer token on every inbound instance and
-  terminate TLS at the proxy. The plugin does not add TLS or rate limiting.
+  terminate TLS at the proxy. The plugin does not add TLS; it applies its own
+process-local request/body/concurrency limits, but no distributed quota.
 - Tokens are stored through the credentials service and referenced by name.
   They are never written to the `a2a` domain or the AgentCard.
 - Use a distinct token per inbound instance so one leak does not grant access

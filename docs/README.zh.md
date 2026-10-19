@@ -3,7 +3,7 @@ name: 文档
 description: @hanphone/dsh-a2a A2A 插件的公开手册——安装、概念、运维、HTTP API 与排障
 create-time: 2026-10-19
 update-time: 2026-10-19
-version: v0.3.8
+version: v0.4.0
 relative-docs:
   - docs/architecture.zh.md
   - docs/harness-compatibility.zh.md
@@ -19,7 +19,7 @@ relative-docs:
 一个或多个**入站 server** 把 DSH agent 发布给其他 A2A 客户端；一个或多个**出站连接**
 把远端 A2A 技能映射为 DSH 内的模型工具。
 
-这份手册写给安装、运维和排障的人。内容描述 **v0.3.8** 在 DeepSeek Harness
+这份手册写给安装、运维和排障的人。内容描述 **v0.4.0** 在 DeepSeek Harness
 **0.2.1-rc.2** 上的当前行为。内部设计动机见下方架构与设计文档。
 
 ## 从这里开始
@@ -54,7 +54,7 @@ relative-docs:
 
 ## 版本与兼容性
 
-- 插件：`@hanphone/dsh-a2a` `0.3.8`
+- 插件：`@hanphone/dsh-a2a` `0.4.0`
 - 已核对：DeepSeek Harness `0.2.1-rc.2`（CI 同时覆盖 `0.2.1-alpha.2` 与 `0.1.7-rc.2`）
 - 协议：A2A `1.0.1` 的 JSON-RPC 绑定（本实现声明的协议版本为 `1.0`）
 

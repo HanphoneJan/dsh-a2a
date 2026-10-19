@@ -99,7 +99,7 @@ function fakeCommands() {
 }
 
 /** Fake HTTP request/responses so a registered route handler is exercisable. */
-function invoke(route: FakeRoute, body: string, url = '/a2a') {
+function invoke(route: FakeRoute, body: string, url = '/a2a', headers: Record<string, string> = {}) {
   const req = new EventEmitter() as EventEmitter & {
     method?: string
     url?: string
@@ -108,7 +108,7 @@ function invoke(route: FakeRoute, body: string, url = '/a2a') {
   }
   req.method = 'POST'
   req.url = url
-  req.headers = { 'content-type': 'application/json', accept: 'application/json' }
+  req.headers = { 'content-type': 'application/json', accept: 'application/json', ...headers }
   const chunks: Buffer[] = []
   let sent: { status: number; headers: Record<string, string>; body: string } | undefined
   const res = {
@@ -193,9 +193,14 @@ function fakeAgents() {
   const releases: Array<() => void> = []
   const create = vi.fn(async (opts: { sessionId: string }) => {
     creates.push(opts.sessionId)
+    const history: Array<{ role: 'user' | 'assistant'; content: Array<{ type: string; text?: string }> }> = []
     const agent = {
-      session: { deriveMessages: () => [{ role: 'assistant' as const, content: [{ type: 'text', text: 'hi from agent' }] }] },
-      send: () => {},
+      session: { deriveMessages: () => history },
+      send: (message: { content: readonly { type: string; text?: string }[] }) => {
+        const text = message.content.map((b) => b.text ?? '').join('\n')
+        history.push({ role: 'user' as const, content: [{ type: 'text', text }] })
+        history.push({ role: 'assistant' as const, content: [{ type: 'text', text: `hi from agent: ${text}` }] })
+      },
       whenIdle: hang
         ? () => new Promise<void>((resolve) => { releases.push(resolve) })
         : async () => {},
@@ -268,10 +273,10 @@ describe('plugin composition (multi-instance)', () => {
     await ctx.a2a.createInboundServer({ name: 'Main', description: 'main', version: '1.0.0' })
     const view = ctx.a2a.listInboundServers()[0] as { endpointPath: string }
     const body = await sendMessage(ctx, webServer, view.endpointPath, 'hello')
-    const task = body.result
+    const task = body.result.task
     expect(task.status.state).toBe('TASK_STATE_FAILED') // no agent loop: readable refusal
     expect(task.status.message.parts[0].text).toMatch(/refusing inbound task/)
-    expect((await ctx.a2a.listTasks() as unknown[]).length).toBe(1)
+    expect((await ctx.a2a.listTasks() as { tasks: unknown[] }).tasks.length).toBe(1)
     expect((storageDomain.open as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1)
   })
 
@@ -284,8 +289,8 @@ describe('plugin composition (multi-instance)', () => {
     expect(views).toHaveLength(2)
     const body1 = await sendMessage(ctx, webServer, views[0]!.endpointPath, 'one', undefined, 1, 'ma')
     const body2 = await sendMessage(ctx, webServer, views[1]!.endpointPath, 'two', undefined, 2, 'mb')
-    expect(body1.result.id).not.toBe(body2.result.id)
-    expect((await ctx.a2a.listTasks() as unknown[]).length).toBe(2)
+    expect(body1.result.task.id).not.toBe(body2.result.task.id)
+    expect((await ctx.a2a.listTasks() as { tasks: unknown[] }).tasks.length).toBe(2)
   })
 
   it('removes an inbound instance and unregisters its routes', async () => {
@@ -358,14 +363,14 @@ describe('plugin composition (multi-instance)', () => {
       await result
       return JSON.parse(pending.response()!.body)
     })()
-    expect(first.result.status.state).toBe(TaskState.COMPLETED)
+    expect(first.result.task.status.state).toBe(TaskState.COMPLETED)
 
     // The session view aggregates one row per contextId with live pool info.
     let sessions = ctx.a2a.listSessions()
     expect(sessions).toHaveLength(1)
     const view = sessions[0]!
     expect(view.contextId).toBe(contextId)
-    expect(view.sessionId).toBe(`a2a-${contextId}`)
+    expect(view.sessionId).toBe(`a2a-${id}-${contextId}`)
     expect(view.serverId).toBe(id)
     expect(view.serverName).toBe('Main')
     expect(view.status).toBe('idle')
@@ -378,7 +383,7 @@ describe('plugin composition (multi-instance)', () => {
     // (write-chain visible through the domain's own handle).
     const handle = await (storageDomain.open as ReturnType<typeof vi.fn>)(a2aDomainSpec)
     const contextsTable = (handle as { table(name: string): { get(key: string): string | undefined } }).table('contexts')
-    expect(JSON.parse(contextsTable.get(`ctx:${contextId}`)!)).toEqual({ sessionId: `a2a-${contextId}` })
+    expect(JSON.parse(contextsTable.get(`ctx:${id}:${contextId}`)!)).toEqual({ sessionId: `a2a-${id}-${contextId}` })
 
     // The view also degrades after close: row remains (task history) but no handle.
     await ctx.a2a.closeSession(contextId)
@@ -413,7 +418,7 @@ describe('plugin composition (multi-instance)', () => {
 
     // Fire the message; the hanging whenIdle keeps the task WORKING.
     const pending = sendWithContext(route, contextId, 'work')
-    const tasks = () => ctx.a2a.listTasks() as Array<{ taskId: string; contextId: string; state: string }>
+    const tasks = () => ctx.a2a.listTasks().tasks as Array<{ taskId: string; contextId: string; state: string }>
     await vi.waitFor(() => {
       expect(tasks().some((t) => t.contextId === contextId && t.state === TaskState.WORKING)).toBe(true)
     })
@@ -441,19 +446,64 @@ describe('plugin composition (multi-instance)', () => {
     agents.releaseAll()
     await pending.result
 
-    expect(agents.creates).toEqual([`a2a-${contextId}`])
+    expect(agents.creates).toEqual([`a2a-${id}-${contextId}`])
     // The next task reopens a fresh handle; un-hang so it can settle.
     agents.setHang(false)
     const again = await (async () => {
-      const second = sendWithContext(route, contextId, 'again')
+      const second = sendWithContext(route, contextId, 'again', 11)
       await vi.waitFor(() => expect(second.response()).toBeDefined())
       return JSON.parse(second.response()!.body)
     })()
-    expect(again.result.status.state).toBe(TaskState.COMPLETED)
+    expect(again.result.task.status.state).toBe(TaskState.COMPLETED)
     // A second open ⇒ a second create (close is a release, not a tombstone).
-    expect(agents.creates).toEqual([`a2a-${contextId}`, `a2a-${contextId}`])
+    expect(agents.creates).toEqual([`a2a-${id}-${contextId}`, `a2a-${id}-${contextId}`])
     sessions = ctx.a2a.listSessions()
     expect(sessions[0]!.live).toBe(true)
     expect(sessions[0]!.taskCount).toBe(2)
+  })
+})
+describe('inbound authorization scope', () => {
+  it('does not expose one instance\'s tasks through another token', async () => {
+    process.env['A2A_TEST_SCOPE_A'] = 'token-a'
+    process.env['A2A_TEST_SCOPE_B'] = 'token-b'
+    const { ctx, webServer } = harness()
+    await waitForFacade(ctx)
+    await ctx.a2a.createInboundServer({ name: 'A', description: 'a', version: '1.0.0', authTokenEnv: 'A2A_TEST_SCOPE_A' })
+    await ctx.a2a.createInboundServer({ name: 'B', description: 'b', version: '1.0.0', authTokenEnv: 'A2A_TEST_SCOPE_B' })
+    const views = ctx.a2a.listInboundServers() as Array<{ id: string; endpointPath: string }>
+    const a = views[0]!
+    const b = views[1]!
+    const routeA = webServer.routes.find((r) => r.path === a.endpointPath && r.kind === 'prefix')!
+    const routeB = webServer.routes.find((r) => r.path === b.endpointPath && r.kind === 'prefix')!
+
+    const sent = invoke(routeB, JSON.stringify({
+      jsonrpc: '2.0', id: 50, method: 'SendMessage',
+      params: { message: { messageId: 'scope-b', role: 'user', contextId: 'shared-context', parts: [{ text: 'secret' }] } },
+    }), b.endpointPath, { authorization: 'Bearer token-b' })
+    await vi.waitFor(() => expect(sent.response()).toBeDefined())
+    const taskId = JSON.parse(sent.response()!.body).result.task.id as string
+
+    const listed = invoke(routeA, JSON.stringify({ jsonrpc: '2.0', id: 51, method: 'ListTasks', params: {} }), a.endpointPath, { authorization: 'Bearer token-a' })
+    await vi.waitFor(() => expect(listed.response()).toBeDefined())
+    expect(JSON.parse(listed.response()!.body).result.tasks).toEqual([])
+
+    const got = invoke(routeA, JSON.stringify({ jsonrpc: '2.0', id: 52, method: 'GetTask', params: { id: taskId } }), a.endpointPath, { authorization: 'Bearer token-a' })
+    await vi.waitFor(() => expect(got.response()).toBeDefined())
+    expect(JSON.parse(got.response()!.body).error.code).toBe(-32001)
+
+    const owner = invoke(routeB, JSON.stringify({ jsonrpc: '2.0', id: 53, method: 'GetTask', params: { id: taskId } }), b.endpointPath, { authorization: 'Bearer token-b' })
+    await vi.waitFor(() => expect(owner.response()).toBeDefined())
+    expect(JSON.parse(owner.response()!.body).result.id).toBe(taskId)
+
+    // The same client-chosen contextId remains two separate sessions because
+    // the instance id namespaces both the task scope and the derived session.
+    const sentA = invoke(routeA, JSON.stringify({
+      jsonrpc: '2.0', id: 54, method: 'SendMessage',
+      params: { message: { messageId: 'scope-a', role: 'user', contextId: 'shared-context', parts: [{ text: 'a' }] } },
+    }), a.endpointPath, { authorization: 'Bearer token-a' })
+    await vi.waitFor(() => expect(sentA.response()).toBeDefined())
+    const sessions = ctx.a2a.listSessions().filter((session) => session.contextId === 'shared-context')
+    expect(sessions).toHaveLength(2)
+    expect(new Set(sessions.map((session) => session.sessionId)).size).toBe(2)
   })
 })

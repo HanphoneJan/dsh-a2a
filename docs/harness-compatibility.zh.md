@@ -102,12 +102,23 @@ pnpm pack --pack-destination <dir>
 
 | dsh-a2a | 验证所用 harness | 所需改动 | 证据 |
 |---|---|---|---|
+| 0.4.0 | 0.2.1-rc.2 | A2A 线协议对齐：SendMessage `{task}` envelope、SSE JSON-RPC 帧 + 事件 id、ListTasks `totalSize`、A2A-Version 校验、push 方法返回 `-32003`；按地址限流；运行中任务续接明确拒绝；artifact `append` 语义；出站断流 `Last-Event-ID` 续接；实现 returnImmediately/historyLength；移除未使用的出站 handoff 会话 | `pnpm typecheck`（host + client + 镜像检查）零错误；`pnpm test` 159/159；`pnpm build` 产出 `lib/index.js`+`lib/client.js`；`pnpm test:e2e` 对两个真实 `0.2.1-rc.2` 实例跑通入站与出站往返 |
 | 0.3.8 | 0.2.1-rc.2 | CLI 修复：`/a2a inbound create` 与 `outbound create` 多消费一个前导 token；入站描述改为由剩余单词拼接；新增命令解析测试 | `pnpm typecheck`（host + client + 镜像检查）零错误；`pnpm test` 121/121；`pnpm build` 产出 `lib/index.js`+`lib/client.js`；`pnpm test:e2e` 对两个真实 `0.2.1-rc.2` 实例跑通入站与出站往返 |
 | 0.3.7 | 0.2.1-rc.2 | 源码修复：入站消息 `source.kind` 由 `plugin` 改为生产者自己的 `a2a`；新增测试层（镜像检查、真实持久化套件、e2e 冒烟）；`vitest.config.ts` 装入 `standardDecoratorPlugin` | `pnpm typecheck`（host + client + 镜像检查）零错误；`pnpm test` 114/114；`pnpm build` 产出 `lib/index.js`+`lib/client.js`；`pnpm test:e2e` 对两个真实 `0.2.1-rc.2` 实例跑通入站与出站往返 |
 | 0.3.6 | 0.2.1-rc.2 | 无需改动——peer 范围、zod 收紧、构建布局与清单契约本已兼容；仅版本号与记录 | 清缓存后的 `pnpm typecheck`（host+client）零错误；`pnpm test` 110/110；完整 `pnpm build` 产出 `lib/index.js`+`lib/client.js`+`lib/types` |
 | 0.3.5 | 0.2.1-alpha.2 | peer 范围放宽到 0.2 线；zod 收紧到 harness 所在线；为 Vite 8 路径解析新增 tests 专属 tsconfig | `pnpm typecheck`（host+client）零错误；`pnpm test` 110/110；完整 `pnpm build` 产出 `lib/index.js`+`lib/client.js`+`lib/types`；`dsh web` 可启动并正常服务 |
 | 0.3.4 | 0.1.7-rc.2 | 修 `tsconfig.client.json` 引用；peer 范围改为真实区间 | typecheck（host+client）零错误；`vitest run` 110/110；完整 `pnpm build` 成功 |
 | 0.3.3 | 0.1.5-rc.2 | 无需改动——代码与元数据本已兼容 | 消费方 `pnpm typecheck` 零错误 |
+
+### 0.4.0 细节
+
+协议一致性与安全加固版本。`SendMessage` 返回规范 oneof（`result.task` /
+`result.message`）；流式事件改为 JSON-RPC result/error envelope 并带 SSE 事件
+id；artifact 增量带 `append` 语义；`ListTasks` 返回 `totalSize`；校验并返回
+`A2A-Version`；push 配置方法返回 `PUSH_NOTIFICATION_NOT_SUPPORTED`（`-32003`）。
+限流按客户端地址而不是端口；运行中任务续接会明确拒绝而不是静默丢弃；出站
+客户端断流后用 `Last-Event-ID` 续接。实现 `returnImmediately`、`historyLength`
+与仅文本的 `acceptedOutputModes`。移除未使用的出站 handoff 会话组装。
 
 ### 0.3.8 细节
 

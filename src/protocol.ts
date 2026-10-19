@@ -141,8 +141,24 @@ export interface TaskArtifactUpdateEvent {
   readonly taskId: string
   readonly contextId?: string
   readonly artifact: Artifact
+  /** Append this chunk to the artifact with the same id instead of replacing it. */
+  readonly append?: boolean
   readonly lastChunk?: boolean
   readonly metadata?: Record<string, unknown> | null
+}
+
+/** Result of SendMessage: one of the two spec payload variants. */
+export interface SendMessageResponse {
+  readonly task?: Task
+  readonly message?: Message
+}
+
+/** Result of ListTasks (spec `ListTasksResponse`). */
+export interface ListTasksResponse {
+  readonly tasks: readonly Task[]
+  readonly nextPageToken: string
+  readonly pageSize: number
+  readonly totalSize: number
 }
 
 /** Streaming payload variants (spec `StreamResponse` oneof). */

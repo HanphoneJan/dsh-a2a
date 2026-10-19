@@ -77,7 +77,7 @@ export function buildA2aCommand(impl: A2AServiceImpl): CommandDefinition {
           }
         }
         case 'tasks':
-          return success(JSON.stringify(impl.listTasks(), null, 2))
+          return success(JSON.stringify(impl.listTasks({ limit: 50 }), null, 2))
         case 'task': {
           const [action, id] = rest
           if (action === 'get' && id) return success(JSON.stringify(impl.getTask(id), null, 2))

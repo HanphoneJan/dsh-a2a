@@ -34,6 +34,8 @@ export interface TaskRecord {
   readonly error?: { readonly code: string; readonly message: string }
   /** The inbound server instance this task arrived through. */
   readonly serverId?: string
+  /** Client message ids already accepted by this task (idempotency key). */
+  readonly messageIds?: readonly string[]
 }
 
 /** One durable context→session binding (inbound conversation ↔ DSH session). */
@@ -50,6 +52,8 @@ export interface OutboundAgentRecord {
   readonly enabled: boolean
   readonly timeoutMs: number
   readonly lastCardAt: string | null
+  readonly disabledSkills?: readonly string[]
+  readonly skillOverrides?: Readonly<Record<string, { readonly name?: string; readonly description?: string }>>
 }
 
 /** One durable inbound server instance. */
@@ -75,6 +79,12 @@ export interface OutboundServerRecord {
   readonly preset?: string
   readonly enabled: boolean
   readonly timeoutMs: number
+  /** Skill ids excluded from model-tool registration. */
+  readonly disabledSkills?: readonly string[]
+  /** Per-skill name/description presentation overrides. */
+  readonly skillOverrides?: Readonly<Record<string, { readonly name?: string; readonly description?: string }>>
+  /** Last successful AgentCard read. */
+  readonly lastCardAt?: string
 }
 
 /** JSON-encoded record schema shared by every `a2a` table. */
@@ -156,11 +166,15 @@ export class A2aDomain {
 
 /** Task-store contract shared by the domain-backed and memory stores. */
 export interface TaskStore {
-  create(input: { contextId: string; skill: string; parts: readonly Part[]; remotePeerId: string | null; serverId?: string }): TaskRecord
+  create(input: { contextId: string; skill: string; parts: readonly Part[]; remotePeerId: string | null; serverId?: string; messageId?: string }): TaskRecord
   get(taskId: string): TaskRecord | undefined
   list(): TaskRecord[]
   setState(taskId: string, state: TaskState, message?: { code: string; text: string }): TaskRecord
-  appendArtifact(taskId: string, artifact: { artifactId: string; name?: string; parts: readonly Part[]; lastChunk?: boolean }): TaskRecord
+  appendArtifact(taskId: string, artifact: { artifactId: string; name?: string; parts: readonly Part[]; append?: boolean; lastChunk?: boolean }): TaskRecord
+  /** Replace the task's current input parts (a continuation message). */
+  setParts(taskId: string, parts: readonly Part[]): TaskRecord
+  /** Remember one accepted client message id for idempotent retries. */
+  appendMessageId(taskId: string, messageId: string): TaskRecord
   setContextSession(contextId: string, sessionId: string): Promise<void>
   getContextSession(contextId: string): Promise<string | undefined>
   close(): Promise<void>
@@ -183,7 +197,7 @@ export class MemoryTaskStore implements TaskStore {
   private tasks = new Map<string, TaskRecord>()
   private contexts = new Map<string, string>()
 
-  create(input: { contextId: string; skill: string; parts: readonly Part[]; remotePeerId: string | null; serverId?: string }): TaskRecord {
+  create(input: { contextId: string; skill: string; parts: readonly Part[]; remotePeerId: string | null; serverId?: string; messageId?: string }): TaskRecord {
     const record: TaskRecord = {
       taskId: `a2a-${crypto.randomUUID()}`,
       contextId: input.contextId,
@@ -198,6 +212,7 @@ export class MemoryTaskStore implements TaskStore {
       executor: 'session',
       summary: null,
       ...(input.serverId !== undefined ? { serverId: input.serverId } : {}),
+      ...(input.messageId !== undefined ? { messageIds: [input.messageId] } : {}),
     }
     this.tasks.set(record.taskId, record)
     return record
@@ -214,17 +229,17 @@ export class MemoryTaskStore implements TaskStore {
   setState(taskId: string, state: TaskState, message?: { code: string; text: string }): TaskRecord {
     const current = this.tasks.get(taskId)
     if (current === undefined) throw new Error(`task ${taskId} not found`)
-    const next: TaskRecord = {
-      ...current,
-      state,
-      updatedAt: now(),
-      ...(message ? { error: { code: message.code, message: message.text } } : current.error ? { error: current.error } : {}),
-    }
+    const error = message !== undefined
+      ? { code: message.code, message: message.text }
+      : state === TaskState.FAILED ? current.error : undefined
+    const next: TaskRecord = { ...current, state, updatedAt: now() }
+    if (error !== undefined) (next as { error?: { code: string; message: string } }).error = error
+    else delete (next as { error?: unknown }).error
     this.tasks.set(taskId, next)
     return next
   }
 
-  appendArtifact(taskId: string, artifact: { artifactId: string; name?: string; parts: readonly Part[]; lastChunk?: boolean }): TaskRecord {
+  appendArtifact(taskId: string, artifact: { artifactId: string; name?: string; parts: readonly Part[]; append?: boolean; lastChunk?: boolean }): TaskRecord {
     const current = this.tasks.get(taskId)
     if (current === undefined) throw new Error(`task ${taskId} not found`)
     const next: TaskRecord = {
@@ -245,15 +260,34 @@ export class MemoryTaskStore implements TaskStore {
   }
 
   async close(): Promise<void> {}
+
+  setParts(taskId: string, parts: readonly Part[]): TaskRecord {
+    const current = this.tasks.get(taskId)
+    if (current === undefined) throw new Error(`task ${taskId} not found`)
+    const next: TaskRecord = { ...current, parts, updatedAt: now() }
+    this.tasks.set(taskId, next)
+    return next
+  }
+
+  appendMessageId(taskId: string, messageId: string): TaskRecord {
+    const current = this.tasks.get(taskId)
+    if (current === undefined) throw new Error(`task ${taskId} not found`)
+    if (current.messageIds?.includes(messageId) === true) return current
+    const next: TaskRecord = { ...current, messageIds: [...(current.messageIds ?? []), messageId], updatedAt: now() }
+    this.tasks.set(taskId, next)
+    return next
+  }
 }
 
 function appendArtifactRecord(
   artifacts: TaskRecord['artifacts'],
-  artifact: { artifactId: string; name?: string; parts: readonly Part[] },
+  artifact: { artifactId: string; name?: string; parts: readonly Part[]; append?: boolean },
 ): TaskRecord['artifacts'] {
   const existing = artifacts.find((a) => a.artifactId === artifact.artifactId)
   if (existing) {
-    return artifacts.map((a) => (a.artifactId === artifact.artifactId ? { ...a, parts: [...a.parts, ...artifact.parts] } : a))
+    return artifacts.map((a) => (a.artifactId === artifact.artifactId
+      ? { ...a, parts: artifact.append === false ? artifact.parts : [...a.parts, ...artifact.parts] }
+      : a))
   }
   return [...artifacts, { artifactId: artifact.artifactId, ...(artifact.name !== undefined ? { name: artifact.name } : {}), parts: artifact.parts }]
 }
@@ -282,7 +316,7 @@ export class DomainTaskStore implements TaskStore {
     }
   }
 
-  create(input: { contextId: string; skill: string; parts: readonly Part[]; remotePeerId: string | null; serverId?: string }): TaskRecord {
+  create(input: { contextId: string; skill: string; parts: readonly Part[]; remotePeerId: string | null; serverId?: string; messageId?: string }): TaskRecord {
     const record: TaskRecord = {
       taskId: `a2a-${crypto.randomUUID()}`,
       contextId: input.contextId,
@@ -297,6 +331,7 @@ export class DomainTaskStore implements TaskStore {
       executor: 'session',
       summary: null,
       ...(input.serverId !== undefined ? { serverId: input.serverId } : {}),
+      ...(input.messageId !== undefined ? { messageIds: [input.messageId] } : {}),
     }
     this.records.set(record.taskId, record)
     // Persist eagerly; a failed write must fail the task, not silently lose it.
@@ -325,7 +360,7 @@ export class DomainTaskStore implements TaskStore {
     return next
   }
 
-  appendArtifact(taskId: string, artifact: { artifactId: string; name?: string; parts: readonly Part[]; lastChunk?: boolean }): TaskRecord {
+  appendArtifact(taskId: string, artifact: { artifactId: string; name?: string; parts: readonly Part[]; append?: boolean; lastChunk?: boolean }): TaskRecord {
     const current = this.records.get(taskId)
     if (current === undefined) throw new Error(`task ${taskId} not found`)
     const next: TaskRecord = { ...current, updatedAt: now(), artifacts: appendArtifactRecord(current.artifacts, artifact) }
@@ -347,6 +382,96 @@ export class DomainTaskStore implements TaskStore {
   }
 
   async close(): Promise<void> {}
+
+  setParts(taskId: string, parts: readonly Part[]): TaskRecord {
+    const current = this.records.get(taskId)
+    if (current === undefined) throw new Error(`task ${taskId} not found`)
+    const next: TaskRecord = { ...current, parts, updatedAt: now() }
+    this.records.set(taskId, next)
+    void this.domain.tasks.put(recordKey(taskId), encodeRecord(next)).catch((err: unknown) => {
+      throw new Error(`a2a: task persistence failed: ${String(err)}`)
+    })
+    return next
+  }
+
+  appendMessageId(taskId: string, messageId: string): TaskRecord {
+    const current = this.records.get(taskId)
+    if (current === undefined) throw new Error(`task ${taskId} not found`)
+    if (current.messageIds?.includes(messageId) === true) return current
+    const next: TaskRecord = { ...current, messageIds: [...(current.messageIds ?? []), messageId], updatedAt: now() }
+    this.records.set(taskId, next)
+    void this.domain.tasks.put(recordKey(taskId), encodeRecord(next)).catch((err: unknown) => {
+      throw new Error(`a2a: task persistence failed: ${String(err)}`)
+    })
+    return next
+  }
+}
+
+/**
+ * One inbound instance's view of the shared task store. Every access is
+ * filtered by the instance's `serverId`; a task belonging to another instance is
+ * indistinguishable from a missing task (the A2A spec requires task-not-found,
+ * not a permission leak). Context bindings are namespaced too, so two instances
+ * can reuse the same client-chosen contextId without sharing a DSH session.
+ */
+export class ScopedTaskStore implements TaskStore {
+  constructor(
+    private readonly base: TaskStore,
+    readonly serverId: string,
+  ) {}
+
+  create(input: { contextId: string; skill: string; parts: readonly Part[]; remotePeerId: string | null; serverId?: string; messageId?: string }): TaskRecord {
+    return this.base.create({ ...input, serverId: this.serverId })
+  }
+
+  get(taskId: string): TaskRecord | undefined {
+    const record = this.base.get(taskId)
+    return record?.serverId === this.serverId ? record : undefined
+  }
+
+  list(): TaskRecord[] {
+    return this.base.list().filter((record) => record.serverId === this.serverId)
+  }
+
+  setState(taskId: string, state: TaskState, message?: { code: string; text: string }): TaskRecord {
+    this.require(taskId)
+    return this.base.setState(taskId, state, message)
+  }
+
+  appendArtifact(taskId: string, artifact: { artifactId: string; name?: string; parts: readonly Part[]; append?: boolean; lastChunk?: boolean }): TaskRecord {
+    this.require(taskId)
+    return this.base.appendArtifact(taskId, artifact)
+  }
+
+  setParts(taskId: string, parts: readonly Part[]): TaskRecord {
+    this.require(taskId)
+    return this.base.setParts(taskId, parts)
+  }
+
+  appendMessageId(taskId: string, messageId: string): TaskRecord {
+    this.require(taskId)
+    return this.base.appendMessageId(taskId, messageId)
+  }
+
+  async setContextSession(contextId: string, sessionId: string): Promise<void> {
+    await this.base.setContextSession(this.scopedContextId(contextId), sessionId)
+  }
+
+  async getContextSession(contextId: string): Promise<string | undefined> {
+    return this.base.getContextSession(this.scopedContextId(contextId))
+  }
+
+  async close(): Promise<void> {
+    // The shared store is owned by the plugin fiber, not one instance.
+  }
+
+  private scopedContextId(contextId: string): string {
+    return `${this.serverId}:${contextId}`
+  }
+
+  private require(taskId: string): void {
+    if (this.get(taskId) === undefined) throw new Error(`task ${taskId} not found`)
+  }
 }
 
 function withState(
@@ -355,10 +480,13 @@ function withState(
   message: { code: string; text: string } | undefined,
   timestamp: string,
 ): TaskRecord {
-  return {
-    ...current,
-    state,
-    updatedAt: timestamp,
-    ...(message ? { error: { code: message.code, message: message.text } } : {}),
+  const next: TaskRecord = { ...current, state, updatedAt: timestamp }
+  if (message !== undefined) {
+    (next as { error?: { code: string; message: string } }).error = { code: message.code, message: message.text }
+  } else if (state === TaskState.FAILED && current.error !== undefined) {
+    (next as { error?: { code: string; message: string } }).error = current.error
+  } else {
+    delete (next as { error?: unknown }).error
   }
+  return next
 }

@@ -3,7 +3,7 @@ name: 快速开始
 description: 安装 @hanphone/dsh-a2a，发布第一个入站 A2A server，用 curl 调用，并把远端 agent 接成模型工具
 create-time: 2026-10-19
 update-time: 2026-10-19
-version: v0.3.8
+version: v0.4.0
 relative-docs:
   - docs/guide/concepts.zh.md
   - docs/guide/operations.zh.md

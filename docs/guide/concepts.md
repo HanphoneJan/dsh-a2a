@@ -3,7 +3,7 @@ name: Concepts
 description: The A2A model, inbound servers, outbound connections, presets, skills, tasks, contexts, executors, and the security model
 create-time: 2026-10-19
 update-time: 2026-10-19
-version: v0.3.8
+version: v0.4.0
 relative-docs:
   - docs/architecture.md
   - docs/guide/operations.md
@@ -15,7 +15,7 @@ relative-docs:
 **English** · [中文](concepts.zh.md)
 
 This page defines the vocabulary the rest of the manual uses. It describes the
-current behavior of `0.3.8`, including places where the implementation is
+current behavior of `0.4.0`, including places where the implementation is
 narrower than the protocol.
 
 ## 1. A2A in one paragraph

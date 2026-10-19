@@ -3,15 +3,25 @@
  * `ctx.tools`. Tool names are `a2a__<agent>__<skill>` normalized to the DSH
  * function-name contract (≤64 chars, collision hash), mirroring the naming
  * rule of dsh-mcp-client. An agent advertising zero skills registers nothing.
- * @module dsh-a2a/client/tools
+ * Each tool propagates the caller's abort signal, streams the remote turn when
+ * the remote supports it, and exposes an optional taskId so an interrupted
+ * remote task can be continued.
+ * @module dsh-a2a/outbound/tools
  */
 
-import { Role, partsToText, type AgentSkill, type Message, type Part } from '../protocol.ts'
+import { Role, partsToText, type AgentSkill, type Message, type Part, type StreamResponse, type Task } from '../protocol.ts'
 import { A2AError, type A2AClient } from './calls.ts'
+import type { A2aMetrics } from '../server/metrics.ts'
 
 /** Structural slice of `ctx.tools` used for registration. */
 export interface ToolRegistrar {
   register(definition: unknown): (() => void) | void
+}
+
+/** Optional per-skill presentation overrides. */
+export interface SkillOverride {
+  readonly name?: string
+  readonly description?: string
 }
 
 export interface AgentToolsOptions {
@@ -24,6 +34,13 @@ export interface AgentToolsOptions {
    * (stable per caller, so multi-turn tool use is one remote conversation).
    */
   readonly contextFor: (agentId: string | undefined) => string
+  /** Skill ids that must not be registered as tools. */
+  readonly disabledSkills?: readonly string[]
+  /** Per-skill name/description overrides. */
+  readonly skillOverrides?: Readonly<Record<string, SkillOverride>>
+  /** Stable outbound instance id for metrics/audit. */
+  readonly serverId?: string
+  readonly metrics?: A2aMetrics
 }
 
 export interface RegisteredTool {
@@ -42,9 +59,11 @@ function normalizeToolName(raw: string): string {
 /** Register one tool per advertised skill; empty skills register nothing. */
 export function registerAgentTools(registrar: ToolRegistrar, opts: AgentToolsOptions): RegisteredTool[] {
   const prefix = opts.toolPrefix ?? 'a2a'
-  const skills = opts.client.card.skills ?? []
+  const disabled = new Set(opts.disabledSkills ?? [])
+  const skills = (opts.client.card.skills ?? []).filter((skill) => !disabled.has(skill.id))
   const out: RegisteredTool[] = []
   for (const skill of skills) {
+    const override = opts.skillOverrides?.[skill.id]
     const raw = `${prefix}__${opts.agentName}__${skill.id}`
     const name = normalizeToolName(raw)
     let toolName = name
@@ -53,7 +72,7 @@ export function registerAgentTools(registrar: ToolRegistrar, opts: AgentToolsOpt
       for (let i = 0; i < raw.length; i++) hash = (hash * 31 + raw.charCodeAt(i)) >>> 0
       toolName = `${name.slice(0, 56)}_${hash.toString(16)}`
     }
-    const dispose = registrar.register(makeTool(toolName, opts.client, skill, opts.contextFor))
+    const dispose = registrar.register(makeTool(toolName, opts, skill, override))
     if (dispose) out.push({ name: toolName, dispose })
   }
   return out
@@ -61,12 +80,12 @@ export function registerAgentTools(registrar: ToolRegistrar, opts: AgentToolsOpt
 
 function makeTool(
   name: string,
-  client: A2AClient,
+  opts: AgentToolsOptions,
   skill: Pick<AgentSkill, 'id' | 'name' | 'description' | 'examples'>,
-  contextFor: (agentId: string | undefined) => string,
+  override: SkillOverride | undefined,
 ): unknown {
   const description = [
-    skill.description,
+    override?.description ?? skill.description,
     ...(skill.examples?.length ? [`Examples: ${skill.examples.join(' | ')}`] : []),
   ].filter(Boolean).join('\n')
 
@@ -80,6 +99,10 @@ function makeTool(
           type: 'string',
           description: 'The task or instruction to send to the remote agent.',
         },
+        taskId: {
+          type: 'string',
+          description: 'Continue an existing interrupted remote task (use the id reported by a previous INPUT_REQUIRED/AUTH_REQUIRED result).',
+        },
       },
       required: ['prompt'],
     },
@@ -87,32 +110,44 @@ function makeTool(
       schema: { type: 'string' },
       render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
     },
-    async execute(args: { prompt: string }, exec: { signal?: AbortSignal; agent?: { id?: string } }): Promise<string> {
+    async execute(args: { prompt: string; taskId?: string }, exec: { signal?: AbortSignal; agent?: { id?: string } }): Promise<string> {
+      const contextId = opts.contextFor(exec.agent?.id)
       const message: Message = {
         messageId: crypto.randomUUID(),
         role: Role.USER,
-        contextId: contextFor(exec.agent?.id),
+        ...(args.taskId !== undefined && args.taskId.length > 0
+          ? { taskId: args.taskId }
+          : { contextId }),
         parts: [{ text: args.prompt }],
       }
-      const task = await client.sendMessage(message)
-      return textOf(task.artifacts, task.status.state, task.status.message?.parts)
+      const started = Date.now()
+      try {
+        const task = await opts.client.sendMessage(message, {
+          ...(exec.signal !== undefined ? { signal: exec.signal } : {}),
+          stream: true,
+          onEvent: (_frame: StreamResponse) => { /* the tool returns final text */ },
+        })
+        opts.metrics?.recordOutbound(opts.serverId, skill.id, true, Date.now() - started)
+        return textOf(task)
+      } catch (err) {
+        opts.metrics?.recordOutbound(opts.serverId, skill.id, false, Date.now() - started, (err as Error).message)
+        throw err
+      }
     },
   }
 }
 
-/** Render a settled task's output as tool text (INPUT_REQUIRED surfaced, not thrown). */
-function textOf(
-  artifacts: readonly { readonly parts?: readonly Part[] }[] | undefined,
-  state: string,
-  statusParts: readonly Part[] | undefined,
-): string {
-  const output = partsToText(artifacts?.flatMap((a) => a.parts ?? []))
-  if (state === 'FAILED') {
-    throw new A2AError(-32000, `Remote agent task failed: ${output || partsToText(statusParts) || 'no detail'}`)
+/** Render a settled/interrupted task as tool text (INPUT_REQUIRED surfaced, not thrown). */
+function textOf(task: Task): string {
+  const output = partsToText(task.artifacts?.flatMap((a) => a.parts ?? []))
+  if (task.status.state === 'TASK_STATE_FAILED') {
+    throw new A2AError(-32000, `Remote agent task failed: ${output || partsToText(task.status.message?.parts) || 'no detail'}`)
   }
-  if (state === 'INPUT_REQUIRED' || state === 'AUTH_REQUIRED') {
-    const ask = partsToText(statusParts) || output || 'agent awaits input'
-    return `[remote agent ${state}] ${ask}`
+  if (task.status.state === 'TASK_STATE_INPUT_REQUIRED' || task.status.state === 'TASK_STATE_AUTH_REQUIRED') {
+    const ask = partsToText(task.status.message?.parts) || output || 'agent awaits input'
+    return `[remote agent ${task.status.state} task=${task.id}] ${ask}`
   }
   return output || '(remote agent returned no output)'
 }
+
+export type { Part }

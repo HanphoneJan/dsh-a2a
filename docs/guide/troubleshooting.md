@@ -3,7 +3,7 @@ name: Troubleshooting
 description: Diagnose empty replies, 401s, unreachable cards, failed outbound connections, missing tools, version preflight, and storage conflicts
 create-time: 2026-10-19
 update-time: 2026-10-19
-version: v0.3.8
+version: v0.4.0
 relative-docs:
   - docs/guide/getting-started.md
   - docs/reference/http-api.md
@@ -158,12 +158,12 @@ ports for two-instance tests. This is exactly what the hermetic e2e does.
 - Frames are unnamed `data:` lines; use `curl -N` and do not buffer.
 - `SendMessage` remains blocking even if the caller expects streaming; choose
   the streaming method explicitly.
-- `returnImmediately` and `historyLength` are not honored in `0.3.8`.
+- `returnImmediately` and `historyLength` are implemented; history is reconstructed from the durable task input/output.
 
 ## 10. Known limits
 
-- No push notifications, gRPC, HTTP+JSON binding, OAuth, mTLS, or rate limiting.
-- `ListTasks` returns every task and ignores filters/pagination.
+- No push notifications, gRPC, HTTP+JSON binding, OAuth, or mTLS.
+- Rate limiting is process-local and per source; there is no distributed quota.
 - `GetTask` returns no history array.
 - Live sessions and peers are memory-only; only tasks, bindings, and instances
   survive a restart.
@@ -174,7 +174,7 @@ ports for two-instance tests. This is exactly what the hermetic e2e does.
 
 Please attach:
 
-- plugin version (`0.3.8`), harness version, and OS;
+- plugin version (`0.4.0`), harness version, and OS;
 - the exact command or panel action;
 - the task JSON (`/a2a task get <id>`) and the AgentCard;
 - whether the inbound instance has auth, and whether the request carried the

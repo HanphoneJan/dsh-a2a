@@ -25,12 +25,13 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { openDomain, DomainTaskStore, type A2aDomain, type TaskStore } from './server/store.ts'
-import { probeService, type AgentPresetsLike, type AgentRegistryLike, type CredentialsLike, type SkillsLike } from './server/exec/agent-runtime.ts'
+import { probeService, type AgentPresetsLike, type AgentRegistryLike, type AttachmentsLike, type CredentialsLike, type SkillsLike } from './server/exec/agent-runtime.ts'
 import { aggregateSessionViews, type SessionView } from './server/session-registry.ts'
-import { isTerminal } from './protocol.ts'
+import { A2aMetrics } from './server/metrics.ts'
+import { isTerminal, Role } from './protocol.ts'
 import type { SubagentsLike } from './server/exec/subagent.ts'
 import { handleApiRequest } from './api.ts'
-import { A2AService, type A2AServiceImpl, type InboundCreateInput, type InboundServerView, type OutboundCreateInput, type OpResult, type PresetView, type SkillView } from './service.ts'
+import { A2AService, type A2AServiceImpl, type InboundCreateInput, type InboundServerView, type OutboundCreateInput, type OpResult, type PresetView, type SkillView, type TaskListPage, type TaskListQuery } from './service.ts'
 import { buildA2aCommand } from './commands.ts'
 import { InboundServerManager, DomainInboundStore, resolveAuthToken, type InboundManagerHost, type WebServerLike as InboundWebServerLike } from './servers/inbound-manager.ts'
 import { OutboundServerManager, DomainOutboundStore, type OutboundManagerHost, type OutboundServerView } from './servers/outbound-manager.ts'
@@ -48,6 +49,16 @@ export interface A2AConfig {
   subagentProvider: string
   /** Default outbound connection timeout (ms). */
   defaultTimeoutMs: number
+  /** Per-task inbound execution budget (ms); 0 disables it. */
+  inboundTimeoutMs: number
+  /** Sliding-window request cap per inbound source per minute; 0 disables it. */
+  requestsPerMinute: number
+  /** Maximum concurrent tasks per inbound instance; 0 disables it. */
+  maxConcurrentTasks: number
+  /** Maximum accepted inbound HTTP body in bytes. */
+  maxBodyBytes: number
+  /** Automatic outbound AgentCard refresh interval (ms); 0 disables it. */
+  outboundRefreshMs: number
 }
 
 /** Loader-validated config schema (defaults applied by the Loader). */
@@ -55,6 +66,11 @@ export const Config: z<A2AConfig> = z.object({
   baseUrl: z.string(),
   subagentProvider: z.string().default('in-process'),
   defaultTimeoutMs: z.number().default(60_000),
+  inboundTimeoutMs: z.number().default(600_000),
+  requestsPerMinute: z.number().default(120),
+  maxConcurrentTasks: z.number().default(32),
+  maxBodyBytes: z.number().default(1_048_576),
+  outboundRefreshMs: z.number().default(300_000),
 })
 
 export function apply(ctx: Context, config: A2AConfig) {
@@ -79,6 +95,8 @@ export function apply(ctx: Context, config: A2AConfig) {
       const skills = probeService(ctx, 'skills', 'list') as SkillsLike | undefined
       const credentials = probeService(ctx, 'credentials', 'resolve') as CredentialsLike | undefined
       const subagents = probeService(ctx, 'subagents', 'start') as SubagentsLike | undefined
+      const attachments = probeService(ctx, 'attachments', 'admitPromptContent') as AttachmentsLike | undefined
+      const metrics = new A2aMetrics()
       const commandsRef = probeService(ctx, 'commands', 'register') as
         | { register(def: { name: string; description: string; handler(...args: unknown[]): unknown }): () => void }
         | undefined
@@ -96,6 +114,12 @@ export function apply(ctx: Context, config: A2AConfig) {
         ...(skills !== undefined ? { skills } : {}),
         ...(credentials !== undefined ? { credentials } : {}),
         ...(subagents !== undefined ? { subagents } : {}),
+        ...(attachments !== undefined ? { attachments } : {}),
+        metrics,
+        taskTimeoutMs: config.inboundTimeoutMs,
+        requestsPerMinute: config.requestsPerMinute,
+        maxConcurrentTasks: config.maxConcurrentTasks,
+        maxBodyBytes: config.maxBodyBytes,
         ...(agentPresets?.defaultId !== undefined ? { defaultPresetId: agentPresets.defaultId } : {}),
         resolveDefaultModel: () => resolveDefaultModel(ctx),
         sessionCwd: inboundCwd,
@@ -113,6 +137,8 @@ export function apply(ctx: Context, config: A2AConfig) {
         ...(credentials !== undefined ? { credentials } : {}),
         onError: (message) => logger.warn(message),
         defaultTimeoutMs: config.defaultTimeoutMs,
+        refreshIntervalMs: config.outboundRefreshMs,
+        metrics,
       }
       const outboundManager = new OutboundServerManager(
         outboundHost,
@@ -123,7 +149,7 @@ export function apply(ctx: Context, config: A2AConfig) {
       outboundManager.boot()
 
       // ── service facade + commands + GUI API ───────────────────────────
-      const impl: A2AServiceImpl = makeFacade({ domain, store, inboundManager, outboundManager, agentPresets, logger: logger.info.bind(logger) })
+      const impl: A2AServiceImpl = makeFacade({ domain, store, inboundManager, outboundManager, agentPresets, metrics, logger: logger.info.bind(logger) })
       new A2AService(ctx, impl)
 
       if (commandsRef !== undefined) {
@@ -154,6 +180,7 @@ interface FacadeHost {
   readonly store: TaskStore
   readonly inboundManager: InboundServerManager
   readonly outboundManager: OutboundServerManager
+  readonly metrics: A2aMetrics
   readonly agentPresets?: (AgentPresetsLike & { list(): Promise<Array<{ id: string; name?: string; description?: string }>>; readonly defaultId?: string }) | undefined
   readonly logger: (message: string) => void
 }
@@ -181,11 +208,13 @@ function makeFacade(host: FacadeHost): A2AServiceImpl {
   }
 
   // Cancel every non-terminal task of one context through whichever instance
-  // owns the shared task store (abort is idempotent per task record).
-  const cancelContextTasks = (contextId: string): number => {
+  // owns the shared task store (abort is idempotent per task record). When a
+  // serverId is supplied, the action is scoped to that instance.
+  const cancelContextTasks = (contextId: string, serverId?: string): number => {
     let canceled = 0
     for (const task of host.store.list()) {
       if (task.contextId !== contextId || isTerminal(task.state)) continue
+      if (serverId !== undefined && task.serverId !== serverId) continue
       for (const live of host.inboundManager.list()) {
         if (live.server.abort(task.taskId)) {
           canceled += 1
@@ -197,8 +226,28 @@ function makeFacade(host: FacadeHost): A2AServiceImpl {
   }
 
   // Aggregate the session layer: live observations (streaming, pool handles)
-  // folded over the shared task store, grouped by contextId.
+  // folded over the shared task store, grouped by (serverId, contextId).
   const sessionViews = (): SessionView[] => aggregateSessionViews(host.store.list(), host.inboundManager.list())
+
+  const audit = (kind: string, detail: string, serverId?: string): void => {
+    host.metrics.recordAudit({ kind, detail, ...(serverId !== undefined ? { serverId } : {}) })
+  }
+
+  const taskPage = (query: TaskListQuery = {}): TaskListPage => {
+    const filtered = host.store.list()
+      .filter((task) => query.serverId === undefined || task.serverId === query.serverId)
+      .filter((task) => query.contextId === undefined || task.contextId === query.contextId)
+      .filter((task) => query.state === undefined || task.state === query.state)
+      .sort((a, b) => (a.updatedAt === b.updatedAt ? (a.taskId < b.taskId ? 1 : -1) : (a.updatedAt < b.updatedAt ? 1 : -1)))
+    const limit = Math.max(1, Math.min(200, Math.floor(query.limit ?? 50)))
+    const offset = Math.max(0, Math.floor(query.offset ?? 0))
+    const tasks = filtered.slice(offset, offset + limit)
+    return {
+      tasks,
+      total: filtered.length,
+      nextOffset: offset + tasks.length < filtered.length ? offset + tasks.length : null,
+    }
+  }
 
   return {
     status(): unknown {
@@ -238,26 +287,50 @@ function makeFacade(host: FacadeHost): A2AServiceImpl {
         ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
       })
       host.logger(`[a2a] inbound created: ${result.message}`)
+      audit('inbound.create', result.message, result.id)
       return result
     },
     async removeInboundServer(id: string): Promise<OpResult> {
-      return host.inboundManager.remove(id)
+      const result = await host.inboundManager.remove(id)
+      audit('inbound.remove', result.message, id)
+      return result
     },
     async setInboundServerEnabled(id: string, enabled: boolean): Promise<OpResult> {
-      return host.inboundManager.setEnabled(id, enabled)
+      const result = host.inboundManager.setEnabled(id, enabled)
+      audit('inbound.enable', result.message, id)
+      return result
     },
     async updateInboundServer(id: string, patch: { name?: string; description?: string; version?: string; endpointPath?: string; preset?: string; authTokenEnv?: string }): Promise<OpResult> {
-      return host.inboundManager.update(id, patch)
+      const result = await host.inboundManager.update(id, patch)
+      audit('inbound.update', result.message, id)
+      return result
     },
     async setInboundAuth(id: string, token: string | undefined): Promise<OpResult> {
-      return host.inboundManager.setAuth(id, token)
+      const result = await host.inboundManager.setAuth(id, token)
+      audit('inbound.setAuth', result.message, id)
+      return result
+    },
+    agentCard(id: string): unknown {
+      return host.inboundManager.get(id)?.card
+    },
+    async sendTestMessage(id: string, input: { readonly text: string; readonly contextId?: string; readonly skill?: string }): Promise<unknown> {
+      const live = host.inboundManager.get(id)
+      if (live === undefined) throw new Error(`inbound server ${id} not found`)
+      const message = {
+        messageId: crypto.randomUUID(),
+        role: Role.USER,
+        ...(input.contextId !== undefined ? { contextId: input.contextId } : {}),
+        parts: [{ text: input.text }],
+        ...(input.skill !== undefined ? { metadata: { skill: input.skill } } : {}),
+      }
+      return live.server.sendTest(message)
     },
     // ── outbound ────────────────────────────────────────────────────────
     listOutboundServers(): OutboundServerView[] {
       return [...host.outboundManager.list()]
     },
     async createOutboundServer(input: OutboundCreateInput): Promise<OpResult> {
-      return host.outboundManager.add({
+      const result = await host.outboundManager.add({
         ...(input.id !== undefined ? { id: input.id } : {}),
         name: input.name,
         agentCardUrl: input.agentCardUrl,
@@ -265,32 +338,46 @@ function makeFacade(host: FacadeHost): A2AServiceImpl {
         ...(input.preset !== undefined ? { preset: input.preset } : {}),
         enabled: input.enabled ?? true,
         timeoutMs: input.timeoutMs ?? host.outboundManager.defaultTimeoutMs,
+        ...(input.disabledSkills !== undefined ? { disabledSkills: input.disabledSkills } : {}),
+        ...(input.skillOverrides !== undefined ? { skillOverrides: input.skillOverrides } : {}),
       })
+      audit('outbound.create', result.message, result.id)
+      return result
     },
     async removeOutboundServer(id: string): Promise<OpResult> {
-      return host.outboundManager.remove(id)
+      const result = await host.outboundManager.remove(id)
+      audit('outbound.remove', result.message, id)
+      return result
     },
     async setOutboundServerEnabled(id: string, enabled: boolean): Promise<OpResult> {
-      return host.outboundManager.setEnabled(id, enabled)
+      const result = await host.outboundManager.setEnabled(id, enabled)
+      audit('outbound.enable', result.message, id)
+      return result
     },
     async refreshOutboundServer(id: string): Promise<OpResult> {
-      return host.outboundManager.refresh(id)
+      const result = await host.outboundManager.refresh(id)
+      audit('outbound.refresh', result.message, id)
+      return result
     },
     async setOutboundAuth(id: string, token: string | undefined): Promise<OpResult> {
-      return host.outboundManager.setAuth(id, token)
+      const result = await host.outboundManager.setAuth(id, token)
+      audit('outbound.setAuth', result.message, id)
+      return result
     },
     async discoverOutbound(url: string, bearerToken?: string): Promise<OpResult & { readonly preview?: unknown }> {
       return host.outboundManager.discover(url, bearerToken)
     },
-    async updateOutboundServer(id: string, patch: { readonly name?: string; readonly preset?: string; readonly timeoutMs?: number }): Promise<OpResult> {
-      return host.outboundManager.update(id, patch)
+    async updateOutboundServer(id: string, patch: { readonly name?: string; readonly preset?: string; readonly timeoutMs?: number; readonly disabledSkills?: readonly string[]; readonly skillOverrides?: Readonly<Record<string, { readonly name?: string; readonly description?: string }>> }): Promise<OpResult> {
+      const result = await host.outboundManager.update(id, patch)
+      audit('outbound.update', result.message, id)
+      return result
     },
     // ── tasks ───────────────────────────────────────────────────────────
     getTask(taskId: string): unknown {
       return host.store.get(taskId)
     },
-    listTasks(): unknown {
-      return host.store.list()
+    listTasks(query?: TaskListQuery): TaskListPage {
+      return taskPage(query)
     },
     async cancelTask(taskId: string): Promise<OpResult> {
       const live = host.inboundManager.list().find((l) => l.server.abort(taskId))
@@ -300,8 +387,8 @@ function makeFacade(host: FacadeHost): A2AServiceImpl {
     listSessions(): SessionView[] {
       return sessionViews()
     },
-    async cancelSessionTasks(contextId: string): Promise<OpResult> {
-      const canceled = cancelContextTasks(contextId)
+    async cancelSessionTasks(contextId: string, serverId?: string): Promise<OpResult> {
+      const canceled = cancelContextTasks(contextId, serverId)
       return {
         ok: true,
         message: canceled > 0
@@ -309,13 +396,14 @@ function makeFacade(host: FacadeHost): A2AServiceImpl {
           : `session ${contextId}: no active tasks`,
       }
     },
-    async closeSession(contextId: string): Promise<OpResult> {
-      const canceled = cancelContextTasks(contextId)
+    async closeSession(contextId: string, serverId?: string): Promise<OpResult> {
+      const canceled = cancelContextTasks(contextId, serverId)
       // Dispose every live handle for the context across instances; the next
       // task on the same contextId re-opens a fresh handle (never refused —
       // A2A has no closed-context concept, see session-registry docs).
       let closed = 0
       for (const live of host.inboundManager.list()) {
+        if (serverId !== undefined && live.id !== serverId) continue
         if (live.sessionPool !== undefined && live.sessionPool.has(contextId)) {
           await live.sessionPool.disposeContext(contextId)
           closed += 1
@@ -329,6 +417,15 @@ function makeFacade(host: FacadeHost): A2AServiceImpl {
         ok: true,
         message: parts.length > 0 ? `session ${contextId}: ${parts.join('; ')}` : `session ${contextId}: no active tasks or live sessions`,
       }
+    },
+    sessionMessages(contextId: string, serverId?: string): readonly unknown[] {
+      const matches = host.inboundManager.list().filter((live) =>
+        (serverId === undefined || live.id === serverId) && live.sessionPool?.has(contextId) === true)
+      if (matches.length > 1) throw new Error(`session ${contextId} is ambiguous; specify serverId`)
+      return matches[0]?.sessionPool?.messages(contextId) ?? []
+    },
+    metrics(): unknown {
+      return host.metrics.snapshot()
     },
     // ── inbound peers (aggregated across instances) ─────────────────────
     inbounds(): unknown {

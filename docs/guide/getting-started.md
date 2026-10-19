@@ -3,7 +3,7 @@ name: Getting started
 description: Install @hanphone/dsh-a2a, publish an inbound A2A server, call it with curl, and connect a remote agent as a model tool
 create-time: 2026-10-19
 update-time: 2026-10-19
-version: v0.3.8
+version: v0.4.0
 relative-docs:
   - docs/guide/concepts.md
   - docs/guide/operations.md

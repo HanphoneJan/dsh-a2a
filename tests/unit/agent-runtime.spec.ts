@@ -97,3 +97,104 @@ describe('ContextSessionPool session lifecycle', () => {
     ])
   })
 })
+describe('ContextSessionPool concurrency and content', () => {
+  it('opens one session for concurrent agentFor calls', async () => {
+    const { agents, pool } = poolWith()
+    await Promise.all([pool.agentFor('ctx-race'), pool.agentFor('ctx-race'), pool.agentFor('ctx-race')])
+    expect(agents.created.get('a2a-ctx-race')).toBe(1)
+  })
+
+  it('serializes concurrent turns and returns each turn its own reply', async () => {
+    const history: Array<{ role: 'user' | 'assistant'; content: Array<{ type: string; text?: string }> }> = []
+    const queue: string[] = []
+    let running: Promise<void> | undefined
+    const drain = async (): Promise<void> => {
+      while (queue.length > 0) {
+        const prompt = queue.shift()!
+        await new Promise((r) => setTimeout(r, 10))
+        history.push({ role: 'assistant', content: [{ type: 'text', text: `reply:${prompt}` }] })
+      }
+      running = undefined
+    }
+    const agent: LiveAgent = {
+      session: { deriveMessages: () => history },
+      send: (message) => {
+        const text = message.content.map((b) => b.text).join('')
+        history.push({ role: 'user', content: [{ type: 'text', text }] })
+        queue.push(text)
+        if (running === undefined) running = drain()
+      },
+      whenIdle: async () => { await running },
+      cancel: () => {},
+    }
+    const create = vi.fn(async () => ({ agent, dispose: async () => {} }))
+    const pool = new ContextSessionPool({ create } as unknown as AgentRegistryLike, { cwd: '/tmp' })
+    const [one, two] = await Promise.all([
+      pool.runTurn('ctx-queue', 'one', new AbortController().signal),
+      pool.runTurn('ctx-queue', 'two', new AbortController().signal),
+    ])
+    expect(one).toBe('reply:one')
+    expect(two).toBe('reply:two')
+  })
+
+  it('projects live assistant text deltas through the turn callback', async () => {
+    const listener: { current?: (payload: unknown) => void } = {}
+    const agent: LiveAgent = {
+      session: { deriveMessages: () => [{ role: 'assistant', content: [{ type: 'text', text: 'hello' }] }] },
+      send: () => {
+        listener.current?.({ agent, frame: { type: 'chunk', chunk: { type: 'text-delta', text: 'he' } } })
+        listener.current?.({ agent, frame: { type: 'chunk', chunk: { type: 'text-delta', text: 'llo' } } })
+      },
+      whenIdle: async () => {},
+      cancel: () => {},
+      ctx: {
+        on: (_name, handler) => {
+          listener.current = handler
+          return () => { listener.current = undefined }
+        },
+      },
+    }
+    const create = vi.fn(async () => ({ agent, dispose: async () => {} }))
+    const pool = new ContextSessionPool({ create } as unknown as AgentRegistryLike, { cwd: '/tmp' })
+    const deltas: string[] = []
+    await pool.runTurn('ctx-stream', 'hello', new AbortController().signal, {
+      onEvent: (event) => { if (event.type === 'text-delta') deltas.push(event.text) },
+    })
+    expect(deltas).toEqual(['he', 'llo'])
+  })
+
+  it('admits raw image/file parts through the attachment store', async () => {
+    const agent: LiveAgent = {
+      session: { deriveMessages: () => [{ role: 'assistant', content: [{ type: 'text', text: 'ok' }] }] },
+      send: () => {},
+      whenIdle: async () => {},
+      cancel: () => {},
+    }
+    let admitted: unknown
+    const create = vi.fn(async () => ({ agent, dispose: async () => {} }))
+    const pool = new ContextSessionPool({ create } as unknown as AgentRegistryLike, {
+      cwd: '/tmp',
+      attachments: {
+        admitPromptContent: async (parts) => {
+          admitted = parts
+          return parts.map((part) => part.type === 'text'
+            ? { type: 'text' as const, text: part.text }
+            : part.type === 'image'
+              ? { type: 'image' as const, attachment: { id: 'img' } }
+              : { type: 'file' as const, attachment: part.attachment })
+        },
+        admitEncodedFile: async () => ({ id: 'file' }),
+      },
+    })
+    await pool.runTurn('ctx-media', [
+      { text: 'see attached' },
+      { raw: 'aGVsbG8=', mediaType: 'image/png', filename: 'x.png' },
+      { raw: 'aGk=', filename: 'a.txt' },
+    ], new AbortController().signal)
+    expect(admitted).toEqual([
+      { type: 'text', text: 'see attached' },
+      { type: 'image', data: 'aGVsbG8=', mediaType: 'image/png', name: 'x.png' },
+      { type: 'file', attachment: { id: 'file' } },
+    ])
+  })
+})

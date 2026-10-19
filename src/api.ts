@@ -1,10 +1,11 @@
 /**
  * GUI control API for the A2A settings dashboard: one `GET /a2a/api`
  * snapshot plus `POST /a2a/api` control actions (inbound/outbound server
- * CRUD + enable/disable, task view/cancel) and `GET /a2a/api/presets` for the
- * preset roster the pickers need. The browser half talks only to this route;
- * it carries no protocol knowledge. Loopback-only by default so the dashboard
- * cannot be driven from the wire.
+ * CRUD + enable/disable, task view/cancel, test console, session conversation)
+ * and focused GET endpoints for an AgentCard, one task, one conversation, and
+ * metrics. The browser half talks only to this route; it carries no protocol
+ * knowledge. Loopback-only by default so the dashboard cannot be driven from
+ * the wire.
  *
  * The route body is bound to the same `A2AServiceImpl` facade the `/a2a`
  * command surface uses, so GUI actions and commands cannot disagree.
@@ -19,28 +20,45 @@ export type ApiAction =
   | { readonly action: 'inbound.create'; readonly name: string; readonly description: string; readonly version: string; readonly endpointPath?: string; readonly preset?: string; readonly authTokenEnv?: string; readonly enabled?: boolean }
   | { readonly action: 'inbound.remove' | 'inbound.enable' | 'inbound.disable' | 'inbound.update'; readonly id: string; readonly name?: string; readonly description?: string; readonly version?: string; readonly endpointPath?: string; readonly preset?: string; readonly authTokenEnv?: string }
   | { readonly action: 'inbound.setAuth'; readonly id: string; readonly token?: string }
-  | { readonly action: 'outbound.create'; readonly name: string; readonly agentCardUrl: string; readonly bearerTokenEnv?: string; readonly preset?: string; readonly enabled?: boolean; readonly timeoutMs?: number }
+  | { readonly action: 'inbound.sendTest'; readonly id: string; readonly text: string; readonly contextId?: string; readonly skill?: string }
+  | { readonly action: 'outbound.create'; readonly name: string; readonly agentCardUrl: string; readonly bearerTokenEnv?: string; readonly preset?: string; readonly enabled?: boolean; readonly timeoutMs?: number; readonly disabledSkills?: readonly string[]; readonly skillOverrides?: Readonly<Record<string, { readonly name?: string; readonly description?: string }>> }
   | { readonly action: 'outbound.remove' | 'outbound.enable' | 'outbound.disable' | 'outbound.refresh'; readonly id: string }
   | { readonly action: 'outbound.setAuth'; readonly id: string; readonly token?: string }
   | { readonly action: 'outbound.discover'; readonly agentCardUrl: string; readonly token?: string }
-  | { readonly action: 'outbound.update'; readonly id: string; readonly name?: string; readonly preset?: string; readonly timeoutMs?: number }
+  | { readonly action: 'outbound.update'; readonly id: string; readonly name?: string; readonly preset?: string; readonly timeoutMs?: number; readonly disabledSkills?: readonly string[]; readonly skillOverrides?: Readonly<Record<string, { readonly name?: string; readonly description?: string }>> }
   | { readonly action: 'task.cancel'; readonly id: string }
   | { readonly action: 'inbound.close'; readonly id: string }
-  | { readonly action: 'session.cancel' | 'session.close'; readonly id: string }
+  | { readonly action: 'session.cancel' | 'session.close'; readonly id: string; readonly serverId?: string }
 
 /** One snapshot of the whole plugin for the dashboard. */
 export interface ApiSnapshot {
   readonly inbounds: readonly unknown[]
   readonly outbounds: readonly unknown[]
   readonly tasks: readonly unknown[]
+  readonly taskTotal: number
+  readonly taskNextOffset: number | null
   readonly peers: readonly unknown[]
   readonly sessions: readonly unknown[]
+  readonly metrics: unknown
 }
 
-function readBody(req: IncomingMessage): Promise<string> {
+const DEFAULT_MAX_BODY_BYTES = 1_048_576
+
+function readBody(req: IncomingMessage, maxBytes = DEFAULT_MAX_BODY_BYTES): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const chunks: Buffer[] = []
-    req.on('data', (chunk: Buffer) => chunks.push(chunk))
+    let size = 0
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.byteLength
+      if (size > maxBytes) {
+        const error = new Error('request body too large') as Error & { code: string }
+        error.code = 'BODY_TOO_LARGE'
+        req.resume()
+        reject(error)
+        return
+      }
+      chunks.push(chunk)
+    })
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
     req.once('error', reject)
   })
@@ -68,24 +86,59 @@ export async function handleApiRequest(
     res.end('forbidden')
     return
   }
-  const path = (req.url ?? '').split('?')[0] ?? ''
+  const parsed = new URL(req.url ?? '/', 'http://127.0.0.1')
+  const path = parsed.pathname
   if (req.method === 'GET' && path === '/a2a/api/presets') {
     json(res, 200, await impl.presets())
     return
   }
+  if (req.method === 'GET' && path === '/a2a/api/card') {
+    const id = parsed.searchParams.get('id') ?? ''
+    const card = impl.agentCard(id)
+    if (card === undefined) json(res, 404, { ok: false, message: `inbound server ${id} not found` })
+    else json(res, 200, card)
+    return
+  }
+  if (req.method === 'GET' && path === '/a2a/api/task') {
+    const id = parsed.searchParams.get('id') ?? ''
+    const task = impl.getTask(id)
+    if (task === undefined) json(res, 404, { ok: false, message: `task ${id} not found` })
+    else json(res, 200, task)
+    return
+  }
+  if (req.method === 'GET' && path === '/a2a/api/session') {
+    const contextId = parsed.searchParams.get('contextId') ?? ''
+    const serverId = parsed.searchParams.get('serverId') ?? undefined
+    try {
+      json(res, 200, impl.sessionMessages(contextId, serverId))
+    } catch (err) {
+      json(res, 409, { ok: false, message: (err as Error).message })
+    }
+    return
+  }
+  if (req.method === 'GET' && path === '/a2a/api/metrics') {
+    json(res, 200, impl.metrics())
+    return
+  }
   if (req.method === 'GET') {
-    json(res, 200, snapshotOf(impl))
+    json(res, 200, snapshotOf(impl, parsed.searchParams))
     return
   }
   if (req.method === 'POST') {
     let payload: ApiAction
     try {
       payload = JSON.parse(await readBody(req)) as ApiAction
-    } catch {
-      json(res, 400, { ok: false, message: 'invalid JSON body' })
+    } catch (err) {
+      const tooLarge = (err as { code?: string }).code === 'BODY_TOO_LARGE'
+      json(res, tooLarge ? 413 : 400, { ok: false, message: tooLarge ? 'request body too large' : 'invalid JSON body' })
       return
     }
-    const result = await dispatch(payload, impl)
+    let result: { readonly ok: boolean; readonly message: string; readonly task?: unknown }
+    try {
+      result = await dispatch(payload, impl)
+    } catch (err) {
+      result = { ok: false, message: (err as Error).message }
+    }
     json(res, result.ok ? 200 : 409, result)
     return
   }
@@ -93,20 +146,38 @@ export async function handleApiRequest(
   res.end('Method Not Allowed')
 }
 
-function snapshotOf(impl: A2AServiceImpl): ApiSnapshot {
+function snapshotOf(impl: A2AServiceImpl, params: URLSearchParams): ApiSnapshot {
   const status = impl.status() as { inbounds: readonly unknown[]; outbounds: readonly unknown[]; tasks: number; peers?: readonly unknown[]; sessions?: readonly unknown[] }
+  const limit = parsePositiveInt(params.get('taskLimit'), 50)
+  const offset = parseNonNegativeInt(params.get('taskOffset'), 0)
+  const state = params.get('taskState') ?? undefined
+  const contextId = params.get('taskContextId') ?? undefined
+  const serverId = params.get('taskServerId') ?? undefined
+  const result = impl.listTasks({
+    limit,
+    offset,
+    ...(state !== undefined && state.length > 0 ? { state } : {}),
+    ...(contextId !== undefined && contextId.length > 0 ? { contextId } : {}),
+    ...(serverId !== undefined && serverId.length > 0 ? { serverId } : {}),
+  })
+  const page = Array.isArray(result)
+    ? { tasks: result, total: result.length, nextOffset: null }
+    : result
   return {
     inbounds: status.inbounds ?? [],
     outbounds: status.outbounds ?? [],
-    tasks: impl.listTasks() as readonly unknown[],
+    tasks: page.tasks,
+    taskTotal: page.total,
+    taskNextOffset: page.nextOffset,
     // `status()` may already carry aggregated peers; fall back to the facade.
     peers: (status.peers ?? impl.inbounds()) as readonly unknown[],
     // `status()` carries the aggregated session views when mounted.
     sessions: (status.sessions ?? impl.listSessions()) as readonly unknown[],
+    metrics: impl.metrics?.() ?? {},
   }
 }
 
-async function dispatch(payload: ApiAction, impl: A2AServiceImpl): Promise<{ readonly ok: boolean; readonly message: string }> {
+async function dispatch(payload: ApiAction, impl: A2AServiceImpl): Promise<{ readonly ok: boolean; readonly message: string; readonly task?: unknown }> {
   switch (payload.action) {
     case 'inbound.create':
       return impl.createInboundServer({
@@ -135,6 +206,16 @@ async function dispatch(payload: ApiAction, impl: A2AServiceImpl): Promise<{ rea
       })
     case 'inbound.setAuth':
       return impl.setInboundAuth(payload.id, payload.token !== undefined && payload.token.length > 0 ? payload.token : undefined)
+    case 'inbound.sendTest':
+      return {
+        ok: true,
+        message: 'test message submitted',
+        task: await impl.sendTestMessage(payload.id, {
+          text: payload.text,
+          ...(payload.contextId !== undefined ? { contextId: payload.contextId } : {}),
+          ...(payload.skill !== undefined ? { skill: payload.skill } : {}),
+        }),
+      }
     case 'outbound.create':
       return impl.createOutboundServer({
         name: payload.name,
@@ -143,6 +224,8 @@ async function dispatch(payload: ApiAction, impl: A2AServiceImpl): Promise<{ rea
         ...(payload.preset !== undefined ? { preset: payload.preset } : {}),
         ...(payload.enabled !== undefined ? { enabled: payload.enabled } : {}),
         ...(payload.timeoutMs !== undefined ? { timeoutMs: payload.timeoutMs } : {}),
+        ...(payload.disabledSkills !== undefined ? { disabledSkills: payload.disabledSkills } : {}),
+        ...(payload.skillOverrides !== undefined ? { skillOverrides: payload.skillOverrides } : {}),
       })
     case 'outbound.remove':
       return impl.removeOutboundServer(payload.id)
@@ -161,16 +244,32 @@ async function dispatch(payload: ApiAction, impl: A2AServiceImpl): Promise<{ rea
         ...(payload.name !== undefined ? { name: payload.name } : {}),
         ...(payload.preset !== undefined ? { preset: payload.preset } : {}),
         ...(payload.timeoutMs !== undefined ? { timeoutMs: payload.timeoutMs } : {}),
+        ...(payload.disabledSkills !== undefined ? { disabledSkills: payload.disabledSkills } : {}),
+        ...(payload.skillOverrides !== undefined ? { skillOverrides: payload.skillOverrides } : {}),
       })
     case 'task.cancel':
       return impl.cancelTask(payload.id)
     case 'inbound.close':
       return impl.closeInbound(payload.id)
     case 'session.cancel':
-      return impl.cancelSessionTasks(payload.id)
+      return payload.serverId !== undefined
+        ? impl.cancelSessionTasks(payload.id, payload.serverId)
+        : impl.cancelSessionTasks(payload.id)
     case 'session.close':
-      return impl.closeSession(payload.id)
+      return payload.serverId !== undefined
+        ? impl.closeSession(payload.id, payload.serverId)
+        : impl.closeSession(payload.id)
     default:
       return { ok: false, message: `unknown action ${String((payload as { action?: unknown }).action)}` }
   }
+}
+
+function parsePositiveInt(raw: string | null, fallback: number): number {
+  const value = raw === null ? Number.NaN : Number.parseInt(raw, 10)
+  return Number.isFinite(value) && value > 0 ? value : fallback
+}
+
+function parseNonNegativeInt(raw: string | null, fallback: number): number {
+  const value = raw === null ? Number.NaN : Number.parseInt(raw, 10)
+  return Number.isFinite(value) && value >= 0 ? value : fallback
 }

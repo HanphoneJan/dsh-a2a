@@ -7,6 +7,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { A2AServer } from './a2a-server.ts'
+import { PROTOCOL_VERSION } from '../protocol.ts'
 
 /** Structural slice of `ctx.webServer` this module registers on. */
 export interface WebServerLike {
@@ -29,6 +30,8 @@ export class A2aRoutes {
     private readonly server: A2AServer,
     /** AgentCard route path; default = the well-known A2A path. */
     private readonly cardPath: string = DEFAULT_CARD_PATH,
+    /** Maximum accepted request body in bytes. */
+    private readonly maxBodyBytes: number = 1_048_576,
   ) {}
 
   get active(): boolean {
@@ -73,12 +76,22 @@ export class A2aRoutes {
     const streaming = (req.method === 'POST' && (req.headers.accept ?? '').includes('text/event-stream'))
 
     if (req.method === 'POST' && path === endpointPathOf(this.server)) {
-      const body = await readBody(req)
+      let body: string
+      try {
+        body = await readBody(req, this.maxBodyBytes)
+      } catch (err) {
+        const tooLarge = (err as { code?: string }).code === 'BODY_TOO_LARGE'
+        res.writeHead(tooLarge ? 413 : 400, { 'content-type': 'text/plain' })
+        res.end(tooLarge ? 'Payload Too Large' : 'Bad Request')
+        return
+      }
       if (streaming) {
-        // Authorize BEFORE writing 200 so a 401 can still carry a plain status.
-        if (!this.server.authorized(toServerReq(req))) {
-          res.writeHead(401, { 'content-type': 'text/plain', 'WWW-Authenticate': 'Bearer' })
-          res.end('Unauthorized')
+        // Authorize and rate-limit BEFORE writing 200 so a 401/429 can still
+        // carry a plain status. handleStream then skips its own preflight.
+        const preflight = this.server.preflight(toServerReq(req))
+        if (preflight !== undefined) {
+          res.writeHead(preflight.status, { 'content-type': preflight.contentType, ...(preflight.headers ?? {}) })
+          res.end(preflight.body)
           return
         }
         res.writeHead(200, {
@@ -86,11 +99,11 @@ export class A2aRoutes {
           'cache-control': 'no-cache',
           connection: 'keep-alive',
           'x-accel-buffering': 'no',
+          'a2a-version': PROTOCOL_VERSION,
         })
-        const outcome = await this.server.handleStream(toServerReq(req), body, (frame) => res.write(frame))
+        const outcome = await this.server.handleStream(toServerReq(req), body, (frame) => res.write(frame), { preflighted: true })
         if (outcome.status !== 200) {
-          res.writeHead(outcome.status, { 'content-type': 'text/plain', ...(outcome.headers ?? {}) })
-          res.end('Unauthorized')
+          res.end()
           return
         }
         res.end()
@@ -119,10 +132,21 @@ function endpointPathOf(server: A2AServer): string {
   }
 }
 
-function readBody(req: IncomingMessage): Promise<string> {
+function readBody(req: IncomingMessage, maxBytes: number): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const chunks: Buffer[] = []
-    req.on('data', (chunk: Buffer) => chunks.push(chunk))
+    let size = 0
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.byteLength
+      if (size > maxBytes) {
+        const error = new Error('request body too large') as Error & { code: string }
+        error.code = 'BODY_TOO_LARGE'
+        req.resume()
+        reject(error)
+        return
+      }
+      chunks.push(chunk)
+    })
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
     req.once('error', reject)
   })

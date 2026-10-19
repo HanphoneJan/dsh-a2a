@@ -16,10 +16,12 @@
  * @module dsh-a2a/servers/outbound-manager
  */
 
-import { OutboundAgentRegistry, type AgentStore } from '../outbound/registry.ts'
+import { OutboundAgentRegistry, type AgentStore, type OutboundSkillView } from '../outbound/registry.ts'
 import { A2AClient } from '../outbound/calls.ts'
 import type { CredentialsLike } from '../server/exec/agent-runtime.ts'
 import type { OutboundAgentRecord, OutboundServerRecord } from '../server/store.ts'
+import type { SkillOverride } from '../outbound/tools.ts'
+import type { A2aMetrics } from '../server/metrics.ts'
 
 /** Tool-registrar slice (structural `ctx.tools.register`). */
 export interface ToolRegistrar {
@@ -34,6 +36,9 @@ export interface OutboundManagerHost {
   readonly credentials?: CredentialsLike
   readonly onError: (message: string) => void
   readonly defaultTimeoutMs: number
+  /** Automatic AgentCard refresh interval (ms); 0 disables it. */
+  readonly refreshIntervalMs?: number
+  readonly metrics?: A2aMetrics
 }
 
 export interface OpResult {
@@ -52,7 +57,9 @@ export interface OutboundServerView {
   readonly state: 'connected' | 'disconnected' | 'failed'
   readonly skillCount: number
   readonly toolCount: number
+  readonly skills: readonly OutboundSkillView[]
   readonly lastError?: string
+  readonly lastCardAt?: string
 }
 
 /** An `AgentStore` bound to one outbound server instance's agents-table key. */
@@ -140,6 +147,8 @@ export interface OutboundCreateInput {
   readonly preset?: string
   readonly enabled?: boolean
   readonly timeoutMs?: number
+  readonly disabledSkills?: readonly string[]
+  readonly skillOverrides?: Readonly<Record<string, SkillOverride>>
 }
 
 /** Discovered remote card preview (two-phase add). */
@@ -159,6 +168,7 @@ export function outboundAuthEnv(id: string): string {
 /** Manages the live set of outbound connection instances. */
 export class OutboundServerManager {
   private readonly registries = new Map<string, OutboundAgentRegistry>()
+  private readonly timers = new Map<string, ReturnType<typeof setInterval>>()
 
   constructor(
     private readonly host: OutboundManagerHost,
@@ -187,17 +197,21 @@ export class OutboundServerManager {
       defaultTimeoutMs: this.host.defaultTimeoutMs,
       tokenOf: (env) => this.host.tokenOf(env),
       onError: this.host.onError,
+      serverId: record.id,
+      ...(this.host.metrics !== undefined ? { metrics: this.host.metrics } : {}),
     })
   }
 
   /** Record → registry spec for connecting one instance. */
-  private toSpec(record: OutboundServerRecord): { name: string; agentCardUrl: string; bearerTokenEnv?: string; enabled?: boolean; timeoutMs?: number } {
+  private toSpec(record: OutboundServerRecord): { name: string; agentCardUrl: string; bearerTokenEnv?: string; enabled?: boolean; timeoutMs?: number; disabledSkills?: readonly string[]; skillOverrides?: Readonly<Record<string, SkillOverride>> } {
     return {
       name: record.name,
       agentCardUrl: record.agentCardUrl,
       ...(record.bearerTokenEnv !== undefined ? { bearerTokenEnv: record.bearerTokenEnv } : {}),
       enabled: record.enabled,
       timeoutMs: record.timeoutMs ?? this.host.defaultTimeoutMs,
+      ...(record.disabledSkills !== undefined ? { disabledSkills: record.disabledSkills } : {}),
+      ...(record.skillOverrides !== undefined ? { skillOverrides: record.skillOverrides } : {}),
     }
   }
 
@@ -207,7 +221,10 @@ export class OutboundServerManager {
       try {
         const registry = this.makeRegistry(record)
         this.registries.set(record.id, registry)
-        if (record.enabled) registry.loadAll()
+        if (record.enabled) {
+          registry.loadAll()
+          this.schedule(record.id)
+        }
       } catch (err) {
         this.host.onError(`[a2a:out:${record.id}] failed to boot: ${String((err as Error).message)}`)
       }
@@ -239,7 +256,9 @@ export class OutboundServerManager {
       state: agent?.state ?? 'disconnected',
       skillCount: agent?.skillCount ?? 0,
       toolCount: agent?.toolCount ?? 0,
+      skills: agent?.skills ?? [],
       ...(agent?.lastError !== undefined ? { lastError: agent.lastError } : {}),
+      ...(record.lastCardAt !== undefined ? { lastCardAt: record.lastCardAt } : {}),
     }
   }
 
@@ -253,6 +272,8 @@ export class OutboundServerManager {
       ...(input.preset !== undefined ? { preset: input.preset } : {}),
       enabled: input.enabled ?? true,
       timeoutMs: input.timeoutMs ?? this.host.defaultTimeoutMs,
+      ...(input.disabledSkills !== undefined ? { disabledSkills: [...input.disabledSkills] } : {}),
+      ...(input.skillOverrides !== undefined ? { skillOverrides: { ...input.skillOverrides } } : {}),
     }
     if (this.registries.has(record.id)) return { ok: false, message: `outbound server ${record.id} already exists` }
     const registry = this.makeRegistry(record)
@@ -260,6 +281,10 @@ export class OutboundServerManager {
     this.registries.set(record.id, registry)
     if (record.enabled) {
       const result = await registry.add(this.toSpec(record))
+      if (result.ok) {
+        await this.records.save({ ...record, lastCardAt: new Date().toISOString() })
+        this.schedule(record.id)
+      }
       return result.ok ? { ...result, id: record.id } : result
     }
     return { ok: true, message: `outbound server "${record.name}" added (disabled)`, id: record.id }
@@ -272,7 +297,9 @@ export class OutboundServerManager {
     const record = this.records.get(id)
     if (record !== undefined) await this.records.save({ ...record, enabled })
     if (view === undefined) return { ok: true, message: `outbound server ${id} marked ${enabled ? 'enabled' : 'disabled'}` }
-    return registry.setEnabled(view.id, enabled)
+    const result = await registry.setEnabled(view.id, enabled)
+    if (result.ok) this.schedule(id)
+    return result
   }
 
   /** Read a remote AgentCard for the two-phase add preview (no state change). */
@@ -304,7 +331,7 @@ export class OutboundServerManager {
   }
 
   /** Edit a live instance's name/preset/timeout (persist + rebuild if connected). */
-  async update(id: string, patch: { readonly name?: string; readonly preset?: string; readonly timeoutMs?: number }): Promise<OpResult> {
+  async update(id: string, patch: { readonly name?: string; readonly preset?: string; readonly timeoutMs?: number; readonly disabledSkills?: readonly string[]; readonly skillOverrides?: Readonly<Record<string, SkillOverride>> }): Promise<OpResult> {
     const registry = this.registries.get(id)
     const stored = this.records.get(id)
     if (registry === undefined || stored === undefined) return { ok: false, message: `outbound server ${id} not found` }
@@ -312,7 +339,9 @@ export class OutboundServerManager {
       ...stored,
       name: patch.name ?? stored.name,
       ...(patch.preset !== undefined ? { preset: patch.preset } : {}),
-      timeoutMs: patch.timeoutMs ?? stored.timeoutMs,
+      ...(patch.timeoutMs !== undefined ? { timeoutMs: patch.timeoutMs } : {}),
+      ...(patch.disabledSkills !== undefined ? { disabledSkills: [...patch.disabledSkills] } : {}),
+      ...(patch.skillOverrides !== undefined ? { skillOverrides: { ...patch.skillOverrides } } : {}),
     }
     try {
       await this.records.save(next)
@@ -323,6 +352,7 @@ export class OutboundServerManager {
         const result = await rebuilt.add(this.toSpec(next))
         if (!result.ok) this.host.onError(`[a2a:out:${id}] update rebuild: ${result.message}`)
       }
+      this.schedule(id)
       return { ok: true, message: `outbound server ${id} updated` }
     } catch (err) {
       return { ok: false, message: `failed to update outbound server: ${String((err as Error).message)}` }
@@ -332,6 +362,7 @@ export class OutboundServerManager {
   async remove(id: string): Promise<OpResult> {
     const registry = this.registries.get(id)
     if (registry === undefined) return { ok: false, message: `outbound server ${id} not found` }
+    this.clearTimer(id)
     const view = registry.list()[0]
     if (view !== undefined) await registry.remove(view.id)
     await registry.disposeAll()
@@ -345,7 +376,12 @@ export class OutboundServerManager {
     if (registry === undefined) return { ok: false, message: `outbound server ${id} not found` }
     const view = registry.list()[0]
     if (view === undefined) return { ok: false, message: `outbound server ${id} has no connected agent` }
-    return registry.refresh(view.id)
+    const result = await registry.refresh(view.id)
+    if (result.ok) {
+      const record = this.records.get(id)
+      if (record !== undefined) await this.records.save({ ...record, lastCardAt: new Date().toISOString() })
+    }
+    return result
   }
 
   /**
@@ -381,13 +417,44 @@ export class OutboundServerManager {
         const result = await rebuilt.add(this.toSpec(next))
         if (!result.ok) this.host.onError(`[a2a:out:${id}] auth rebuild: ${result.message}`)
       }
+      this.schedule(id)
       return { ok: true, message: `outbound server ${id} auth ${token ? 'set' : 'cleared'} (${envName})` }
     } catch (err) {
       return { ok: false, message: `failed to set outbound auth: ${String((err as Error).message)}` }
     }
   }
 
+  /** Start/refresh the automatic card-refresh timer for one instance. */
+  private schedule(id: string): void {
+    this.clearTimer(id)
+    const interval = this.host.refreshIntervalMs ?? 0
+    if (interval <= 0) return
+    const record = this.records.get(id)
+    if (record === undefined || !record.enabled) return
+    const timer = setInterval(() => {
+      const current = this.records.get(id)
+      if (current === undefined || !current.enabled) {
+        this.clearTimer(id)
+        return
+      }
+      void this.refresh(id).then((result) => {
+        if (!result.ok) this.host.onError(`[a2a:out:${id}] scheduled refresh: ${result.message}`)
+      }).catch((err: unknown) => {
+        this.host.onError(`[a2a:out:${id}] scheduled refresh failed: ${String(err)}`)
+      })
+    }, interval)
+    timer.unref?.()
+    this.timers.set(id, timer)
+  }
+
+  private clearTimer(id: string): void {
+    const timer = this.timers.get(id)
+    if (timer !== undefined) clearInterval(timer)
+    this.timers.delete(id)
+  }
+
   async disposeAll(): Promise<void> {
+    for (const id of [...this.timers.keys()]) this.clearTimer(id)
     for (const registry of this.registries.values()) await registry.disposeAll()
     this.registries.clear()
   }

@@ -9,9 +9,10 @@
  * never crashing — while stream-open observations only exist where an A2A
  * server is actually mounted.
  *
- * Views are aggregated globally by `contextId` (one row per conversation),
- * because the session id is a pure function of the context id
- * (`ContextSessionPool.sessionIdFor`) and instances share one TaskStore.
+ * Views are aggregated by `(serverId, contextId)` (one row per inbound
+ * instance conversation), because the session id is a pure function of both
+ * (`ContextSessionPool.sessionIdFor`). Two instances may therefore reuse the
+ * same client-chosen contextId without sharing a session.
  * @module dsh-a2a/server/session-registry
  */
 
@@ -79,7 +80,10 @@ export interface SessionInstanceLike {
   readonly preset?: string | undefined
   readonly sessions: ContextSessionRegistry
   /** Live per-context session pool; absent = no agent loop mounted. */
-  readonly sessionPool?: { has(contextId: string): boolean } | undefined
+  readonly sessionPool?: {
+    has(contextId: string): boolean
+    messages?(contextId: string): readonly unknown[]
+  } | undefined
 }
 
 /**
@@ -94,13 +98,14 @@ export function aggregateSessionViews(
 ): SessionView[] {
   const byContext = new Map<string, TaskRecord[]>()
   for (const task of tasks) {
-    const list = byContext.get(task.contextId)
-    if (list === undefined) byContext.set(task.contextId, [task])
+    const key = `${task.serverId ?? ''}\u0000${task.contextId}`
+    const list = byContext.get(key)
+    if (list === undefined) byContext.set(key, [task])
     else list.push(task)
   }
   const byId = new Map(instances.map((i) => [i.id, i]))
   const rows: SessionView[] = []
-  for (const [contextId, contextTasks] of byContext) {
+  for (const contextTasks of byContext.values()) {
     let latest = contextTasks[0]!
     let firstSeen = latest.createdAt
     let lastSeen = latest.updatedAt
@@ -114,13 +119,18 @@ export function aggregateSessionViews(
       if (!isTerminal(task.state)) activeCount += 1
     }
     const instance = byId.get(latest.serverId ?? '')
-    const streaming = contextTasks.some(
-      (task) => (byId.get(task.serverId ?? '')?.sessions.streamingOpenCount(task.taskId) ?? 0) > 0,
-    )
-    const live = instances.some((i) => i.sessionPool?.has(contextId) === true)
+    const streaming = contextTasks.some((task) => {
+      const owner = byId.get(task.serverId ?? '')
+      if (owner !== undefined) return owner.sessions.streamingOpenCount(task.taskId) > 0
+      // Legacy/unattributed tasks have no instance id; retain the old
+      // cross-instance observation so pre-upgrade rows still render.
+      return instances.some((candidate) => candidate.sessions.streamingOpenCount(task.taskId) > 0)
+    })
+    const live = instance?.sessionPool?.has(latest.contextId) === true
+      || (latest.serverId === undefined && instances.some((candidate) => candidate.sessionPool?.has(latest.contextId) === true))
     const row: SessionView = {
-      contextId,
-      sessionId: ContextSessionPool.sessionIdFor(contextId),
+      contextId: latest.contextId,
+      sessionId: ContextSessionPool.sessionIdFor(latest.contextId, latest.serverId),
       status: activeCount > 0 ? 'running' : 'idle',
       taskCount: contextTasks.length,
       activeCount,

@@ -8,6 +8,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import type { Part } from '../../protocol.ts'
 
 /** The slice of a live DSH `Agent` this runtime drives (structural mirror). */
 export interface LiveAgent {
@@ -15,6 +16,17 @@ export interface LiveAgent {
   send(message: AgentUserMessage, target: 'next-turn', wakeup: boolean): void
   whenIdle(): Promise<void>
   cancel(cause: string): void
+  /**
+   * Agent-scoped context. Optional so minimal test doubles stay valid; when
+   * present it carries the live assistant-stream and error notifications that
+   * make token streaming and failure propagation observable.
+   */
+  readonly ctx?: AgentContextLike
+}
+
+/** The slice of an agent-scoped Cordis context used for live notifications. */
+export interface AgentContextLike {
+  on(name: string, listener: (payload: unknown) => void): (() => void) | void
 }
 
 /** One derived history message. */
@@ -23,13 +35,56 @@ export interface AgentMessage {
   readonly content: readonly { readonly type: string; readonly text?: string }[]
 }
 
+/** One text content block handed to the agent. */
+export interface AgentTextBlock {
+  readonly type: 'text'
+  readonly text: string
+}
+
+/** One durable image attachment block handed to the agent. */
+export interface AgentImageBlock {
+  readonly type: 'image'
+  readonly attachment: unknown
+}
+
+/** One durable file attachment block handed to the agent. */
+export interface AgentFileBlock {
+  readonly type: 'file'
+  readonly attachment: unknown
+}
+
+/** Content block accepted by the harness user-message codec. */
+export type AgentContentBlock = AgentTextBlock | AgentImageBlock | AgentFileBlock
+
 /** One user message handed to the agent. */
 export interface AgentUserMessage {
   readonly id: string
   readonly role: 'user'
-  readonly content: readonly { readonly type: 'text'; readonly text: string }[]
+  readonly content: readonly AgentContentBlock[]
   readonly source: { readonly kind: 'a2a' }
 }
+
+/** One text/tool delta observed on the live assistant stream. */
+export type TurnStreamEvent =
+  | { readonly type: 'text-delta'; readonly text: string }
+  | { readonly type: 'tool-call-delta'; readonly id: string; readonly name?: string; readonly argumentsDelta: string }
+
+/** Per-turn options: live observation only; the turn's result remains the return value. */
+export interface RunTurnOptions {
+  readonly onEvent?: (event: TurnStreamEvent) => void
+}
+
+/** Structural slice of the attachment store used to admit A2A file parts. */
+export interface AttachmentsLike {
+  admitPromptContent(content: readonly AttachmentAdmissionPart[]): Promise<readonly AgentContentBlock[]>
+  admitEncodedFile(input: { readonly data: string; readonly name?: string }): Promise<unknown>
+}
+
+/** One prompt part before image/file admission. */
+export type AttachmentAdmissionPart =
+  | { readonly type: 'text'; readonly text: string }
+  | { readonly type: 'image'; readonly data: string; readonly mediaType: string; readonly name?: string }
+  | { readonly type: 'file'; readonly attachment: unknown }
 
 /** Owned agent plus its capability disposer (structural mirror of AgentHandle). */
 export interface AgentHandle {
@@ -93,8 +148,20 @@ export interface AgentRuntimeOptions {
   readonly agentPresets?: AgentPresetsLike
   /** When set, every spawned session joins THIS preset id instead of the deployment default. */
   readonly presetId?: () => string | undefined
+  /** Attachment store used to turn A2A raw file/image parts into durable references. */
+  readonly attachments?: AttachmentsLike
+  /** Stable namespace mixed into the derived session id (inbound server id). */
+  readonly sessionNamespace?: string
   /** Once-per-context hook after the first prompt lands (cosmetic naming). */
   readonly onSessionOpened?: (info: { readonly sessionId: string; readonly contextId: string; readonly firstPrompt: string }) => void | Promise<void>
+}
+
+/** An error raised when a turn is canceled by its caller. */
+export class AgentTurnCanceled extends Error {
+  constructor() {
+    super('a2a: turn canceled')
+    this.name = 'AgentTurnCanceled'
+  }
 }
 
 /**
@@ -104,23 +171,50 @@ export interface AgentRuntimeOptions {
  */
 export class ContextSessionPool {
   private readonly handles = new Map<string, AgentHandle>()
-  private readonly tails = new Map<string, Promise<unknown>>()
+  private readonly openings = new Map<string, Promise<AgentHandle>>()
+  /** Per-context promise chain: a turn waits for the previous turn to settle. */
+  private readonly tails = new Map<string, Promise<void>>()
 
   constructor(
     private readonly agents: AgentRegistryLike,
     private readonly opts: AgentRuntimeOptions,
   ) {}
 
-  /** Session id derived from the A2A context id (stable across restarts). */
-  static sessionIdFor(contextId: string): string {
-    return `a2a-${contextId}`
+  /** Session id derived from the A2A context id and instance namespace (stable across restarts). */
+  static sessionIdFor(contextId: string, namespace?: string): string {
+    return namespace !== undefined && namespace.length > 0 ? `a2a-${namespace}-${contextId}` : `a2a-${contextId}`
   }
 
   /** Get or open the live agent for a context; errors propagate. */
   async agentFor(contextId: string): Promise<{ readonly agent: LiveAgent; readonly sessionId: string; readonly justOpened: boolean }> {
-    const sessionId = ContextSessionPool.sessionIdFor(contextId)
+    const justOpened = !this.handles.has(contextId) && !this.openings.has(contextId)
+    const handle = await this.openHandle(contextId)
+    return {
+      agent: handle.agent,
+      sessionId: ContextSessionPool.sessionIdFor(contextId, this.opts.sessionNamespace),
+      justOpened,
+    }
+  }
+
+  /** Open (or resume) the live handle with a per-context single-flight guard. */
+  private async openHandle(contextId: string): Promise<AgentHandle> {
     const existing = this.handles.get(contextId)
-    if (existing !== undefined) return { agent: existing.agent, sessionId, justOpened: false }
+    if (existing !== undefined) return existing
+    const opening = this.openings.get(contextId)
+    if (opening !== undefined) return opening
+    const promise = this.openHandleUncached(contextId)
+    this.openings.set(contextId, promise)
+    try {
+      const handle = await promise
+      this.handles.set(contextId, handle)
+      return handle
+    } finally {
+      if (this.openings.get(contextId) === promise) this.openings.delete(contextId)
+    }
+  }
+
+  private async openHandleUncached(contextId: string): Promise<AgentHandle> {
+    const sessionId = ContextSessionPool.sessionIdFor(contextId, this.opts.sessionNamespace)
     const agentOptions = this.opts.resolveAgentOptions?.()
     const withModel = agentOptions ? { agentOptions } : {}
     const presets = this.opts.agentPresets
@@ -142,18 +236,14 @@ export class ContextSessionPool {
       ...withModel,
       ...(setup ? { setup } : {}),
     }
-    let handle: AgentHandle
     try {
-      handle = await this.agents.create(createOptions)
+      return await this.agents.create(createOptions)
     } catch (err) {
       if (/already (has|owns)|persisted/i.test((err as Error).message)) {
-        handle = await this.agents.resume({ resumeSessionId: sessionId, ...withModel, ...(setup ? { setup } : {}) })
-      } else {
-        throw err
+        return await this.agents.resume({ resumeSessionId: sessionId, ...withModel, ...(setup ? { setup } : {}) })
       }
+      throw err
     }
-    this.handles.set(contextId, handle)
-    return { agent: handle.agent, sessionId, justOpened: true }
   }
 
   /** True while this pool holds a live handle for the context. */
@@ -161,10 +251,78 @@ export class ContextSessionPool {
     return this.handles.has(contextId)
   }
 
+  /** The live context's derived conversation, or an empty list when not open. */
+  messages(contextId: string): readonly AgentMessage[] {
+    return this.handles.get(contextId)?.agent.session.deriveMessages() ?? []
+  }
+
+  /**
+   * Convert A2A parts into durable prompt content. Text and data parts become
+   * text; raw image/file parts are admitted through the attachment store so the
+   * DSH session receives real attachments rather than URL placeholders.
+   */
+  async contentBlocks(parts: readonly Part[]): Promise<AgentContentBlock[]> {
+    if (parts.length === 0) return []
+    const attachments = this.opts.attachments
+    const admission: AttachmentAdmissionPart[] = []
+    const imageTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
+    for (const part of parts) {
+      if ('text' in part && typeof part.text === 'string') {
+        admission.push({ type: 'text', text: part.text })
+        continue
+      }
+      if ('data' in part && part.data !== undefined) {
+        admission.push({ type: 'text', text: JSON.stringify(part.data) })
+        continue
+      }
+      if ('raw' in part && typeof part.raw === 'string') {
+        if (attachments !== undefined) {
+          if (part.mediaType !== undefined && imageTypes.has(part.mediaType)) {
+            admission.push({
+              type: 'image',
+              data: part.raw,
+              mediaType: part.mediaType,
+              ...(part.filename !== undefined ? { name: part.filename } : {}),
+            })
+            continue
+          }
+          try {
+            const ref = await attachments.admitEncodedFile({
+              data: part.raw,
+              ...(part.filename !== undefined ? { name: part.filename } : {}),
+            })
+            admission.push({ type: 'file', attachment: ref })
+            continue
+          } catch {
+            // Fall through to the textual placeholder for an unadmittable file.
+          }
+        }
+        admission.push({ type: 'text', text: filePlaceholder(part) })
+        continue
+      }
+      if ('url' in part && typeof part.url === 'string') {
+        admission.push({ type: 'text', text: part.url })
+        continue
+      }
+      if ('filename' in part) admission.push({ type: 'text', text: filePlaceholder(part) })
+    }
+    if (attachments === undefined) return admission.map((part) => part.type === 'text' ? { type: 'text', text: part.text } : { type: 'text', text: '[attachment unavailable]' })
+    try {
+      return [...await attachments.admitPromptContent(admission)]
+    } catch {
+      // A refused attachment must not silently disappear; keep a readable
+      // placeholder so the agent can explain what the caller sent.
+      return admission.map((part) => part.type === 'text'
+        ? { type: 'text', text: part.text }
+        : { type: 'text', text: part.type === 'image' ? `[image ${part.name ?? part.mediaType} rejected]` : '[file attachment rejected]' })
+    }
+  }
+
   /**
    * Dispose ONE context's session (the caller aborts its active tasks first).
-   * Removes the handle and its serialization tail, lets an in-flight turn
-   * drain, then disposes the handle. Returns whether a handle was held.
+   * Removes the handle and its serialization tail, disposes the handle, and
+   * lets a non-cooperative in-flight turn drain in the background. Returns
+   * whether a handle was held.
    *
    * Close is an in-memory resource release, NOT a conversation tombstone: the
    * A2A protocol has no "closed context" notion, so the next task on the same
@@ -177,51 +335,133 @@ export class ContextSessionPool {
     this.handles.delete(contextId)
     const tail = this.tails.get(contextId)
     this.tails.delete(contextId)
-    await Promise.allSettled([tail ?? Promise.resolve(), handle.dispose()])
+    // Disposing the handle is the cancellation signal for the host runtime.
+    // Do not block the control path on a tail whose executor ignores abort:
+    // the task has already been settled by its AbortController, and the turn
+    // drains (or is torn down by the handle) in the background.
+    await Promise.allSettled([handle.dispose()])
+    if (tail !== undefined) void tail.catch(() => {})
     return true
   }
 
-  /** Run one turn on a context's session, serialized behind its tail. */
-  async runTurn(contextId: string, prompt: string, signal: AbortSignal): Promise<string> {
+  /**
+   * Run one turn on a context's session, serialized behind the previous turn.
+   * The return value is this turn's assistant text, not the agent's global last
+   * assistant message; errors and cancellations are surfaced to the caller.
+   */
+  async runTurn(contextId: string, prompt: string | readonly Part[], signal: AbortSignal, options: RunTurnOptions = {}): Promise<string> {
+    const previous = this.tails.get(contextId) ?? Promise.resolve()
+    const run = previous.catch(() => {}).then(() => this.runTurnExclusive(contextId, prompt, signal, options))
+    const tail = run.then(() => {}, () => {})
+    this.tails.set(contextId, tail)
+    try {
+      return await run
+    } finally {
+      if (this.tails.get(contextId) === tail) this.tails.delete(contextId)
+    }
+  }
+
+  private async runTurnExclusive(contextId: string, prompt: string | readonly Part[], signal: AbortSignal, options: RunTurnOptions): Promise<string> {
     const { agent, sessionId, justOpened } = await this.agentFor(contextId)
+    const promptText = typeof prompt === 'string' ? prompt : partsToText(prompt)
+    const content = typeof prompt === 'string' ? [{ type: 'text' as const, text: prompt }] : await this.contentBlocks(prompt)
     const onAbort = (): void => agent.cancel('a2a-canceled')
     if (signal.aborted) onAbort()
     else signal.addEventListener('abort', onAbort, { once: true })
+
+    let failure: unknown
+    const disposers: Array<() => void> = []
+    const listen = (name: string, listener: (payload: unknown) => void): void => {
+      try {
+        const dispose = agent.ctx?.on(name, listener)
+        if (typeof dispose === 'function') disposers.push(dispose)
+      } catch {
+        // Notification support is optional in minimal harnesses.
+      }
+    }
+    listen('agent/error', (payload) => {
+      const value = payload as { readonly agent?: unknown; readonly error?: unknown }
+      if (value.agent !== undefined && value.agent !== agent) return
+      failure = value.error
+    })
+    listen('agent/assistant-stream', (payload) => {
+      const value = payload as { readonly agent?: unknown; readonly frame?: AssistantStreamPayload }
+      if (value.agent !== undefined && value.agent !== agent) return
+      const frame = value.frame
+      if (frame?.type !== 'chunk') return
+      const chunk = frame.chunk
+      if (chunk?.type === 'text-delta' && typeof chunk.text === 'string' && chunk.text.length > 0) {
+        options.onEvent?.({ type: 'text-delta', text: chunk.text })
+      } else if (chunk?.type === 'tool-call-delta') {
+        options.onEvent?.({
+          type: 'tool-call-delta',
+          id: typeof chunk.id === 'string' ? chunk.id : '',
+          ...(typeof chunk.name === 'string' ? { name: chunk.name } : {}),
+          argumentsDelta: typeof chunk.argumentsDelta === 'string' ? chunk.argumentsDelta : '',
+        })
+      }
+    })
+
+    const baseline = agent.session.deriveMessages().length
     const userMessage: AgentUserMessage = {
       id: crypto.randomUUID(),
       role: 'user',
-      content: [{ type: 'text', text: prompt }],
+      content,
       // A producer-owned source kind: the v4 session codec refuses the
       // retired shared `plugin` wrapper (SessionFormatError), which left the
       // inbound turn with no durable message. `a2a` is this plugin's own kind.
       source: { kind: 'a2a' },
     }
-    agent.send(userMessage, 'next-turn', true)
-    if (justOpened) {
-      try {
-        await this.opts.onSessionOpened?.({ sessionId, contextId, firstPrompt: prompt })
-      } catch {
-        // Cosmetic naming must never fail the task.
+    try {
+      agent.send(userMessage, 'next-turn', true)
+      if (justOpened) {
+        try {
+          await this.opts.onSessionOpened?.({ sessionId, contextId, firstPrompt: promptText })
+        } catch {
+          // Cosmetic naming must never fail the task.
+        }
+      }
+      await agent.whenIdle()
+      if (failure !== undefined) throw toError(failure)
+      const messages = agent.session.deriveMessages().slice(baseline)
+      const reply = lastAssistantText(messages)
+      if (signal.aborted && reply.length === 0) throw new AgentTurnCanceled()
+      return reply
+    } finally {
+      for (const dispose of disposers.splice(0)) {
+        try { dispose() } catch { /* listener already gone */ }
       }
     }
-    await agent.whenIdle()
-    return lastAssistantText(agent)
   }
 
   /** Dispose every live per-context session (called on plugin unload). */
   async disposeAll(): Promise<void> {
     const live = [...this.handles.values()]
+    const openings = [...this.openings.values()]
     const pending = [...this.tails.values()]
     this.handles.clear()
+    this.openings.clear()
     this.tails.clear()
-    await Promise.allSettled(pending)
+    await Promise.allSettled(openings)
     await Promise.allSettled(live.map((h) => h.dispose()))
+    for (const tail of pending) void tail.catch(() => {})
   }
 }
 
-/** Read the last assistant message's text off the derived history. */
-function lastAssistantText(agent: LiveAgent): string {
-  const history = agent.session.deriveMessages()
+/** Structural shape of one assistant-stream frame (only the fields we consume). */
+interface AssistantStreamPayload {
+  readonly type?: string
+  readonly chunk?: {
+    readonly type?: string
+    readonly text?: string
+    readonly id?: unknown
+    readonly name?: string
+    readonly argumentsDelta?: string
+  }
+}
+
+/** Read the last assistant message's text off a derived-history slice. */
+function lastAssistantText(history: readonly AgentMessage[]): string {
   for (let i = history.length - 1; i >= 0; i--) {
     const message = history[i]
     if (message === undefined) continue
@@ -234,6 +474,25 @@ function lastAssistantText(agent: LiveAgent): string {
     }
   }
   return ''
+}
+
+/** Text rendering of A2A parts for titles and text-only fallbacks. */
+function partsToText(parts: readonly Part[]): string {
+  return parts.map((part) => {
+    if ('text' in part && typeof part.text === 'string') return part.text
+    if ('data' in part && part.data !== undefined) return JSON.stringify(part.data)
+    if ('url' in part && typeof part.url === 'string') return part.url
+    if ('filename' in part) return filePlaceholder(part)
+    return ''
+  }).filter(Boolean).join('\n')
+}
+
+function filePlaceholder(part: { readonly filename?: string; readonly mediaType?: string }): string {
+  return `[file ${part.filename ?? part.mediaType ?? 'binary'}]`
+}
+
+function toError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value))
 }
 
 /**

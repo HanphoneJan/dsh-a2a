@@ -24,6 +24,10 @@ export interface CardOptions {
   readonly skills: readonly AgentSkill[]
   /** Present when inbound bearer auth is configured (env-resolved). */
   readonly authToken?: string
+  /** Advertised input media types; defaults to text/plain. */
+  readonly inputModes?: readonly string[]
+  /** Advertised output media types; defaults to text/plain. */
+  readonly outputModes?: readonly string[]
 }
 
 /** Assemble the AgentCard advertised by this DSH. */
@@ -39,8 +43,8 @@ export function buildCard(options: CardOptions): AgentCard {
     version: options.version,
     provider: { url: 'https://deepseek.com', organization: 'DeepSeek' },
     capabilities: { streaming: true, pushNotifications: false, extendedAgentCard: true, stateTransitionHistory: false },
-    defaultInputModes: ['text/plain'],
-    defaultOutputModes: ['text/plain'],
+    defaultInputModes: [...(options.inputModes ?? ['text/plain'])],
+    defaultOutputModes: [...(options.outputModes ?? ['text/plain'])],
     skills: options.skills,
     supportedInterfaces: [iface],
     ...(options.authToken !== undefined

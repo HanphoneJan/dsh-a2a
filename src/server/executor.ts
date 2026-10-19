@@ -12,13 +12,14 @@ import type { Part, TaskState } from '../protocol.ts'
 /** One update from a running executor. */
 export type A2aExecutorEvent =
   | { readonly type: 'status'; readonly state: TaskState; readonly message?: string }
-  | { readonly type: 'artifact'; readonly artifactId: string; readonly parts: readonly Part[]; readonly name?: string; readonly lastChunk?: boolean }
+  | { readonly type: 'artifact'; readonly artifactId: string; readonly parts: readonly Part[]; readonly name?: string; readonly append?: boolean; readonly lastChunk?: boolean }
 
 /** Input a task executor receives. */
 export interface A2aExecutorInput {
   readonly taskId: string
   readonly contextId: string
   readonly skill: string
+  readonly parts: readonly Part[]
   readonly prompt: string
   readonly signal: AbortSignal
 }
@@ -26,6 +27,12 @@ export interface A2aExecutorInput {
 /** Output contract of one executor run. */
 export interface A2aExecutorOutput {
   readonly parts: readonly Part[]
+  /** false when the executor already streamed/wrote its result artifact. */
+  readonly appendResult?: boolean
+  /** Leave the task interrupted instead of completing it (INPUT_REQUIRED/AUTH_REQUIRED). */
+  readonly state?: TaskState.INPUT_REQUIRED | TaskState.AUTH_REQUIRED
+  /** Human-readable status for an interrupted task. */
+  readonly statusMessage?: string
 }
 
 /** One inbound task executor. */

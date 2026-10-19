@@ -158,4 +158,23 @@ describe('ContextSessionPool over real session persistence', () => {
     expect(await pool.runTurn('ctx-1', 'second', new AbortController().signal)).toBe('two')
     expect(adapter.requests).toHaveLength(2)
   })
+
+  it('rejects the turn when the provider fails instead of returning stale text', async () => {
+    // One successful turn establishes assistant history; the next provider call
+    // fails. The old implementation returned that stale assistant text and the
+    // A2A task settled COMPLETED.
+    const { pool } = await poolHarness([textResponse('first reply')])
+    expect(await pool.runTurn('ctx-error', 'first', new AbortController().signal)).toBe('first reply')
+    await expect(pool.runTurn('ctx-error', 'second', new AbortController().signal)).rejects.toThrow()
+  })
+
+  it('projects real assistant stream deltas to the turn callback', async () => {
+    const { pool } = await poolHarness([textResponse('OK')])
+    const deltas: string[] = []
+    const reply = await pool.runTurn('ctx-live-stream', 'stream please', new AbortController().signal, {
+      onEvent: (event) => { if (event.type === 'text-delta') deltas.push(event.text) },
+    })
+    expect(reply).toBe('OK')
+    expect(deltas.join('')).toBe('OK')
+  })
 })

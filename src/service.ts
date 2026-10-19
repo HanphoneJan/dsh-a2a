@@ -58,7 +58,9 @@ export interface OutboundServerView {
   readonly state: 'connected' | 'disconnected' | 'failed'
   readonly skillCount: number
   readonly toolCount: number
+  readonly skills: readonly OutboundSkillView[]
   readonly lastError?: string
+  readonly lastCardAt?: string
 }
 
 /** Creator input for an inbound server instance. */
@@ -82,6 +84,31 @@ export interface OutboundCreateInput {
   readonly preset?: string
   readonly enabled?: boolean
   readonly timeoutMs?: number
+  readonly disabledSkills?: readonly string[]
+  readonly skillOverrides?: Readonly<Record<string, { readonly name?: string; readonly description?: string }>>
+}
+
+/** One outbound skill row shown in the per-skill controls. */
+export interface OutboundSkillView {
+  readonly id: string
+  readonly name: string
+  readonly description?: string
+  readonly enabled: boolean
+}
+
+/** One page of task records for the dashboard. */
+export interface TaskListQuery {
+  readonly limit?: number
+  readonly offset?: number
+  readonly state?: string
+  readonly contextId?: string
+  readonly serverId?: string
+}
+
+export interface TaskListPage {
+  readonly tasks: readonly unknown[]
+  readonly total: number
+  readonly nextOffset: number | null
 }
 
 /** The implementation the facade delegates to (owned by the plugin assembly). */
@@ -97,6 +124,10 @@ export interface A2AServiceImpl {
   updateInboundServer(id: string, patch: { name?: string; description?: string; version?: string; endpointPath?: string; preset?: string; authTokenEnv?: string }): Promise<OpResult>
   /** Set (or clear, when token is undefined) an inbound instance's bearer token. */
   setInboundAuth(id: string, token: string | undefined): Promise<OpResult>
+  /** Read an inbound instance's current AgentCard (dashboard viewer). */
+  agentCard(id: string): unknown
+  /** Send one loopback test message through an inbound instance. */
+  sendTestMessage(id: string, input: { readonly text: string; readonly contextId?: string; readonly skill?: string }): Promise<unknown>
   // ── outbound server instances ───────────────────────────────────────
   listOutboundServers(): OutboundServerView[]
   createOutboundServer(input: OutboundCreateInput): Promise<OpResult>
@@ -107,23 +138,27 @@ export interface A2AServiceImpl {
   setOutboundAuth(id: string, token: string | undefined): Promise<OpResult>
   /** Read a remote AgentCard for the two-phase add preview (no state change). */
   discoverOutbound(url: string, bearerToken?: string): Promise<OpResult & { readonly preview?: unknown }>
-  /** Edit an outbound instance's name/preset/timeout. */
-  updateOutboundServer(id: string, patch: { readonly name?: string; readonly preset?: string; readonly timeoutMs?: number }): Promise<OpResult>
+  /** Edit an outbound instance's name/preset/timeout/skill selection. */
+  updateOutboundServer(id: string, patch: { readonly name?: string; readonly preset?: string; readonly timeoutMs?: number; readonly disabledSkills?: readonly string[]; readonly skillOverrides?: Readonly<Record<string, { readonly name?: string; readonly description?: string }>> }): Promise<OpResult>
   // ── tasks ───────────────────────────────────────────────────────────
   getTask(taskId: string): unknown
-  listTasks(): unknown
+  listTasks(query?: TaskListQuery): TaskListPage
   cancelTask(taskId: string): Promise<OpResult>
   // ── inbound sessions (per contextId) ────────────────────────────────
   /** Aggregate session views (live observations + task-store derivation). */
   listSessions(): SessionView[]
   /** Cancel every non-terminal task of one context (session stays open). */
-  cancelSessionTasks(contextId: string): Promise<OpResult>
+  cancelSessionTasks(contextId: string, serverId?: string): Promise<OpResult>
   /**
    * Cancel the context's active tasks, dispose its live session handle(s) and
    * drop them from the pools. The next task on the same contextId re-opens a
    * fresh handle (close is a resource release, not a conversation tombstone).
    */
-  closeSession(contextId: string): Promise<OpResult>
+  closeSession(contextId: string, serverId?: string): Promise<OpResult>
+  /** Derived conversation messages for one live context session. */
+  sessionMessages(contextId: string, serverId?: string): readonly unknown[]
+  // ── observability ───────────────────────────────────────────────────
+  metrics(): unknown
   // ── inbound peer monitoring (per instance) ──────────────────────────
   inbounds(): unknown
   closeInbound(peerId: string): Promise<OpResult>
@@ -170,6 +205,14 @@ export class A2AService extends Service {
     return this.impl.setInboundAuth(id, token)
   }
 
+  agentCard(id: string): unknown {
+    return this.impl.agentCard(id)
+  }
+
+  async sendTestMessage(id: string, input: { readonly text: string; readonly contextId?: string; readonly skill?: string }): Promise<unknown> {
+    return this.impl.sendTestMessage(id, input)
+  }
+
   listOutboundServers(): OutboundServerView[] {
     return this.impl.listOutboundServers()
   }
@@ -198,7 +241,7 @@ export class A2AService extends Service {
     return this.impl.discoverOutbound(url, bearerToken)
   }
 
-  async updateOutboundServer(id: string, patch: { readonly name?: string; readonly preset?: string; readonly timeoutMs?: number }): Promise<OpResult> {
+  async updateOutboundServer(id: string, patch: { readonly name?: string; readonly preset?: string; readonly timeoutMs?: number; readonly disabledSkills?: readonly string[]; readonly skillOverrides?: Readonly<Record<string, { readonly name?: string; readonly description?: string }>> }): Promise<OpResult> {
     return this.impl.updateOutboundServer(id, patch)
   }
 
@@ -206,8 +249,8 @@ export class A2AService extends Service {
     return this.impl.getTask(taskId)
   }
 
-  listTasks(): unknown {
-    return this.impl.listTasks()
+  listTasks(query?: TaskListQuery): TaskListPage {
+    return this.impl.listTasks(query)
   }
 
   async cancelTask(taskId: string): Promise<OpResult> {
@@ -218,12 +261,20 @@ export class A2AService extends Service {
     return this.impl.listSessions()
   }
 
-  async cancelSessionTasks(contextId: string): Promise<OpResult> {
-    return this.impl.cancelSessionTasks(contextId)
+  async cancelSessionTasks(contextId: string, serverId?: string): Promise<OpResult> {
+    return this.impl.cancelSessionTasks(contextId, serverId)
   }
 
-  async closeSession(contextId: string): Promise<OpResult> {
-    return this.impl.closeSession(contextId)
+  async closeSession(contextId: string, serverId?: string): Promise<OpResult> {
+    return this.impl.closeSession(contextId, serverId)
+  }
+
+  sessionMessages(contextId: string, serverId?: string): readonly unknown[] {
+    return this.impl.sessionMessages(contextId, serverId)
+  }
+
+  metrics(): unknown {
+    return this.impl.metrics()
   }
 
   inbounds(): unknown {

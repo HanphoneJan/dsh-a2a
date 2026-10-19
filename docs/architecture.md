@@ -68,11 +68,12 @@ connection.
 
 ## Protocol surface
 
-Methods implemented: `SendMessage` (with `return_immediately` /
-`history_length` / `accepted_output_modes`), `SendStreamingMessage` (SSE),
-`GetTask` (with `historyLength`), `ListTasks` (with `contextId` / `status` /
-`pageSize` / `pageToken`), `CancelTask`, `SubscribeToTask` (SSE; terminal
-tasks answered per spec), `GetExtendedAgentCard`. Push-notification methods
+Methods implemented: `SendMessage` (idempotent by `messageId`, continuable by
+`taskId`), `SendStreamingMessage` (SSE with assistant/tool deltas and event
+ids), `GetTask`, `ListTasks` (with `contextId` / `status` / `pageSize` /
+`pageToken` / `statusTimestampAfter` / `includeArtifacts`), `CancelTask`,
+`SubscribeToTask` (SSE with in-process `Last-Event-ID` replay),
+`GetExtendedAgentCard`. Push-notification methods
 are declared and answer `PushNotificationNotSupported` at the method level.
 Serialization follows ADR-001 ProtoJSON (`TASK_STATE_*` /
 `ROLE_USER` / `ROLE_AGENT`, camelCase fields); transport checks the
@@ -87,7 +88,7 @@ Serialization follows ADR-001 ProtoJSON (`TASK_STATE_*` /
 
 - a preset-bound `ContextSessionPool` (when `agents` is mounted) — sessions
   are composed from `record.preset` via `agentPresets.resolve` + `mount`;
-- an `A2AServer` on the shared `TaskStore`, with its own endpoint
+- an `A2AServer` on a `ScopedTaskStore` over the shared domain store, with its own endpoint
   (`/a2a/<id>`) and card route (`/a2a/<id>/agent-card.json`);
 - an `A2aRoutes` registration (enable/disable), an `ExecutorSet`
   (session/subagent), and a `LiveInboundRegistry` for peer monitoring.
@@ -98,7 +99,12 @@ The manager owns the full lifecycle: `add` (persist + assemble + enable),
 preset's skill directory (see Design decisions §5); the built-in `chat`
 fallback keeps minimal compositions exercisable. The gate's declared-skill
 allow list is exactly that derived list, so remote skill calls always resolve
-inside the instance's preset session.
+inside the instance's preset session. Task access is scoped by `serverId`:
+`GetTask`/`ListTasks`/`CancelTask`/`SubscribeToTask` cannot see another
+instance's tasks, and context bindings plus derived session ids are namespaced
+by instance id so two instances can reuse the same client `contextId` safely.
+Each task also has a configurable execution timeout and the instance has
+request/body/concurrency limits.
 
 ### Task lifecycle
 
@@ -190,12 +196,16 @@ unpersist), and exposes a `viewFor` that folds the registry view + the record
 
 ### Tools
 
-For each connected instance, `registerAgentTools` maps every advertised
-remote skill to a model tool `a2a__<name>__<skill>` (normalized,
-collision-hashed). Executing the tool runs `A2AClient.sendMessage` with a
-stable per-caller contextId and returns the settled task's text. The outbound
-tools call the remote directly at P0; the preset-bound local hand-off session
-composition is the documented extension point.
+For each connected instance, `registerAgentTools` maps enabled advertised
+skills to a model tool `a2a__<name>__<skill>` (normalized, collision-hashed;
+per-skill enable/disable and name/description overrides are persisted on the
+instance). Executing the tool sends an A2A message with a stable per-caller
+contextId, streams when the remote card supports it, propagates the caller's
+abort (sending `CancelTask` once the task id is known), retries transient
+transport/5xx failures, and accepts `taskId` to continue an interrupted remote
+task. Connections refresh their AgentCard automatically on the configured
+interval. The outbound preset is persisted metadata for a future local hand-off session;
+tools call the remote directly today.
 
 ## GUI dashboard
 

@@ -380,8 +380,9 @@ async function main() {
       if (req.method === 'POST' && url.pathname === '/api/inbound') {
         note('inbound: SendMessage -> B')
         const result = await sendInbound(baseB, meta.inboundPath, 'Reply with exactly OK')
-        const state = result.result?.status?.state
-        const text = (result.result?.artifacts ?? []).flatMap((a) => a.parts ?? []).map((p) => p.text).join('')
+        const task = result.result?.task ?? result.result
+        const state = task?.status?.state
+        const text = (task?.artifacts ?? []).flatMap((a) => a.parts ?? []).map((p) => p.text).join('')
         note(`inbound: ${state} -> ${JSON.stringify(text)}`)
         res.writeHead(result.error ? 502 : 200, { 'content-type': 'application/json' })
         res.end(JSON.stringify(result.error ? { error: result.error.message } : { state, text }))

@@ -22,13 +22,14 @@ import type { Context } from '@deepseek-ai/cordis'
 import { buildCard } from '../server/card.ts'
 import { A2AServer } from '../server/a2a-server.ts'
 import { A2aRoutes } from '../server/routes.ts'
-import { ContextSessionPool, type AgentPresetsLike, type AgentRegistryLike, type CredentialsLike, type SkillsLike } from '../server/exec/agent-runtime.ts'
+import { ContextSessionPool, type AgentPresetsLike, type AgentRegistryLike, type AttachmentsLike, type CredentialsLike, type SkillsLike } from '../server/exec/agent-runtime.ts'
 import { createSessionExecutor } from '../server/exec/session.ts'
 import { createSubagentExecutor, type SubagentsLike } from '../server/exec/subagent.ts'
 import { ExecutorSet } from '../server/executor.ts'
 import { LiveInboundRegistry } from '../server/inbound-registry.ts'
 import { ContextSessionRegistry } from '../server/session-registry.ts'
-import type { TaskStore, InboundServerRecord } from '../server/store.ts'
+import { ScopedTaskStore, type TaskStore, type InboundServerRecord } from '../server/store.ts'
+import type { A2aMetrics } from '../server/metrics.ts'
 import type { AgentSkill } from '../protocol.ts'
 import type { GateInput, GateResult } from '../server/a2a-server.ts'
 import type { InboundTaskDecision } from '../events.ts'
@@ -53,9 +54,19 @@ export interface InboundManagerHost {
   readonly skills?: SkillsLike
   readonly credentials?: CredentialsLike
   readonly subagents?: SubagentsLike
+  readonly attachments?: AttachmentsLike
+  readonly metrics?: A2aMetrics
   readonly sessionCwd: string
   readonly defaultBaseUrl: string
   readonly subagentProvider: string
+  /** Per-task inbound execution budget (0 = disabled). */
+  readonly taskTimeoutMs?: number
+  /** Sliding-window request limit per inbound source (0 = disabled). */
+  readonly requestsPerMinute?: number
+  /** Maximum concurrent tasks per inbound instance (0 = disabled). */
+  readonly maxConcurrentTasks?: number
+  /** HTTP body cap for inbound A2A routes. */
+  readonly maxBodyBytes?: number
   /** Deployment default preset id (from `agentPresets.defaultId`), when known. */
   readonly defaultPresetId?: string
   /** Resolve the deployment's default model options (may be undefined). */
@@ -184,6 +195,7 @@ function assemble(record: InboundServerRecord, skills: readonly AgentSkill[], au
   const endpointPath = record.endpointPath
   const cardPath = `${endpointPath.replace(/\/$/, '')}/agent-card.json`
   const preset = record.preset ?? host.defaultPresetId
+  const tasks = new ScopedTaskStore(host.tasks, record.id)
   const card = buildCard({
     baseUrl: host.defaultBaseUrl,
     endpointPath,
@@ -192,24 +204,32 @@ function assemble(record: InboundServerRecord, skills: readonly AgentSkill[], au
     version: record.version,
     skills,
     ...(authToken !== undefined ? { authToken } : {}),
+    ...(host.attachments !== undefined
+      ? { inputModes: ['text/plain', 'image/png', 'image/jpeg', 'image/webp', 'image/gif', 'application/octet-stream'] }
+      : {}),
   })
 
-  // One preset-bound session pool per instance.
+  // One preset-bound session pool per instance. The instance id is part of the
+  // derived session id so two instances cannot share a DSH session just
+  // because a client reused the same contextId.
   const sessions = new ContextSessionRegistry()
   const sessionPool = host.agents
     ? new ContextSessionPool(host.agents, {
       cwd: host.sessionCwd,
+      sessionNamespace: record.id,
       ...(host.agentPresets !== undefined ? { agentPresets: host.agentPresets } : {}),
       ...(preset !== undefined ? { presetId: () => preset } : {}),
+      ...(host.attachments !== undefined ? { attachments: host.attachments } : {}),
       // `?.()` yields `{ provider?, model? } | undefined`, matching the
       // AgentRuntimeOptions.resolveAgentOptions signature under
       // exactOptionalPropertyTypes.
       resolveAgentOptions: () => host.resolveDefaultModel?.(),
       // First open of a context's session: persist the contextId → sessionId
-      // binding so the durable store agrees with the pool. The write is
-      // memory-first (write-chain visible); a durability failure must not fail
-      // the task that just opened the session — log and continue.
-      onSessionOpened: (info) => host.tasks.setContextSession(info.contextId, info.sessionId)
+      // binding so the durable store agrees with the pool. The scoped store
+      // namespaces the binding by inbound instance. The write is memory-first
+      // (write-chain visible); a durability failure must not fail the task
+      // that just opened the session — log and continue.
+      onSessionOpened: (info) => tasks.setContextSession(info.contextId, info.sessionId)
         .catch((err: unknown) => {
           host.logger.error(`[a2a:${record.id}] context binding persist failed: ${String(err)}`)
         }),
@@ -241,7 +261,7 @@ function assemble(record: InboundServerRecord, skills: readonly AgentSkill[], au
 
   const server = new A2AServer({
     card,
-    store: host.tasks,
+    store: tasks,
     executors,
     ...(authToken !== undefined ? { authToken } : {}),
     cardPath,
@@ -249,6 +269,10 @@ function assemble(record: InboundServerRecord, skills: readonly AgentSkill[], au
     // Stamp this instance onto its task records (session views attribute
     // contexts to the inbound instance they arrived through).
     serverId: record.id,
+    ...(host.metrics !== undefined ? { metrics: host.metrics } : {}),
+    ...(host.taskTimeoutMs !== undefined ? { taskTimeoutMs: host.taskTimeoutMs } : {}),
+    ...(host.requestsPerMinute !== undefined ? { requestsPerMinute: host.requestsPerMinute } : {}),
+    ...(host.maxConcurrentTasks !== undefined ? { maxConcurrentTasks: host.maxConcurrentTasks } : {}),
     onInbound: (facts) => inbound.note({
       method: facts.method,
       ...(facts.source !== undefined ? { source: facts.source } : {}),
@@ -264,7 +288,7 @@ function assemble(record: InboundServerRecord, skills: readonly AgentSkill[], au
     onStreamOpen: ({ taskId }) => sessions.noteStreamOpen(taskId),
     onStreamClose: (taskId) => sessions.noteStreamClose(taskId),
   })
-  const routes = new A2aRoutes(host.webServer, server, cardPath)
+  const routes = new A2aRoutes(host.webServer, server, cardPath, host.maxBodyBytes ?? 1_048_576)
 
   return {
     id: record.id,

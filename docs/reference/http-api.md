@@ -3,7 +3,7 @@ name: HTTP API and A2A protocol
 description: Loopback dashboard actions, inbound JSON-RPC endpoints, SSE streaming, task states, error codes, AgentCard, and outbound tool contracts
 create-time: 2026-10-19
 update-time: 2026-10-19
-version: v0.3.8
+version: v0.4.0
 relative-docs:
   - docs/guide/getting-started.md
   - docs/guide/concepts.md
@@ -14,7 +14,7 @@ relative-docs:
 
 **English** · [中文](http-api.zh.md)
 
-This page is the wire-level reference for `0.3.8`. It has two parts:
+This page is the wire-level reference for `0.4.0`. It has two parts:
 
 1. the **loopback dashboard API** the panel uses (`/a2a/api`);
 2. the **A2A endpoints** published by inbound servers (`/a2a/<id>`).
@@ -85,14 +85,15 @@ Snapshot example (values abbreviated):
 | `inbound.remove` | `id` | — |
 | `inbound.enable` / `inbound.disable` | `id` | — |
 | `inbound.setAuth` | `id` | `token` (omit or empty to clear) |
+| `inbound.sendTest` | `id`, `text` | `contextId`, `skill` |
 | `inbound.close` | `id` (peer id) | — |
 
 #### Outbound
 
 | Action | Required fields | Optional fields |
 |---|---|---|
-| `outbound.create` | `name`, `agentCardUrl` | `bearerTokenEnv`, `preset`, `enabled`, `timeoutMs` |
-| `outbound.update` | `id` | `name`, `preset`, `timeoutMs` |
+| `outbound.create` | `name`, `agentCardUrl` | `bearerTokenEnv`, `preset`, `enabled`, `timeoutMs`, `disabledSkills`, `skillOverrides` |
+| `outbound.update` | `id` | `name`, `preset`, `timeoutMs`, `disabledSkills`, `skillOverrides` |
 | `outbound.remove` | `id` | — |
 | `outbound.enable` / `outbound.disable` | `id` | — |
 | `outbound.refresh` | `id` | — |
@@ -104,8 +105,8 @@ Snapshot example (values abbreviated):
 | Action | Required fields | Effect |
 |---|---|---|
 | `task.cancel` | `id` (task id) | Aborts and marks the task canceled |
-| `session.cancel` | `id` (context id) | Cancels the context's active tasks |
-| `session.close` | `id` (context id) | Cancels active tasks and releases the live session handle |
+| `session.cancel` | `id` (context id) | Cancels the context's active tasks; optional `serverId` scopes it |
+| `session.close` | `id` (context id) | Cancels active tasks and releases the live session handle; optional `serverId` |
 
 ### 1.3 Responses and status codes
 
@@ -127,6 +128,9 @@ message, ... }`.
 | `403` | Caller is not loopback |
 | `405` | Method other than `GET`/`POST` |
 | `409` | Action failed (for example, unknown id or failed connect) |
+| `413` | Request body exceeded the configured cap |
+
+Read-only endpoints: `GET /a2a/api/card?id=<inbound>`, `GET /a2a/api/task?id=<task>`, `GET /a2a/api/session?contextId=<id>&serverId=<instance>`, and `GET /a2a/api/metrics`. `GET /a2a/api` accepts `taskLimit`, `taskOffset`, `taskState`, `taskContextId`, and `taskServerId` for the task page.
 
 ### 1.4 Examples
 
@@ -209,14 +213,14 @@ PascalCase.
 | `SendMessage` | `message` | Creates a task and **blocks until terminal/interrupted**; returns the task |
 | `SendStreamingMessage` | `message` | Creates a task and streams frames; requires `Accept: text/event-stream` |
 | `GetTask` | `id` | Returns one task |
-| `ListTasks` | none (params ignored) | Returns every task in the store |
+| `ListTasks` | `contextId`, `status`, `pageSize`, `pageToken`, `statusTimestampAfter`, `includeArtifacts`, `historyLength` | Filtered, cursor-paged tasks sorted by most recent update; response includes `totalSize` |
 | `CancelTask` | `id` | Cancels a non-terminal task; terminal tasks return `TASK_CANCEL_NOT_ALLOWED` |
-| `SubscribeToTask` | `id` | Streams an existing task's current status and terminal state; requires SSE |
+| `SubscribeToTask` | `id` | Streams a non-terminal task; terminal tasks are rejected with `UNSUPPORTED_OPERATION`; supports `Last-Event-ID` replay within the process |
 | `GetExtendedAgentCard` | none | Returns the same AgentCard |
 
-Unsupported methods (including the push-notification configuration methods)
-return `METHOD_NOT_FOUND`. The card advertises
-`capabilities.pushNotifications: false`.
+Unsupported methods return `METHOD_NOT_FOUND`. Push-notification configuration
+methods return `PUSH_NOTIFICATION_NOT_SUPPORTED` (`-32003`) because the card
+advertises `capabilities.pushNotifications: false`.
 
 ### 2.3 Message shape
 
@@ -237,14 +241,25 @@ return `METHOD_NOT_FOUND`. The card advertises
 }
 ```
 
-- `parts` may be text, file, or data parts; the session executor renders them
-  to text (`partsToText`), with file parts becoming their URL/name and data
-  parts becoming JSON.
+- `parts` may be text, file, or data parts. Text and data parts enter the DSH
+  prompt as text; a raw image/file part (`raw` + `mediaType`/`filename`) is
+  admitted through the host attachment store and enters the session as a real
+  attachment. A URL-only file part remains text (the server does not fetch
+  remote URLs).
 - `metadata.skill` selects the advertised skill; it defaults to `chat` and is
   rejected by the gate when not in the advertised set.
 - `contextId` is the conversation key. Reusing it reuses the live DSH session;
   omitting it generates a new context.
-- `messageId` is optional at runtime; the server generates task identities.
+- `messageId` is an idempotency key: resending the same id returns the original
+  task instead of executing a second turn. `taskId` continues an existing
+  non-terminal task; terminal tasks reject further messages. A message to a
+  still-running task is rejected with `UNSUPPORTED_OPERATION` rather than being
+  silently dropped.
+- `SendMessage` returns `result: { "task": ... }` (or `{ "message": ... }` for a
+  direct response), matching the spec oneof.
+- Every request may carry `A2A-Version` (header or query parameter). An
+  unsupported version returns `VERSION_NOT_SUPPORTED` (`-32007`); the server
+  labels its responses with `A2A-Version: 1.0`.
 
 ### 2.4 Streaming
 
@@ -262,27 +277,37 @@ curl -N http://127.0.0.1:3080/a2a/<id> \
   }'
 ```
 
-Frames are unnamed SSE `data:` lines. Each payload is a `StreamResponse`:
+Each SSE event is a JSON-RPC result envelope (with an optional `id:` line for
+`Last-Event-ID` replay):
 
-- `{ "statusUpdate": { taskId, contextId, status } }`
-- `{ "artifactUpdate": { taskId, contextId, artifact, lastChunk } }`
-- `{ "task": { ... } }` (the final settled task)
+```text
+id: 7
+data: {"jsonrpc":"2.0","id":2,"result":{"artifactUpdate":{...}}}
+```
 
-`SubscribeToTask` uses the same transport and replays the current status before
-streaming to the terminal state.
+The first event is the current `task`; subsequent frames are
+`statusUpdate` / `artifactUpdate`. Artifact chunks carry `append: true` when
+they extend the artifact and are replaced when `append` is absent/false. Error
+events use the JSON-RPC error envelope (`data: {"jsonrpc":"2.0","id":...,"error":{...}}`).
+
+`SubscribeToTask` uses the same transport, starts with the current Task, and
+streams to the terminal state. A terminal task is rejected with
+`UNSUPPORTED_OPERATION`; with `Last-Event-ID` it sends the snapshot and replays
+only non-artifact frames, avoiding duplicate append chunks.
 
 #### 2.4.1 What the stream contains
 
-The default `session` executor runs one turn and returns the final reply as one
-artifact. Its stream is lifecycle, not token-by-token:
+The default `session` executor projects live assistant text deltas as
+`artifactUpdate` chunks (`lastChunk: false`) and a final `lastChunk: true`
+close. Tool-call deltas are emitted as structured `data` parts under a
+`tool-call-<id>` artifact. The stream shape is:
 
-- an initial `statusUpdate` with `TASK_STATE_WORKING` and the task id;
-- for the `subagent` executor, one `artifactUpdate` when the child finishes;
-- the final `task` with the artifact.
+- an initial `task` with the current state and task id;
+- zero or more `artifactUpdate` frames carrying assistant/tool progress;
+- the final `task` with the complete artifact set.
 
-The model's reasoning and tool calls are not projected onto A2A; the DSH Web UI
-shows those separately. Treat the settled task as the source of truth, not the
-intermediate frames.
+Reasoning deltas are intentionally not projected. The settled task remains the
+source of truth.
 
 #### 2.4.2 Disconnect and reconnect
 
@@ -290,16 +315,16 @@ A client disconnect does **not** cancel the task. `SendMessage` and
 `SendStreamingMessage` both run the executor to completion and persist the task;
 the SSE subscription is only delivery.
 
-- Capture the `taskId` from the first `statusUpdate` frame. On reconnect, call
+- Capture the `taskId` from the first `task` frame. On reconnect, call
   `GetTask` to poll or `SubscribeToTask` to stream from the current status.
-- `SubscribeToTask` replays the current status and streams future frames. It
-  does **not** replay missed intermediate frames, and there is no
-  `Last-Event-ID` or event cursor.
+- Every streamed frame carries an SSE `id:`. Reconnect with `SubscribeToTask`
+  and `Last-Event-ID: <id>`: the server sends the current Task snapshot, then
+  replays status frames only (artifact chunks are already in the snapshot). The
+  log is bounded (200 frames per task) and process-local.
 - `SendMessage` returns the task only after it settles. If the connection drops
-  before that response, the client has no task id. There is no idempotency key:
-  resending the same `messageId`/`taskId` creates a new task, not a resume. Use
-  streaming and persist the id if you need recovery, or use `ListTasks` to
-  inspect recent tasks.
+  before that response, retry with the same `messageId` (idempotent) or use
+  `ListTasks` to find the task. To continue an interrupted task, resend with its
+  `taskId`.
 - Reusing `contextId` continues the live DSH conversation; task resumption and
   conversation continuity are separate. A new `contextId` starts a new
   conversation.
@@ -391,23 +416,31 @@ schema is:
 }
 ```
 
-The tool sends an A2A `SendMessage` with a stable per-caller `contextId`, waits
-for the task, and returns the artifact text. A `FAILED` task throws a tool
-error with the remote message; `INPUT_REQUIRED` and `AUTH_REQUIRED` are
-returned as text so the model can react.
+The tool sends an A2A message with a stable per-caller `contextId`, streams the
+remote turn when the card advertises streaming, propagates the caller's abort
+signal (a local cancel also sends `CancelTask` once the task id is known), and
+retries transient transport/5xx failures. A `FAILED` task throws a tool error
+with the remote message; `INPUT_REQUIRED` and `AUTH_REQUIRED` are returned as
+text including the remote `taskId`, so the model can call again with
+`taskId` to continue it.
 
 ## 4. Current limits
 
-These are intentional or known at `0.3.8`; do not assume otherwise:
+These are intentional or known at `0.4.0`; do not assume otherwise:
 
-- `SendMessage` always blocks; the declared `returnImmediately` option is not
-  honored.
-- `historyLength` is not honored; `GetTask` returns no history array.
-- `ListTasks` ignores filters and pagination and returns the whole task store.
+- `SendMessage` blocks by default; `configuration.returnImmediately: true`
+  returns after starting the task. `historyLength` is applied to `GetTask`,
+  `SendMessage`, and `ListTasks` (history is reconstructed from the durable
+  task input/output, not a full turn-by-turn transcript).
+- `acceptedOutputModes` accepts text modes only; a request that excludes text
+  gets `CONTENT_TYPE_NOT_SUPPORTED`.
 - Push notifications are not implemented; the push-config methods return
-  `METHOD_NOT_FOUND`.
+  `PUSH_NOTIFICATION_NOT_SUPPORTED` (`-32003`).
 - Only the JSON-RPC binding is implemented (no gRPC or HTTP+JSON).
-- No OAuth, mTLS, per-client credentials, or rate limiting.
-- The outbound `preset` is persisted metadata; there is no local hand-off
-  session behind outbound tools yet.
+- No OAuth, mTLS, or per-client credentials. Rate limiting is process-local,
+  per source, and configurable; there is no distributed quota or billing.
+- SSE event logs are in memory: `Last-Event-ID` recovery works across a
+  reconnect to the same process, not across a restart.
+- The outbound `preset` is persisted metadata for a future local hand-off
+  session; tools call the remote directly today.
 - The `subagent` executor exists but is not selected by the default skill map.

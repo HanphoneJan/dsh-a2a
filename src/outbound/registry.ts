@@ -6,7 +6,8 @@
  */
 
 import { A2AClient } from './calls.ts'
-import { registerAgentTools, type ToolRegistrar } from './tools.ts'
+import { registerAgentTools, type SkillOverride, type ToolRegistrar } from './tools.ts'
+import type { A2aMetrics } from '../server/metrics.ts'
 import { type OutboundAgentRecord } from '../server/store.ts'
 
 /** User-supplied agent spec (from config or the /a2a command). */
@@ -16,6 +17,15 @@ export interface OutboundAgentSpec {
   readonly bearerTokenEnv?: string
   readonly enabled?: boolean
   readonly timeoutMs?: number
+  readonly disabledSkills?: readonly string[]
+  readonly skillOverrides?: Readonly<Record<string, SkillOverride>>
+}
+
+export interface OutboundSkillView {
+  readonly id: string
+  readonly name: string
+  readonly description?: string
+  readonly enabled: boolean
 }
 
 export interface OutboundAgentView {
@@ -26,6 +36,7 @@ export interface OutboundAgentView {
   readonly state: 'connected' | 'disconnected' | 'failed'
   readonly skillCount: number
   readonly toolCount: number
+  readonly skills: readonly OutboundSkillView[]
   readonly lastError?: string
 }
 
@@ -82,6 +93,8 @@ export interface RegistryOptions {
   /** Resolve a bearer token from an env-var name (layered); undefined when unset. */
   readonly tokenOf: (env: string | undefined) => Promise<string | undefined> | string | undefined
   readonly onError?: (message: string) => void
+  readonly serverId?: string
+  readonly metrics?: A2aMetrics
 }
 
 interface LiveConnection {
@@ -89,6 +102,7 @@ interface LiveConnection {
   readonly client: A2AClient
   readonly disposers: readonly { dispose(): void }[]
   readonly skillCount: number
+  readonly skills: readonly OutboundSkillView[]
 }
 
 /** A list of remote agents, each with live tool registrations when enabled. */
@@ -144,6 +158,8 @@ export class OutboundAgentRegistry {
       enabled: spec.enabled ?? true,
       timeoutMs: spec.timeoutMs ?? this.opts.defaultTimeoutMs ?? 60_000,
       lastCardAt: null,
+      ...(spec.disabledSkills !== undefined ? { disabledSkills: [...spec.disabledSkills] } : {}),
+      ...(spec.skillOverrides !== undefined ? { skillOverrides: { ...spec.skillOverrides } } : {}),
     }
     try {
       await this.connectRecord(record)
@@ -156,11 +172,12 @@ export class OutboundAgentRegistry {
         state: 'failed',
         skillCount: 0,
         toolCount: 0,
+        skills: [],
         lastError: (err as Error).message,
       })
       return { ok: false, message: `failed to connect to ${record.agentCardUrl}: ${(err as Error).message}` }
     }
-    this.persist(record)
+    this.persist(this.live.get(record.id)?.record ?? record)
     return { ok: true, message: `agent "${record.name}" connected` }
   }
 
@@ -195,7 +212,14 @@ export class OutboundAgentRegistry {
       this.live.delete(id)
       const current = this.views.get(id)
       if (current !== undefined) {
-        this.views.set(id, { ...current, enabled: false, state: 'disconnected', toolCount: 0, skillCount: 0 })
+        this.views.set(id, {
+          ...current,
+          enabled: false,
+          state: 'disconnected',
+          toolCount: 0,
+          skillCount: 0,
+          skills: current.skills.map((skill) => ({ ...skill, enabled: false })),
+        })
       }
       await this.persistAll()
       return { ok: true, message: `agent ${id} disabled` }
@@ -212,6 +236,17 @@ export class OutboundAgentRegistry {
     try {
       await this.connectRecord(record)
     } catch (err) {
+      const current = this.views.get(id)
+      if (current !== undefined) {
+        this.views.set(id, {
+          ...current,
+          state: 'failed',
+          skillCount: 0,
+          toolCount: 0,
+          skills: [],
+          lastError: (err as Error).message,
+        })
+      }
       return { ok: false, message: `refresh failed: ${(err as Error).message}` }
     }
     await this.persistAll()
@@ -247,18 +282,42 @@ export class OutboundAgentRegistry {
       client,
       ...(this.opts.toolPrefix !== undefined ? { toolPrefix: this.opts.toolPrefix } : {}),
       contextFor,
+      ...(record.disabledSkills !== undefined ? { disabledSkills: record.disabledSkills } : {}),
+      ...(record.skillOverrides !== undefined ? { skillOverrides: record.skillOverrides } : {}),
+      ...(this.opts.serverId !== undefined ? { serverId: this.opts.serverId } : {}),
+      ...(this.opts.metrics !== undefined ? { metrics: this.opts.metrics } : {}),
     })
-    const skillCount = client.card.skills?.length ?? 0
-    this.live.set(record.id, { record, client, disposers, skillCount })
-    this.views.set(record.id, {
-      id: record.id,
-      name: record.name,
-      agentCardUrl: record.agentCardUrl,
-      enabled: record.enabled,
+    const disabled = new Set(record.disabledSkills ?? [])
+    const skills: OutboundSkillView[] = (client.card.skills ?? []).map((skill) => {
+      const override = record.skillOverrides?.[skill.id]
+      const description = override?.description ?? skill.description ?? undefined
+      return {
+        id: skill.id,
+        name: override?.name ?? skill.name,
+        ...(description !== undefined ? { description } : {}),
+        enabled: !disabled.has(skill.id),
+      }
+    })
+    const updated: OutboundAgentRecord = { ...record, lastCardAt: new Date().toISOString() }
+    const skillCount = skills.filter((skill) => skill.enabled).length
+    this.live.set(updated.id, { record: updated, client, disposers, skillCount, skills })
+    this.views.set(updated.id, {
+      id: updated.id,
+      name: updated.name,
+      agentCardUrl: updated.agentCardUrl,
+      enabled: updated.enabled,
       state: 'connected',
       skillCount,
       toolCount: disposers.length,
+      skills,
     })
+    // Refresh lastCardAt durably; a failed write must not fail this connection.
+    try {
+      const next = [...this.opts.store.list().filter((r) => r.id !== updated.id), updated]
+      await this.opts.store.save(next)
+    } catch (err) {
+      this.opts.onError?.(`[a2a] failed to persist agent card timestamp: ${String(err)}`)
+    }
   }
 
   private findRecord(id: string): OutboundAgentRecord | undefined {

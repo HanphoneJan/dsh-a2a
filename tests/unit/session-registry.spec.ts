@@ -90,7 +90,7 @@ describe('aggregateSessionViews', () => {
     expect(ctx2.activeCount).toBe(0)
   })
 
-  it('attaches the most recent task\'s instance (name/preset/serverId)', () => {
+  it('keeps instances with the same client contextId as separate rows', () => {
     const sessionsA = new ContextSessionRegistry()
     sessionsA.noteStreamOpen('t1') // t1 belongs to instance-a and is streaming
     const views = aggregateSessionViews(
@@ -103,13 +103,18 @@ describe('aggregateSessionViews', () => {
         instance({ id: 'b', name: 'Instance B', preset: 'standard' }),
       ],
     )
-    const row = views.find((v) => v.contextId === 'ctx-1')!
-    // Latest task (t2) came in through instance-b ⇒ its identity is shown.
-    expect(row.serverId).toBe('b')
-    expect(row.serverName).toBe('Instance B')
-    expect(row.preset).toBe('standard')
-    // Streaming folds over EVERY task's instance registry, not just the latest.
-    expect(row.streaming).toBe(true)
+    expect(views).toHaveLength(2)
+    const rowA = views.find((v) => v.serverId === 'a')!
+    const rowB = views.find((v) => v.serverId === 'b')!
+    expect(rowA.serverName).toBe('Instance A')
+    expect(rowA.preset).toBe('ptc')
+    expect(rowB.serverName).toBe('Instance B')
+    expect(rowB.preset).toBe('standard')
+    // Streaming is scoped to the task's owning instance, never folded across.
+    expect(rowA.streaming).toBe(true)
+    expect(rowB.streaming).toBe(false)
+    expect(rowA.sessionId).toBe('a2a-a-ctx-1')
+    expect(rowB.sessionId).toBe('a2a-b-ctx-1')
   })
 
   it('reports live only when a pool actually holds the context handle', () => {
