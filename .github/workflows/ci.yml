@@ -67,6 +67,14 @@ jobs:
         working-directory: deepseek-harness
         run: pnpm install --frozen-lockfile
 
+      # The plugin's client typecheck reads the harness client packages'
+      # built declarations (`ui-renderer`, `ui-slots`, `ui-settings`), and the
+      # real-persistence suite loads the JSONL backend's native addon. A
+      # source-only checkout fails with TS6305 before any test runs.
+      - name: Build harness artifacts
+        working-directory: deepseek-harness
+        run: pnpm run build
+
       - name: Install plugin workspace
         working-directory: dsh-a2a
         run: pnpm install --frozen-lockfile
