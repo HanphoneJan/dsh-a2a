@@ -28,7 +28,7 @@ export interface AgentUserMessage {
   readonly id: string
   readonly role: 'user'
   readonly content: readonly { readonly type: 'text'; readonly text: string }[]
-  readonly source: { readonly kind: 'plugin'; readonly plugin: string }
+  readonly source: { readonly kind: 'a2a' }
 }
 
 /** Owned agent plus its capability disposer (structural mirror of AgentHandle). */
@@ -191,7 +191,10 @@ export class ContextSessionPool {
       id: crypto.randomUUID(),
       role: 'user',
       content: [{ type: 'text', text: prompt }],
-      source: { kind: 'plugin', plugin: 'a2a' },
+      // A producer-owned source kind: the v4 session codec refuses the
+      // retired shared `plugin` wrapper (SessionFormatError), which left the
+      // inbound turn with no durable message. `a2a` is this plugin's own kind.
+      source: { kind: 'a2a' },
     }
     agent.send(userMessage, 'next-turn', true)
     if (justOpened) {

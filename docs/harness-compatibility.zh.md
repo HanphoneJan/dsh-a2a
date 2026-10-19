@@ -62,10 +62,13 @@ git diff <from> <to> -- tsconfig.base.json tsconfig.base.client.json tsconfig.cl
 
 ```sh
 cd ../dsh-a2a
-pnpm typecheck   # host (tsc -b) + client (tsc -p tsconfig.client.json)
-pnpm test        # vitest run — unit + composition
+pnpm typecheck   # host + client + 镜像检查（tsconfig.types.json）
+pnpm test        # vitest run — unit + composition + 真实持久化
 pnpm build       # tsc + tsdown + scripts/build-client.mjs
+pnpm test:e2e    # 对已构建产物的双实例 A2A hermetic 冒烟
 ```
+
+只跑 `pnpm test` 不足以作为兼容性变更的证据：它跑在 stub 宿主服务上，看不见持久化 codec 或 manifest/mount 漂移。能看见的是镜像检查与 e2e 冒烟；见 [testing.md](testing.zh.md)。
 
 如果删掉 `lib/` 后的干净重建“看起来成功但什么都没产出”，那是 TypeScript 构建缓存还在作祟：先清 `node_modules/.cache/dsh-a2a/`。`tsc -b` 会信任陈旧的 tsbuildinfo，随后 tsdown 找不到入口。
 
@@ -99,10 +102,20 @@ pnpm pack --pack-destination <dir>
 
 | dsh-a2a | 验证所用 harness | 所需改动 | 证据 |
 |---|---|---|---|
+| 0.3.7 | 0.2.1-rc.2 | 源码修复：入站消息 `source.kind` 由 `plugin` 改为生产者自己的 `a2a`；新增测试层（镜像检查、真实持久化套件、e2e 冒烟）；`vitest.config.ts` 装入 `standardDecoratorPlugin` | `pnpm typecheck`（host + client + 镜像检查）零错误；`pnpm test` 114/114；`pnpm build` 产出 `lib/index.js`+`lib/client.js`；`pnpm test:e2e` 对两个真实 `0.2.1-rc.2` 实例跑通入站与出站往返 |
 | 0.3.6 | 0.2.1-rc.2 | 无需改动——peer 范围、zod 收紧、构建布局与清单契约本已兼容；仅版本号与记录 | 清缓存后的 `pnpm typecheck`（host+client）零错误；`pnpm test` 110/110；完整 `pnpm build` 产出 `lib/index.js`+`lib/client.js`+`lib/types` |
 | 0.3.5 | 0.2.1-alpha.2 | peer 范围放宽到 0.2 线；zod 收紧到 harness 所在线；为 Vite 8 路径解析新增 tests 专属 tsconfig | `pnpm typecheck`（host+client）零错误；`pnpm test` 110/110；完整 `pnpm build` 产出 `lib/index.js`+`lib/client.js`+`lib/types`；`dsh web` 可启动并正常服务 |
 | 0.3.4 | 0.1.7-rc.2 | 修 `tsconfig.client.json` 引用；peer 范围改为真实区间 | typecheck（host+client）零错误；`vitest run` 110/110；完整 `pnpm build` 成功 |
 | 0.3.3 | 0.1.5-rc.2 | 无需改动——代码与元数据本已兼容 | 消费方 `pnpm typecheck` 零错误 |
+
+### 0.3.7 细节
+
+这是 bug 修复版本，不是 harness 适配。两处改动：
+
+1. **入站 `(no reply)` 修复。** session 执行器交给 agent 的消息 `source` 是 `{ kind: 'plugin', plugin: 'a2a' }`；JSONL v4 编码器拒绝 `kind: 'plugin'`，写入在 handle 的后台 flush 中失败，agent loop 吞掉错误，于是每个入站任务都以 `COMPLETED` + `(no reply)` 落定。现在改用生产者自己的 `{ kind: 'a2a' }`。
+2. **本该抓住它的测试层。** `tests/types/mirrors.typecheck.ts`（编译期 source 契约）、`tests/integration/persistence.spec.ts`（真实 JSONL v4 codec + agent loop）、`scripts/e2e-a2a.mjs`（两个真实实例 + mock LLM，入站与出站）。`vitest.config.ts` 装入 harness 的 `standardDecoratorPlugin`，使测试能 import harness 源码。见 [testing.zh.md](testing.zh.md)。
+
+门禁：`pnpm test:all`——typecheck（host + client + 镜像检查）、114 个测试、build、以及 hermetic e2e 冒烟，全部对 `0.2.1-rc.2` checkout 跑通。
 
 ### 0.3.6 细节
 
@@ -112,6 +125,8 @@ harness 从 `0.2.1-alpha.2` 升到 `0.2.1-rc.2`（990 个提交）。无需任�
 2. `dependencies.zod` 继续收紧在 `~4.4.3`；harness 根仍解析到 `zod@4.4.3`，两份 zod 导致的 `exactOptionalPropertyTypes` 失败不会复现。
 3. 构建布局未变。`tsconfig.base.json` 只新增 `paths` 别名（plugin-market、cua、remote-access 等本插件未消费的包）；`tsconfig.base.client.json` 与被引用包的 tsconfig 叶子均未变，工程引用与 `ui-settings/tsconfig.client.json` 叶子引用仍然解析。
 4. 清单契约未变：`DshClientManifest.inject`、`DshBundleManifest.patch` 与 `- insert:` 补丁格式在 `alpha.2..rc.2` 之间零 diff。
+
+发布之后，一次真实的 `dsh web` 往返暴露了上文那个入站 `(no reply)` bug：110 个 stub 测试看不见，本流程的 typecheck/build 步骤同样看不见。`0.3.7` 已修复，并加上镜像检查、真实持久化套件与 e2e 冒烟（见 `0.3.7` 记录）。
 
 ### 0.3.5 细节
 
@@ -136,6 +151,8 @@ harness 从 `0.2.1-alpha.2` 升到 `0.2.1-rc.2`（990 个提交）。无需任�
 
 ## 断点与修复
 
+- **每个入站任务都 `(no reply)`——被弃用的 `plugin` source kind。** 入站执行器交给 agent 的消息 `source` 是 `{ kind: 'plugin', plugin: 'a2a' }`。`session.append` 的内存校验接受任何非空 kind，所以 stub 测试全绿；真正拒绝 `kind: 'plugin'` 的是 JSONL v4 编码器（`packages/session/session-format-v3-to-v4/src/message-sources.ts`），因为 harness 没有共享的 catch-all plugin kind。拒绝发生在 session handle 的后台 flush 里，agent loop 吞掉驱动错误，任务以 `COMPLETED` + `(no reply)` 落定。修复：改用生产者自己的 kind `{ kind: 'a2a' }`。由 `tests/integration/persistence.spec.ts`（teardown 后断言真实 v4 日志）与 `tests/types/mirrors.typecheck.ts`（旧形状直接编译失败）覆盖。
+- **测试里 import harness 源码触发 Vite `SyntaxError`。** harness 源码使用标准 TypeScript 装饰器（`@Remote`），Vite 默认解析器会拒绝。`vitest.config.ts` 现在装上 harness 的 `standardDecoratorPlugin`；集成与类型测试因为直接 value-import `@deepseek-ai/dsh-*` 模块而需要它。
 - **solution 引用导致的 TS6306。** 暴露 solution `tsconfig.json` 的 harness 客户端包，必须通过其 `tsconfig.client.json`（或 `tsconfig.host.json`）叶子文件引用。症状：`pnpm typecheck` 在读取插件源码之前就于客户端程序失败。
 - **harness 次版本升级后 `incompatible-version` 拒绝。** 插件曾声明 `"*"` 范围，而 `evaluatePluginCompatibility` 会把范围拿去匹配运行时；实际失败主要来自精确钉死的 `cordis` 与宿主副本冲突，以及范围没有描述已测版本。修复方式是写出真实测试区间。
 - **`lib/` 为空却“看起来构建成功”。** 陈旧 tsbuildinfo 所致，清 `node_modules/.cache/dsh-a2a/`。

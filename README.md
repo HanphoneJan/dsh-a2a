@@ -246,10 +246,15 @@ cordis.patch.yml          # bundle patch (mounts the plugin; instances are GUI-m
 > references; a harness checkout with its built host aggregate is required.
 
 ```sh
-pnpm typecheck   # host (tsc -b) + client (tsc -p tsconfig.client.json)
-pnpm test        # vitest run (unit + composition suites)
+pnpm typecheck   # host + client + compile-time mirror check
+pnpm test        # vitest run (unit + composition + real persistence)
 pnpm build       # tsc + tsdown → lib/index.js (host) + lib/client.js (browser)
+pnpm test:e2e    # hermetic two-instance A2A smoke against the built artifact
+pnpm test:all    # typecheck + test + build + e2e
 ```
+
+Stub tests alone cannot see host-runtime contract drift. The layers, what each
+catches, and the e2e flow are in [docs/testing.md](docs/testing.md).
 
 ## Acknowledgements
 

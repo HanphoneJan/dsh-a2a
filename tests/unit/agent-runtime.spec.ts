@@ -8,15 +8,21 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ContextSessionPool, type AgentRegistryLike, type LiveAgent } from '../../src/server/exec/agent-runtime.ts'
 
+/** One captured inbound message handed to a fake agent. */
+interface SentMessage {
+  readonly source: { readonly kind: string }
+}
+
 /** Minimal fake registry whose handles record create counts and dispose calls. */
 function fakeAgents() {
   const created = new Map<string, number>()
   const disposed: string[] = []
+  const sent: SentMessage[] = []
   const create = vi.fn(async (opts: { readonly sessionId: string }) => {
     created.set(opts.sessionId, (created.get(opts.sessionId) ?? 0) + 1)
     const agent: LiveAgent = {
       session: { deriveMessages: () => [] },
-      send: vi.fn(),
+      send: vi.fn((message: SentMessage) => { sent.push(message) }),
       whenIdle: vi.fn(async () => {}),
       cancel: vi.fn(),
     }
@@ -27,7 +33,7 @@ function fakeAgents() {
       }),
     }
   })
-  return { create, created, disposed }
+  return { create, created, disposed, sent }
 }
 
 function poolWith(opts: { onSessionOpened?: (info: { readonly sessionId: string; readonly contextId: string; readonly firstPrompt: string }) => void | Promise<void> } = {}) {
@@ -63,6 +69,13 @@ describe('ContextSessionPool session lifecycle', () => {
     await pool.agentFor('ctx-1')
     // One create per open: close is a resource release, not a tombstone.
     expect(agents.created.get('a2a-ctx-1')).toBe(2)
+  })
+
+  it('sends inbound turns with a producer-owned source kind (not the retired plugin wrapper)', async () => {
+    const { agents, pool } = poolWith()
+    await pool.runTurn('ctx-1', 'hello', new AbortController().signal)
+    expect(agents.sent).toHaveLength(1)
+    expect(agents.sent[0]?.source.kind).toBe('a2a')
   })
 
   it('fires onSessionOpened exactly once per freshly opened context (binding hook)', async () => {

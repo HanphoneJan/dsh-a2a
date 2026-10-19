@@ -35,19 +35,31 @@ src/                 host half
 tests/
   unit/              protocol, framing, card, store, registry, server, client, api
   composition/       apply() on a real Cordis Context with stub host services
+  integration/       real agent loop + JSONL session persistence, mock LLM
+  types/             compile-time mirror check against real @deepseek-ai/dsh-* types
 cordis.patch.yml     bundle patch (mounts the plugin core only)
 scripts/build-client.mjs  wraps the browser bundle for window.__ModuleLoader__
-docs/                architecture (EN/ZH) and harness compatibility (EN/ZH)
+scripts/e2e-a2a.mjs  hermetic two-instance A2A smoke against the built artifact
+docs/                architecture, harness compatibility, testing (all EN/ZH)
 ```
 
 ## Commands
 
 ```sh
-pnpm typecheck   # host (tsc -b) + client (tsc -p tsconfig.client.json)
-pnpm test        # vitest run (unit + composition)
-pnpm build       # tsc + tsdown → lib/index.js (host) + lib/client.js (browser)
+pnpm typecheck        # host (tsc -b) + client + mirror check (tsconfig.types.json)
+pnpm test             # vitest run (unit + composition + integration)
+pnpm test:integration # only the real-persistence suite
+pnpm build            # tsc + tsdown → lib/index.js (host) + lib/client.js (browser)
+pnpm test:e2e         # hermetic two-instance A2A smoke (needs pnpm build first)
+pnpm test:all         # typecheck + test + build + test:e2e
 pnpm pack --pack-destination <dir>   # publishable tarball
 ```
+
+The test layers, what each catches, and the e2e flow are documented in
+[docs/testing.md](docs/testing.md). The short rule: **stub tests can be all
+green while the plugin is broken against the real harness**, so a change to a
+host contract surface must be covered by the mirror check, the real-persistence
+suite, or the e2e smoke — not only by stubs.
 
 A clean rebuild after deleting `lib/` can no-op if the TypeScript build cache
 survives: `tsc -b` trusts a stale tsbuildinfo, then tsdown cannot find its entry
@@ -79,11 +91,14 @@ pin still fights the host's copy at install time.
 ## Rules
 
 - **Evidence before claims.** A compatibility change ships with
-  `pnpm typecheck`, `pnpm test`, and `pnpm build` results against the named
-  harness version. Report the commands actually run; do not restate an earlier
-  green run as current.
+  `pnpm typecheck`, `pnpm test`, `pnpm build`, and `pnpm test:e2e` results
+  against the named harness version. Report the commands actually run; do not
+  restate an earlier green run as current.
 - **Never change `src/` without a passing typecheck and the test suite.**
-  Behavior changes also need a test that fails without them.
+  Behavior changes also need a test that fails without them. A change touching
+  a host contract surface (a message shape, a runtime service, storage) is not
+  covered by a stub test: add the mirror-check, real-persistence, or e2e
+  evidence described in [docs/testing.md](docs/testing.md).
 - **Keep the plugin additive.** Prefer new opt-in config over changed defaults;
   the plugin runs inside someone else's profile composition.
 - **Editorial language of the codebase is English.** Public docs are an

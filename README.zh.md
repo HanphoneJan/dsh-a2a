@@ -160,10 +160,14 @@ cordis.patch.yml          # bundle patch（挂载插件；实例由 GUI 管理�
 > 插件通过项目引用对 harness 源码图做类型检查；需要已构建宿主聚合的 harness checkout。
 
 ```sh
-pnpm typecheck   # host (tsc -b) + client (tsc -p tsconfig.client.json)
-pnpm test        # vitest run（单元 + 组合套件）
+pnpm typecheck   # host + client + 编译期镜像检查
+pnpm test        # vitest run（单元 + 组合 + 真实持久化）
 pnpm build       # tsc + tsdown → lib/index.js（host）+ lib/client.js（浏览器）
+pnpm test:e2e    # 对已构建产物的双实例 A2A hermetic 冒烟
+pnpm test:all    # typecheck + test + build + e2e
 ```
+
+stub 测试看不见宿主运行时契约漂移。分层、各层能抓什么、e2e 流程见 [docs/testing.zh.md](docs/testing.zh.md)。
 
 ## 致谢
 

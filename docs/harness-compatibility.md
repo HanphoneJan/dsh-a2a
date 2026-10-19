@@ -76,10 +76,16 @@ git diff <from> <to> -- tsconfig.base.json tsconfig.base.client.json tsconfig.cl
 
 ```sh
 cd ../dsh-a2a
-pnpm typecheck   # host (tsc -b) + client (tsc -p tsconfig.client.json)
-pnpm test        # vitest run — unit + composition
+pnpm typecheck   # host + client + mirror check (tsconfig.types.json)
+pnpm test        # vitest run — unit + composition + real persistence
 pnpm build       # tsc + tsdown + scripts/build-client.mjs
+pnpm test:e2e    # hermetic two-instance A2A smoke against the built artifact
 ```
+
+`pnpm test` alone is not enough evidence for a compatibility change: it runs
+stub host services and cannot see durable-codec or manifest/mount drift. The
+mirror check and the e2e smoke are the layers that can; see
+[testing.md](testing.md).
 
 If the clean rebuild no-ops because `lib/` was deleted while the TypeScript
 build cache survived, clear `node_modules/.cache/dsh-a2a/` first: `tsc -b`
@@ -130,10 +136,30 @@ pnpm pack --pack-destination <dir>
 
 | dsh-a2a | Harness verified against | Changes required | Evidence |
 |---|---|---|---|
+| 0.3.7 | 0.2.1-rc.2 | source fix: inbound message `source.kind` `plugin` → producer-owned `a2a`; test-layer additions (mirror check, real-persistence suite, e2e smoke); `standardDecoratorPlugin` in `vitest.config.ts` | `pnpm typecheck` (host + client + mirror check) clean; `pnpm test` 114/114; `pnpm build` produced `lib/index.js`+`lib/client.js`; `pnpm test:e2e` passed inbound + outbound round trip against two real `0.2.1-rc.2` instances |
 | 0.3.6 | 0.2.1-rc.2 | none — peer ranges, zod pin, build layout, and manifest contract already compatible; version bump and record only | clean-cache `pnpm typecheck` host+client zero errors; `pnpm test` 110/110; full `pnpm build` produced `lib/index.js`+`lib/client.js`+`lib/types` |
 | 0.3.5 | 0.2.1-alpha.2 | peer ranges widened to the 0.2 line; zod pinned to the harness's zod line; tests-scoped tsconfig for Vite 8 path resolution | `pnpm typecheck` host+client clean; `pnpm test` 110/110; full `pnpm build` produced `lib/index.js`+`lib/client.js`+`lib/types`; `dsh web` boots and serves |
 | 0.3.4 | 0.1.7-rc.2 | `tsconfig.client.json` reference fix; peer ranges made truthful | typecheck host+client clean; `vitest run` 110/110; full `pnpm build` succeeded |
 | 0.3.3 | 0.1.5-rc.2 | none — code and metadata already compatible | consumer `pnpm typecheck` clean |
+
+### 0.3.7 details
+
+A bug-fix release, not a harness adaptation. Two changes:
+
+1. **Inbound `(no reply)` fix.** The session executor sent the agent a message
+   with `source: { kind: 'plugin', plugin: 'a2a' }`; the JSONL v4 codec refuses
+   `kind: 'plugin'`, the write failed in the handle's background flush, and the
+   agent loop contained the error, so every inbound task settled `COMPLETED`
+   with `(no reply)`. The source is now the producer-owned `{ kind: 'a2a' }`.
+2. **Test layers that would have caught it.** `tests/types/mirrors.typecheck.ts`
+   (compile-time source contract), `tests/integration/persistence.spec.ts`
+   (real JSONL v4 codec + agent loop), and `scripts/e2e-a2a.mjs` (two real
+   instances + mock LLM, inbound and outbound). `vitest.config.ts` gained the
+   harness `standardDecoratorPlugin` so tests can import harness source. See
+   [testing.md](testing.md).
+
+Gate: `pnpm test:all` — typecheck (host + client + mirror check), 114 tests,
+build, and the hermetic e2e smoke, all against the `0.2.1-rc.2` checkout.
 
 ### 0.3.6 details
 
@@ -158,6 +184,11 @@ adaptation was needed; only the version bump and this record changed.
 4. The manifest contract is unchanged: `DshClientManifest.inject`,
    `DshBundleManifest.patch`, and the `- insert:` patch form have zero diff
    across `alpha.2..rc.2`.
+
+Post-release, a real `dsh web` round trip exposed the inbound `(no reply)` bug
+above: the 110-test stub suite could not see it, and the typecheck/build steps
+of this procedure could not either. `0.3.7` fixes it and adds the mirror check,
+the real-persistence suite, and the e2e smoke (see the `0.3.7` record).
 
 ### 0.3.5 details
 
@@ -193,6 +224,24 @@ against the harness source graph passed with zero errors, so no change shipped.
 
 ## Breakages and fixes
 
+- **`(no reply)` on every inbound task — retired `plugin` source kind.** The
+  inbound executor sent the agent a message with
+  `source: { kind: 'plugin', plugin: 'a2a' }`. The in-memory `session.append`
+  check accepts any non-empty kind, so all stub tests passed; the JSONL v4
+  encoder
+  (`packages/session/session-format-v3-to-v4/src/message-sources.ts`) refuses
+  `kind: 'plugin'` because the harness has no shared catch-all plugin kind. The
+  refusal happened in the session handle's background flush, the agent loop
+  contained the driver error, and the task settled `COMPLETED` with
+  `(no reply)`. Fix: use the producer-owned kind `{ kind: 'a2a' }`. Covered by
+  `tests/integration/persistence.spec.ts` (asserts the persisted v4 log after
+  teardown) and `tests/types/mirrors.typecheck.ts` (fails to compile on the old
+  shape).
+- **Vite `SyntaxError` importing harness source in tests.** Harness source uses
+  standard TypeScript decorators (`@Remote`); Vite's default parser rejects
+  them. `vitest.config.ts` now installs the harness's
+  `standardDecoratorPlugin`, which the integration and type tests need because
+  they value-import `@deepseek-ai/dsh-*` modules directly.
 - **TS6306 from a solution reference.** A harness client package that exposes a
   solution `tsconfig.json` must be referenced through its `tsconfig.client.json`
   (or `tsconfig.host.json`) leaf. Symptom: `pnpm typecheck` fails on the client

@@ -1,0 +1,146 @@
+name: CI
+
+# Test pyramid:
+#   check — typecheck (host + client + mirror check) and the unit/composition/
+#           real-persistence suites. Fast; runs on every push and pull request.
+#   e2e   — boots two real DeepSeek Harness instances against a scripted mock
+#           LLM server and exercises inbound + outbound A2A over HTTP. Builds
+#           the pinned harness checkout, then the plugin tarball. On pull
+#           requests only the pinned version runs; the scheduled/nightly run
+#           covers every harness version the plugin's peer ranges claim.
+#
+# The sibling-harness layout is mandatory: the plugin's typecheck and tests
+# resolve @deepseek-ai/* through tsconfig paths and project references into
+# `../deepseek-harness`, never through node_modules.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Nightly full matrix: catch harness drift before a release, not after.
+    - cron: '0 3 * * *'
+
+env:
+  NODE_VERSION: '24'
+  PNPM_VERSION: '11.28.5'
+  HARNESS_REPO: deepseek-ai/deepseek-harness
+  # The harness version every push/PR is verified against. Bump it when the
+  # sibling checkout moves; the scheduled matrix covers the older supported
+  # lines on its own.
+  PINNED_HARNESS: dsh-v0.2.1-rc.2
+
+jobs:
+  check:
+    name: typecheck + tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out harness
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.HARNESS_REPO }}
+          ref: ${{ env.PINNED_HARNESS }}
+          path: deepseek-harness
+          fetch-depth: 1
+
+      - name: Check out plugin
+        uses: actions/checkout@v4
+        with:
+          path: dsh-a2a
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: |
+            deepseek-harness/pnpm-lock.yaml
+            dsh-a2a/pnpm-lock.yaml
+
+      - name: Install harness workspace
+        working-directory: deepseek-harness
+        run: pnpm install --frozen-lockfile
+
+      - name: Install plugin workspace
+        working-directory: dsh-a2a
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck (host + client + mirror check)
+        working-directory: dsh-a2a
+        run: pnpm typecheck
+
+      - name: Unit, composition, and real-persistence tests
+        working-directory: dsh-a2a
+        run: pnpm test
+
+  e2e:
+    name: e2e (${{ matrix.harness }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    # Pull requests verify the pinned version only; the full matrix runs on
+    # scheduled, manual, and post-merge pushes.
+    if: github.event_name != 'pull_request' || matrix.harness == 'dsh-v0.2.1-rc.2'
+    strategy:
+      fail-fast: false
+      matrix:
+        harness:
+          - dsh-v0.2.1-rc.2
+          - dsh-v0.2.1-alpha.2
+          - dsh-v0.1.7-rc.2
+    steps:
+      - name: Check out harness (${{ matrix.harness }})
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.HARNESS_REPO }}
+          ref: ${{ matrix.harness }}
+          path: deepseek-harness
+          fetch-depth: 1
+
+      - name: Check out plugin
+        uses: actions/checkout@v4
+        with:
+          path: dsh-a2a
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: |
+            deepseek-harness/pnpm-lock.yaml
+            dsh-a2a/pnpm-lock.yaml
+
+      - name: Install harness workspace
+        working-directory: deepseek-harness
+        run: pnpm install --frozen-lockfile
+
+      # `dsh web` and the JSONL session backend load built host artifacts and
+      # the native system addon; a source-only checkout cannot serve A2A.
+      - name: Build harness artifacts
+        working-directory: deepseek-harness
+        run: pnpm run build
+
+      - name: Install plugin workspace
+        working-directory: dsh-a2a
+        run: pnpm install --frozen-lockfile
+
+      - name: Build plugin
+        working-directory: dsh-a2a
+        run: pnpm build
+
+      - name: Hermetic two-instance A2A e2e
+        working-directory: dsh-a2a
+        env:
+          DSH_A2A_HARNESS_DIR: ${{ github.workspace }}/deepseek-harness
+        run: pnpm test:e2e

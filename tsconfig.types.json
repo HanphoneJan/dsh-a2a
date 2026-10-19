@@ -1,0 +1,21 @@
+{
+  // Mirror-check program: compiles `tests/types` against the real harness
+  // declarations so a structural mirror that drifts from the host contract
+  // fails `pnpm typecheck`. `noEmit` keeps it diagnostic-only.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": true,
+    "rootDir": ".",
+    "tsBuildInfoFile": "./node_modules/.cache/dsh-a2a/tsconfig.types.tsbuildinfo"
+  },
+  "include": ["tests/types"],
+  "references": [
+    { "path": "../deepseek-harness/vendor/cordis" },
+    { "path": "../deepseek-harness/vendor/schemastery" },
+    { "path": "../deepseek-harness/packages/interaction/commands" },
+    { "path": "../deepseek-harness/packages/storage/storage-domain" },
+    { "path": "../deepseek-harness/packages/llm/llm" },
+    { "path": "../deepseek-harness/packages/core/agent" }
+  ]
+}
