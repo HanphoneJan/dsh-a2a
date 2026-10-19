@@ -54,6 +54,16 @@ pnpm test:all         # typecheck + test + build + test:e2e
 5. **往返**：停掉 A 的 web 实例，用 A 的 `headless` profile 对一个会调用 `a2a__b__chat` 的 mock 脚本发任务，断言 stdout 是 B 的回复。
 6. 拆掉两个 home 和所有子进程。
 
+## 可视测试
+
+`pnpm visual:a2a` 会启动同一套 hermetic 双实例，并在打印的仅回环 URL 上提供交互式面板。
+它显示两个实例、任务时间线、对端、会话，以及两个按钮：
+
+- **入站**：直接向 B 的端点发 `SendMessage`。
+- **出站**：用 A 的 headless 模型执行脚本化工具调用，触发 `a2a__b__chat`，经 A2A 到达 B。
+
+它和 e2e 是同一套组合，只是可交互；用于演示与人工观察，不作为 CI 门禁。`Ctrl+C` 会拆掉所有子进程与临时 home。
+
 ## 加测试
 
 - **行为变更** → 按 `AGENTS.md`，加一个去掉改动就会失败的单元/`composition` 测试。

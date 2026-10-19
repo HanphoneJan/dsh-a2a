@@ -28,12 +28,12 @@ export function buildA2aCommand(impl: A2AServiceImpl): CommandDefinition {
             case 'list':
               return success(JSON.stringify(impl.listInboundServers(), null, 2))
             case 'create': {
-              const name = args[0]
+              const name = id
               if (!name) return error('usage: /a2a inbound create <name> [preset] [description]')
-              const preset = args[1]
+              const preset = args[0]
               return outcome(await impl.createInboundServer({
                 name,
-                description: args[2] ?? 'An A2A inbound server',
+                description: args.slice(1).join(' ') || 'An A2A inbound server',
                 version: '1.0.0',
                 ...(preset && preset !== 'default' ? { preset } : {}),
               }))
@@ -54,10 +54,10 @@ export function buildA2aCommand(impl: A2AServiceImpl): CommandDefinition {
             case 'list':
               return success(JSON.stringify(impl.listOutboundServers(), null, 2))
             case 'create': {
-              const url = args[0]
+              const url = id
               if (!url) return error('usage: /a2a outbound create <agentCardUrl> [name] [preset]')
-              const name = args[1] ?? url
-              const preset = args[2]
+              const name = args[0] ?? url
+              const preset = args[1]
               return outcome(await impl.createOutboundServer({
                 name,
                 agentCardUrl: url,

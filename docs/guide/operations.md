@@ -3,7 +3,7 @@ name: Operations
 description: GUI and /a2a command reference, lifecycle semantics, configuration, host services, storage, and exposure
 create-time: 2026-10-19
 update-time: 2026-10-19
-version: v0.3.7
+version: v0.3.8
 relative-docs:
   - docs/guide/concepts.md
   - docs/reference/http-api.md
@@ -16,7 +16,7 @@ relative-docs:
 
 This page is the day-to-day reference: where the controls are, what each field
 does, how instances behave across restarts, and how to configure storage and
-security. It applies to `0.3.7` on DeepSeek Harness `0.2.1-rc.2`.
+security. It applies to `0.3.8` on DeepSeek Harness `0.2.1-rc.2`.
 
 ## 1. Control surfaces
 
@@ -100,11 +100,11 @@ and status verbs.
 | `/a2a status` | Whole-plugin snapshot |
 | `/a2a presets` | Agent-preset roster |
 | `/a2a inbound list` | Inbound instances |
-| `/a2a inbound create _ <name> [preset] [description]` | Create an inbound instance |
+| `/a2a inbound create <name> [preset] [description]` | Create an inbound instance |
 | `/a2a inbound remove <id>` | Remove it |
 | `/a2a inbound enable\|disable <id>` | Toggle its routes |
 | `/a2a outbound list` | Outbound instances |
-| `/a2a outbound create _ <agentCardUrl> [name] [preset]` | Create an outbound connection |
+| `/a2a outbound create <agentCardUrl> [name] [preset]` | Create an outbound connection |
 | `/a2a outbound remove <id>` | Remove it |
 | `/a2a outbound enable\|disable <id>` | Toggle it |
 | `/a2a outbound refresh <id>` | Re-read the remote card |
@@ -117,15 +117,9 @@ and status verbs.
 | `/a2a peers` | Inbound peer registry |
 | `/a2a help` | Usage text |
 
-> **0.3.7 parser quirk.** The `inbound create` and `outbound create` verbs
-> currently consume one extra leading token: `rest` is destructured as
-> `[action, id, ...args]`, and the create branches read `args[0]` as the
-> name/URL. That is why the working forms above include a `_` placeholder
-> before the real name/URL. The panel is the recommended creation path; the
-> placeholder is only needed when using the command.
-
-Arguments are whitespace-separated; descriptions cannot contain spaces via the
-command. Use the panel or the HTTP API for anything richer.
+Arguments are whitespace-separated. The inbound description is the remaining
+words after the optional preset; use the panel or the HTTP API when you need
+richer fields.
 
 ## 4. Lifecycle semantics
 

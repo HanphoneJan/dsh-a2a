@@ -40,6 +40,7 @@ tests/
 cordis.patch.yml     bundle patch (mounts the plugin core only)
 scripts/build-client.mjs  wraps the browser bundle for window.__ModuleLoader__
 scripts/e2e-a2a.mjs  hermetic two-instance A2A smoke against the built artifact
+scripts/visual-a2a-test.mjs  interactive live dashboard for the same setup
 docs/                public manual (README, guide/, reference/) plus
                      architecture, harness compatibility, testing (all EN/ZH)
 ```

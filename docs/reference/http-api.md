@@ -3,7 +3,7 @@ name: HTTP API and A2A protocol
 description: Loopback dashboard actions, inbound JSON-RPC endpoints, SSE streaming, task states, error codes, AgentCard, and outbound tool contracts
 create-time: 2026-10-19
 update-time: 2026-10-19
-version: v0.3.7
+version: v0.3.8
 relative-docs:
   - docs/guide/getting-started.md
   - docs/guide/concepts.md
@@ -14,7 +14,7 @@ relative-docs:
 
 **English** · [中文](http-api.zh.md)
 
-This page is the wire-level reference for `0.3.7`. It has two parts:
+This page is the wire-level reference for `0.3.8`. It has two parts:
 
 1. the **loopback dashboard API** the panel uses (`/a2a/api`);
 2. the **A2A endpoints** published by inbound servers (`/a2a/<id>`).
@@ -362,7 +362,7 @@ returned as text so the model can react.
 
 ## 4. Current limits
 
-These are intentional or known at `0.3.7`; do not assume otherwise:
+These are intentional or known at `0.3.8`; do not assume otherwise:
 
 - `SendMessage` always blocks; the declared `returnImmediately` option is not
   honored.

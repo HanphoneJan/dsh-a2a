@@ -102,11 +102,20 @@ pnpm pack --pack-destination <dir>
 
 | dsh-a2a | 验证所用 harness | 所需改动 | 证据 |
 |---|---|---|---|
+| 0.3.8 | 0.2.1-rc.2 | CLI 修复：`/a2a inbound create` 与 `outbound create` 多消费一个前导 token；入站描述改为由剩余单词拼接；新增命令解析测试 | `pnpm typecheck`（host + client + 镜像检查）零错误；`pnpm test` 121/121；`pnpm build` 产出 `lib/index.js`+`lib/client.js`；`pnpm test:e2e` 对两个真实 `0.2.1-rc.2` 实例跑通入站与出站往返 |
 | 0.3.7 | 0.2.1-rc.2 | 源码修复：入站消息 `source.kind` 由 `plugin` 改为生产者自己的 `a2a`；新增测试层（镜像检查、真实持久化套件、e2e 冒烟）；`vitest.config.ts` 装入 `standardDecoratorPlugin` | `pnpm typecheck`（host + client + 镜像检查）零错误；`pnpm test` 114/114；`pnpm build` 产出 `lib/index.js`+`lib/client.js`；`pnpm test:e2e` 对两个真实 `0.2.1-rc.2` 实例跑通入站与出站往返 |
 | 0.3.6 | 0.2.1-rc.2 | 无需改动——peer 范围、zod 收紧、构建布局与清单契约本已兼容；仅版本号与记录 | 清缓存后的 `pnpm typecheck`（host+client）零错误；`pnpm test` 110/110；完整 `pnpm build` 产出 `lib/index.js`+`lib/client.js`+`lib/types` |
 | 0.3.5 | 0.2.1-alpha.2 | peer 范围放宽到 0.2 线；zod 收紧到 harness 所在线；为 Vite 8 路径解析新增 tests 专属 tsconfig | `pnpm typecheck`（host+client）零错误；`pnpm test` 110/110；完整 `pnpm build` 产出 `lib/index.js`+`lib/client.js`+`lib/types`；`dsh web` 可启动并正常服务 |
 | 0.3.4 | 0.1.7-rc.2 | 修 `tsconfig.client.json` 引用；peer 范围改为真实区间 | typecheck（host+client）零错误；`vitest run` 110/110；完整 `pnpm build` 成功 |
 | 0.3.3 | 0.1.5-rc.2 | 无需改动——代码与元数据本已兼容 | 消费方 `pnpm typecheck` 零错误 |
+
+### 0.3.8 细节
+
+CLI 修复版本。`/a2a inbound create` 与 `/a2a outbound create` 把命令尾部解构为
+`[action, id, ...args]`，却从 `args[0]` 读取名称/URL，导致第一个真实参数被丢弃、
+必须使用占位符。现在 create 分支从 `id` 读取名称/URL，入站描述由剩余单词拼接
+（因此可以包含空格），并由 `tests/unit/commands.spec.ts` 覆盖解析。手册的命令表与
+排障页不再描述占位符。
 
 ### 0.3.7 细节
 

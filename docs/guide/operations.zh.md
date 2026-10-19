@@ -3,7 +3,7 @@ name: 运维指南
 description: GUI 与 /a2a 命令参考、生命周期语义、配置、宿主服务、存储与对外暴露
 create-time: 2026-10-19
 update-time: 2026-10-19
-version: v0.3.7
+version: v0.3.8
 relative-docs:
   - docs/guide/concepts.zh.md
   - docs/reference/http-api.zh.md
@@ -15,7 +15,7 @@ relative-docs:
 [English](operations.md) · **中文**
 
 本页是日常参考：控件在哪、每个字段做什么、实例跨重启怎么表现、存储与安全怎么配。
-内容对应 `0.3.7` / DeepSeek Harness `0.2.1-rc.2`。
+内容对应 `0.3.8` / DeepSeek Harness `0.2.1-rc.2`。
 
 ## 1. 控制面
 
@@ -83,11 +83,11 @@ Token 通过凭据服务单独存储；编辑时 token 留空会保留原值。�
 | `/a2a status` | 整插件快照 |
 | `/a2a presets` | Agent preset 名单 |
 | `/a2a inbound list` | 入站实例 |
-| `/a2a inbound create _ <name> [preset] [description]` | 创建入站实例 |
+| `/a2a inbound create <name> [preset] [description]` | 创建入站实例 |
 | `/a2a inbound remove <id>` | 删除 |
 | `/a2a inbound enable\|disable <id>` | 启停路由 |
 | `/a2a outbound list` | 出站实例 |
-| `/a2a outbound create _ <agentCardUrl> [name] [preset]` | 创建出站连接 |
+| `/a2a outbound create <agentCardUrl> [name] [preset]` | 创建出站连接 |
 | `/a2a outbound remove <id>` | 删除 |
 | `/a2a outbound enable\|disable <id>` | 启停 |
 | `/a2a outbound refresh <id>` | 重读远端卡片 |
@@ -100,12 +100,7 @@ Token 通过凭据服务单独存储；编辑时 token 留空会保留原值。�
 | `/a2a peers` | 入站对端注册表 |
 | `/a2a help` | 用法 |
 
-> **0.3.7 解析器怪癖。** `inbound create` 与 `outbound create` 目前会多消费一个前导 token：
-> `rest` 被解构为 `[action, id, ...args]`，而 create 分支把 `args[0]` 当作名称/URL。
-> 所以上面的可用形式在真实名称/URL 前有一个 `_` 占位符。创建优先用面板；
-> 只有走命令时才需要占位符。
-
-参数以空白分隔；描述里不能有空格。更丰富的内容请用面板或 HTTP API。
+参数以空白分隔。入站描述是可选 preset 之后的剩余单词；需要更丰富的字段时用面板或 HTTP API。
 
 ## 4. 生命周期语义
 

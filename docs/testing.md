@@ -74,6 +74,19 @@ pnpm test:all         # typecheck + test + build + test:e2e
    mock scripted to call `a2a__b__chat`, and assert stdout is B's reply.
 6. Tear down both homes and every child process.
 
+## Visual test
+
+`pnpm visual:a2a` boots the same hermetic pair and serves an interactive
+dashboard at a printed loopback URL. It shows the two instances, the task
+timeline, peers, sessions, and two buttons:
+
+- **Inbound** sends a `SendMessage` straight to B's endpoint.
+- **Outbound** runs A's headless model against a scripted tool call, which
+  invokes `a2a__b__chat` and reaches B over A2A.
+
+It is the same composition as the e2e, just interactive; it is for demos and
+manual inspection, not a CI gate. `Ctrl+C` tears down every child and temp home.
+
 ## Adding a test
 
 - **Behavior change** → a unit/`composition` test that fails without it, per

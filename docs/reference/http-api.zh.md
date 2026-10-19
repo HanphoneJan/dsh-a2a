@@ -3,7 +3,7 @@ name: HTTP API 与 A2A 协议
 description: 仅回环面板动作、入站 JSON-RPC 端点、SSE 流式、任务状态、错误码、AgentCard 与出站工具契约
 create-time: 2026-10-19
 update-time: 2026-10-19
-version: v0.3.7
+version: v0.3.8
 relative-docs:
   - docs/guide/getting-started.zh.md
   - docs/guide/concepts.zh.md
@@ -14,7 +14,7 @@ relative-docs:
 
 [English](http-api.md) · **中文**
 
-本页是 `0.3.7` 的线上参考，分两部分：
+本页是 `0.3.8` 的线上参考，分两部分：
 
 1. 面板使用的**仅回环控制 API**（`/a2a/api`）；
 2. 入站 server 发布的 **A2A 端点**（`/a2a/<id>`）。
@@ -346,7 +346,7 @@ a2a__<连接名>__<技能 id>
 
 ## 4. 当前限制
 
-这些是 `0.3.7` 的已知或有意行为，不要假设相反：
+这些是 `0.3.8` 的已知或有意行为，不要假设相反：
 
 - `SendMessage` 总是阻塞；声明的 `returnImmediately` 未生效。
 - `historyLength` 未生效；`GetTask` 不返回 history 数组。

@@ -3,7 +3,7 @@ name: 排障
 description: 空回复、401、卡片不可达、出站连接失败、工具缺失、版本预检与存储冲突的排查
 create-time: 2026-10-19
 update-time: 2026-10-19
-version: v0.3.7
+version: v0.3.8
 relative-docs:
   - docs/guide/getting-started.zh.md
   - docs/reference/http-api.zh.md
@@ -32,7 +32,7 @@ relative-docs:
 写入在 session handle 的后台 flush 中失败，agent loop 吞掉错误，任务以 `COMPLETED` 落定但没有回复。
 **`0.3.7` 已修复**，改用生产者自己的 `{ kind: 'a2a' }`。
 
-如果 `0.3.7` 仍然空回复：
+如果 `0.3.7` 或更新版本仍然空回复：
 
 1. 确认已安装版本：
    ```sh
@@ -133,7 +133,7 @@ hermetic e2e 就是这么做的。
 - 流式路径只接受 `SendStreamingMessage` 与 `SubscribeToTask`；其他方法返回 method-not-found 错误帧。
 - 帧是未命名的 `data:` 行；用 `curl -N`，不要缓冲。
 - `SendMessage` 即使调用方期待流式也仍然阻塞；要流式就显式选流式方法。
-- `returnImmediately` 与 `historyLength` 在 `0.3.7` 未生效。
+- `returnImmediately` 与 `historyLength` 在 `0.3.8` 未生效。
 
 ## 10. 已知限制
 
@@ -143,14 +143,12 @@ hermetic e2e 就是这么做的。
 - 活跃会话与对端只在内存；只有任务、绑定、实例跨重启保留。
 - `subagent` 执行器不会被默认技能表选中。
 - 出站 `preset` 只是元数据；还没有本地衔接会话。
-- `0.3.7` 的 `/a2a inbound create` 与 `/a2a outbound create` 需要一个 `_` 占位符
-  （见[运维指南](operations.zh.md#3-a2a-命令参考)）；优先用面板。
 
 ## 11. bug 报告里带什么
 
 请附上：
 
-- 插件版本（`0.3.7`）、harness 版本、操作系统；
+- 插件版本（`0.3.8`）、harness 版本、操作系统；
 - 精确的命令或面板操作；
 - 任务 JSON（`/a2a task get <id>`）与 AgentCard；
 - 入站是否配置鉴权、请求是否带 header（**不要贴 token**）；

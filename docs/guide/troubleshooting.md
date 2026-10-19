@@ -3,7 +3,7 @@ name: Troubleshooting
 description: Diagnose empty replies, 401s, unreachable cards, failed outbound connections, missing tools, version preflight, and storage conflicts
 create-time: 2026-10-19
 update-time: 2026-10-19
-version: v0.3.7
+version: v0.3.8
 relative-docs:
   - docs/guide/getting-started.md
   - docs/reference/http-api.md
@@ -34,7 +34,7 @@ bug: the executor sent the agent a message with
 the agent loop contained the error, and the task settled `COMPLETED` with no
 reply. **Fixed in 0.3.7** by using the producer-owned `{ kind: 'a2a' }`.
 
-If you still see an empty reply on 0.3.7:
+If you still see an empty reply on 0.3.7 or newer:
 
 1. Confirm the installed version:
    ```sh
@@ -158,7 +158,7 @@ ports for two-instance tests. This is exactly what the hermetic e2e does.
 - Frames are unnamed `data:` lines; use `curl -N` and do not buffer.
 - `SendMessage` remains blocking even if the caller expects streaming; choose
   the streaming method explicitly.
-- `returnImmediately` and `historyLength` are not honored in `0.3.7`.
+- `returnImmediately` and `historyLength` are not honored in `0.3.8`.
 
 ## 10. Known limits
 
@@ -169,14 +169,12 @@ ports for two-instance tests. This is exactly what the hermetic e2e does.
   survive a restart.
 - The `subagent` executor is not selected by the default skill map.
 - Outbound `preset` is metadata; there is no local hand-off session yet.
-- `/a2a inbound create` and `/a2a outbound create` need a `_` placeholder in
-  `0.3.7` (see [Operations](operations.md#3-a2a-command-reference)); prefer the panel.
 
 ## 11. What to include in a bug report
 
 Please attach:
 
-- plugin version (`0.3.7`), harness version, and OS;
+- plugin version (`0.3.8`), harness version, and OS;
 - the exact command or panel action;
 - the task JSON (`/a2a task get <id>`) and the AgentCard;
 - whether the inbound instance has auth, and whether the request carried the
