@@ -1,113 +1,122 @@
 ---
 name: Operations
-description: GUI and /a2a command reference, lifecycle semantics, configuration, host services, storage, and exposure
-create-time: 2026-10-19
-update-time: 2026-10-24
-version: v0.5.0
-relative-docs:
-  - docs/guide/concepts.md
-  - docs/reference/http-api.md
-  - docs/harness-compatibility.md
+description: Panel and /a2a reference, lifecycle, configuration, host services, storage and access
+update-time: 2026-10-25
 ---
 
 # Operations
 
 **English** · [中文](operations.zh.md)
 
-This page is the day-to-day reference: where the controls are, what each field
-does, how instances behave across restarts, and how to configure storage and
-security. It applies to `0.5.0` on DeepSeek Harness `0.2.1-rc.2`.
+This is the day-to-day reference: where the controls are, what each field does,
+how instances behave across restarts, and how to configure storage and access.
+Wire-level details live in the [HTTP API reference](../reference/http-api.md).
 
-## 1. Control surfaces
+## Control surfaces
 
-There are three equivalent ways to drive the plugin:
+Three surfaces drive the same facade, so they cannot disagree about state:
 
 | Surface | Use it for |
 |---|---|
-| **Settings → A2A connections** | Primary UI: create/edit/enable/disable/delete, inspect peers, sessions, and tasks |
+| **Settings → A2A 连接** | Primary UI: create, edit, enable, disable and delete; inspect peers, sessions and tasks |
 | **`/a2a` command** | Text backup inside a DSH chat session |
-| **Loopback `/a2a/api`** | Scripts, tests, and integrations; see [HTTP API](../reference/http-api.md) |
+| **Loopback `/a2a/api`** | Scripts, tests and integrations; see [HTTP API](../reference/http-api.md#1-dashboard-api) |
 
-All three call the same facade, so they cannot disagree about state. The panel
-refreshes every 3 seconds.
+The panel refreshes every three seconds.
 
-## 2. The panel
+## The panel
 
-### 2.1 Version and update check
+### Version and update strip
 
-Above the tabs the panel shows the installed `dsh-a2a` version and the Node
-runtime. **Check for updates** queries the npm registry and the GitHub
-repository named in the plugin's `package.json`, keeps the higher version, and
-reports one of: up to date, a newer version, or an honest "could not check"
-(a failed lookup is never shown as up to date). The answer is cached for six
-hours; the button forces a refresh. When a newer version exists it shows the
-two-step update command (`remove`, then `add`) with a copy button. Checking is
-read-only — it does not install, restart, or modify the profile.
+Above the tabs the panel shows the installed plugin version, the Node
+runtime, and the result of an update check. The check queries the npm registry
+and the GitHub repository from `package.json`, keeps the higher version, and
+reports one of: up to date, a newer version, or "could not check". A failed
+lookup is never shown as up to date. The answer is cached for six hours; the
+button forces a refresh.
 
-Inbound cards also show the version the instance advertises in its AgentCard;
-outbound cards show the remote AgentCard's version once connected.
+When a newer version exists, the panel prints the two-step update command
+(`remove`, then `add`) for the active profile with a copy button. Checking is
+read-only: it does not install, restart or modify the profile.
 
-### 2.2 Inbound servers
+Inbound cards also show the version the instance advertises, and outbound cards
+show the remote card's version once connected.
 
-Each card shows the name, endpoint path, preset badge, authentication state,
-derived skill chips, and the live AgentCard URL. Actions:
+### Inbound servers
+
+Each card shows the name, endpoint path, preset badge, auth state, derived skill
+chips and the live card URL. Actions:
 
 | Action | Effect |
 |---|---|
 | **Enable / Disable** | Registers or unregisters the card and endpoint routes; the record and session pool stay |
-| **Edit** | Changes name/description/version/preset/token; rebuilds the card/skills and swaps the live instance |
+| **Card** | Opens the current AgentCard JSON |
+| **Test** | Sends a message through the built-in console (same gate and task lifecycle, no HTTP auth) |
+| **Edit** | Changes name, description, version, preset or token; re-derives skills and swaps the live instance |
 | **Delete** | Disposes the live instance and removes the persisted record |
-| **Clear auth** | Removes the stored bearer token and rebuilds the instance anonymously |
+| **Clear auth** | Appears on an authenticated instance; removes the stored token and rebuilds it anonymously |
 
-The create/edit form has name, version, preset, bearer token, and description.
+The create/edit form has name, version, preset, bearer token and description.
 Skills are shown after creation; you do not type them. The preset picker lists
-only real roster presets and preselects the deployment default.
+the real roster and preselects the deployment default.
 
-### 2.3 Outbound servers
+The test console selects an instance, a skill, an optional `contextId` and a
+message, then shows the resulting task JSON.
+
+### Outbound servers
 
 Adding is a two-phase flow:
 
 1. Enter the remote AgentCard URL (and optional token), click **Import**.
-2. Review the discovered name/version/description/endpoint/skills, adjust the
-   local name, preset, and timeout, click **Connect**.
+2. Review the discovered name, version, description, endpoint and skills,
+   adjust the local name, preset and timeout, click **Connect**.
 
-Each connected card shows a state dot, the imported skill count, the tool
-count, and the last error when failed. Actions: **Enable/Disable**, **Refresh**
-(re-read the card and re-register tools), **Edit** (name/preset/timeout/token),
-**Delete**.
+A connected card shows a state dot, the remote AgentCard version, the imported
+skill count, the tool count and `lastError` when failed. Actions:
 
-The token is stored separately through the credentials service; editing with an
-empty token field keeps the existing one. **Clear auth** is available in the
-inbound form. Outbound has no clear button: send an empty `token` through
-`outbound.setAuth`; leaving the edit form's token field empty keeps the
-existing token.
+- **Enable / Disable** — deregisters or re-registers tools for a live
+  connection. An instance that was disabled when the plugin booted has no live
+  connection yet; save an edit (or restart) to build it.
+- **Refresh** — re-reads the card and re-registers tools.
+- **Edit** — changes name, preset, timeout, token and per-skill enablement; the
+  remote card URL is not changed by an edit (remove and re-add for that).
+- **Delete** — disposes the connection and removes the record.
 
-### 2.4 Connections and tasks
+The edit form can disable individual skills and accepts a JSON
+`skillOverrides` object (`{"chat": {"name": "...", "description": "..."}}`).
 
-Three tables:
+A token is stored through the credentials service. Leaving the token field empty
+keeps the existing one. The inbound form has **Clear auth**; the outbound form
+has no clear button — send an empty `token` through `outbound.setAuth` to
+remove it.
 
-- **Inbound peers** — who is calling this DSH: source identity, task count and
-  active count, streaming indicator, first/last seen, and **Close**.
-- **Inbound sessions** — one row per `contextId`: instance, preset, running or
-  idle, task/active counts, streaming, first/last seen, **Cancel active**, and
-  **Close**.
-- **Tasks** — the last 20 tasks with id, skill, source instance, state, and
-  **Cancel**.
+### Connections and tasks
+
+The activity tab has counters and an audit table (last 20 entries), then three
+tables:
+
+- **Inbound peers** — who is calling this DSH: source, task and active counts,
+  streaming indicator, first/last seen, **Close**.
+- **Inbound sessions** — one row per `(instance, contextId)`: instance, preset,
+  running or idle, task and active counts, streaming, first/last seen,
+  **Cancel active**, **Conversation**, **Close**.
+- **Tasks** — one page of 50 tasks (filterable by state, with **Load more**):
+  id, skill, source instance, state, **Cancel**.
 
 Semantics:
 
-- **Cancel active** aborts every non-terminal task on the context; the session
+- **Cancel active** aborts every non-terminal task of the context; the session
   stays open.
 - **Close** additionally releases the context's live session handle. It is a
   resource release, not a conversation tombstone: the next task on the same
-  `contextId` opens a fresh handle.
-- **Close** on a peer drops that peer's registry entry; it does not delete its
-  tasks.
+  context opens a fresh handle.
+- **Close** on a peer cancels its active tasks and drops its registry entry; it
+  does not delete task records.
 
-## 3. `/a2a` command reference
+## `/a2a` command
 
-The command is available in a DSH chat session. Its output is JSON for the list
-and status verbs.
+The command is available in a DSH chat session. List and status verbs print
+JSON.
 
 | Command | Purpose |
 |---|---|
@@ -122,7 +131,7 @@ and status verbs.
 | `/a2a outbound remove <id>` | Remove it |
 | `/a2a outbound enable\|disable <id>` | Toggle it |
 | `/a2a outbound refresh <id>` | Re-read the remote card |
-| `/a2a tasks` | Task list |
+| `/a2a tasks` | Latest 50 tasks |
 | `/a2a task get <taskId>` | One task |
 | `/a2a task cancel <taskId>` | Cancel a task |
 | `/a2a sessions` | Per-context session views |
@@ -132,90 +141,100 @@ and status verbs.
 | `/a2a help` | Usage text |
 
 Arguments are whitespace-separated. The inbound description is the remaining
-words after the optional preset; use the panel or the HTTP API when you need
-richer fields.
+words after the optional preset; use the panel or HTTP API for richer fields.
 
-## 4. Lifecycle semantics
+## Lifecycle
 
 - **Create** persists the record, derives skills, resolves auth, assembles the
-  runtime, and registers routes when enabled.
-- **Update** persists the patch, re-derives skills (preset may have changed),
-  re-resolves auth, and replaces the live instance while preserving the
-  enabled state.
-- **Enable/Disable** only registers/unregisters routes. The record, skills, and
-  session pool remain; disabled instances are assembled at boot but not routed.
+  runtime and registers routes when enabled.
+- **Update** persists the patch, re-derives skills (the preset may have
+  changed), re-resolves auth and replaces the live instance while preserving
+  the enabled state.
+- **Enable / Disable** registers or unregisters routes and persists the enabled
+  flag. The record, skills and session pool remain; disabled instances are
+  assembled at boot but not routed.
 - **Remove** disposes the live instance and writes an empty tombstone row; the
   instance does not reappear on restart.
-- **Outbound connect** fetches the card, registers one tool per skill, and
-  persists the record. A failed connect returns an error and keeps a failed
-  view for diagnosis; the record is saved before the connect attempt.
+- **Outbound connect** saves the record before the connect attempt, fetches the
+  card, registers one tool per enabled skill and records `lastCardAt`.
 - **Outbound refresh** rebuilds the registry from the card and re-registers
-  tools. **Edit** rebuilds the connection with the new name/preset/timeout and
-  re-applies the stored token.
-- **Restart** re-assembles persisted inbound and outbound instances; enabled
-  ones resume. Live sessions and stream subscriptions are not restored.
+  tools. **Edit** persists the patch and rebuilds the connection; if it is
+  enabled, it also reconnects with the stored token.
+- **Restart** reassembles persisted inbound and outbound instances; enabled ones
+  resume. Live sessions and stream subscriptions are not restored.
 
-## 5. Configuration
+## Configuration
 
-The plugin configuration is intentionally minimal. Instances are **not**
-configured in `cordis.patch.yml`; they live in the `a2a` domain and are managed
-by the panel.
+Instances are **not** configured in `cordis.patch.yml`; they live in the `a2a`
+domain and are managed by the panel. The plugin `Config` carries host-level
+defaults, set through the profile's user patch layer
+(`$DSH_HOME/profiles/<name>/cordis.patch.yml`) to override them:
 
 ```yaml
 - id: a2a
   config:
     baseUrl: http://127.0.0.1:3080   # optional; derived from webServer when omitted
-    subagentProvider: in-process     # default
-    defaultTimeoutMs: 60000          # default outbound timeout
-    inboundTimeoutMs: 600000         # per inbound task; 0 disables
-    requestsPerMinute: 120           # per inbound source; 0 disables
-    maxConcurrentTasks: 32           # per inbound instance; 0 disables
-    maxBodyBytes: 1048576            # inbound HTTP body cap
-    outboundRefreshMs: 300000        # AgentCard auto-refresh; 0 disables
+    subagentProvider: in-process
+    defaultTimeoutMs: 60000
+    inboundTimeoutMs: 600000
+    requestsPerMinute: 120
+    maxConcurrentTasks: 32
+    maxBodyBytes: 1048576
+    outboundRefreshMs: 300000
 ```
 
 | Field | Default | Meaning |
 |---|---|---|
 | `baseUrl` | web server port, then `DSH_A2A_PORT`, then `3000` | Advertised base URL for every inbound AgentCard |
-| `subagentProvider` | `in-process` | Provider name for the subagent executor seam |
+| `subagentProvider` | `in-process` | Provider name for the subagent executor |
 | `defaultTimeoutMs` | `60000` | Default per-call timeout for outbound connections |
-| `inboundTimeoutMs` | `600000` | Per-task inbound execution budget; timeout settles the task `FAILED` |
-| `requestsPerMinute` | `120` | Sliding-window request cap per inbound source; over-limit gets HTTP 429 |
-| `maxConcurrentTasks` | `32` | Concurrent task cap per inbound instance; over-quota tasks fail readably |
+| `inboundTimeoutMs` | `600000` | Per-task inbound execution budget; a timeout settles the task `FAILED`; `0` disables it |
+| `requestsPerMinute` | `120` | Sliding-window request cap per inbound source; over-limit gets HTTP 429; `0` disables it |
+| `maxConcurrentTasks` | `32` | Concurrent task cap per inbound instance; over-quota tasks fail readably; `0` disables it |
 | `maxBodyBytes` | `1048576` | Maximum inbound A2A request body |
-| `outboundRefreshMs` | `300000` | Automatic AgentCard refresh interval for enabled outbound connections |
+| `outboundRefreshMs` | `300000` | Automatic AgentCard refresh interval for enabled outbound connections; `0` disables it |
 
-The inbound session working directory is `$DSH_HOME/a2a-sessions` (created on
+The inbound session working directory is `$DSH_HOME/a2a-sessions` (created at
 startup). `DSH_HOME` defaults to `~/.dsh`.
 
-## 6. Host services
+## Host services
 
 Only `storageDomain` is required. Everything else is probed; a missing service
-idles the affected capability instead of failing the whole plugin.
+idles the affected capability instead of failing the plugin.
 
 | Service | Used by | Effect when absent |
 |---|---|---|
 | `storageDomain` | both halves | Required; the plugin does not mount |
-| `webServer` | inbound routes, dashboard API | Inbound endpoints/card and the panel API are idle |
-| `agents` | inbound session executor | Inbound tasks run the `refuse` executor |
-| `attachments` | inbound image/file parts | Raw attachments degrade to placeholders |
-| `agentPresets` | preset selection, skill derivation | Preset defaults and derived skills degrade to `chat` |
-| `skills` | skill derivation | Card falls back to `chat` |
-| `credentials` | token storage/resolution | GUI token writes fail; externally exported env vars still work |
+| `webServer` | inbound routes, dashboard API | Inbound endpoints/cards and the panel API are idle |
+| `agents` | inbound session executor | Inbound tasks run a `refuse` executor |
+| `attachments` | inbound image/file parts, advertised input modes | Raw attachments degrade to placeholders; the card advertises text only |
+| `agentPresets` | preset selection, skill derivation | Preset selection is unavailable; derived skills fall back to `chat` |
+| `skills` | skill derivation | The card falls back to `chat` |
+| `credentials` | token storage and resolution | GUI token writes fail; externally exported env vars still work |
 | `subagents` | subagent executor | The subagent executor is not wired |
-| `tools` | outbound tool registration | Outbound connections cannot register tools |
+| `agentDefaultModel` | model options for inbound sessions | Sessions use the harness default |
+| `tools` | outbound tool registration | Outbound connections connect but register no tools |
 | `commands` | `/a2a` | The chat command is not registered |
 
 The base `web` profile mounts all of these. A custom composition should include
-`storageDomain`, `webServer`, `agents`, `agentPresets`, `skills`, `tools`, and
-`commands` for the full surface.
+`storageDomain`, `webServer`, `agents`, `agentPresets`, `skills`, `tools` and
+`commands`; add `attachments`, `credentials`, `subagents` and `agentDefaultModel`
+for those capabilities.
 
-## 7. Storage
+## Storage
 
-The `a2a` domain defaults to the profile's JSON backend. Tables and their
-contents are listed in [Concepts](../guide/concepts.md#9-identity-storage-and-sessions).
+Durable state is the `a2a` storage domain:
 
-To route only the `a2a` domain to SQLite:
+| Table | Contents |
+|---|---|
+| `tasks` | Task records, including the source instance id |
+| `contexts` | Context id → session id bindings |
+| `agents` | Per-outbound-instance agent records (key `out:<id>`) |
+| `inbound_servers` | Inbound instance records (key `in:<id>`) |
+| `outbound_servers` | Outbound instance records (key `out:<id>`) |
+
+The domain uses the profile's JSON backend by default. To route only `a2a` to
+SQLite:
 
 ```yaml
 - id: storage-domain
@@ -233,55 +252,56 @@ To route only the `a2a` domain to SQLite:
 Operational notes:
 
 - **One writer per `DSH_HOME`.** Two DSH processes sharing a home write the same
-  JSON domain; do not run two instances against one storage root.
-- **Tasks and instances persist.** Live sessions, stream subscriptions, and
-  peer registries are in-memory and reset on restart.
-- **The domain stores JSON strings**, so schema changes are guarded by the
-  domain's `version` field. Back up the JSON/SQLite file before upgrades.
-- **Session logs** for inbound contexts are written under
-  `$DSH_HOME/sessions/...` by the normal DSH session persistence; the plugin's
-  working directory is `$DSH_HOME/a2a-sessions`.
+  JSON domain; use separate homes and ports for two-instance tests.
+- **Tasks and instances persist.** Live sessions, stream subscriptions and peer
+  registries are in memory and reset on restart.
+- **The domain stores JSON strings.** Schema changes are guarded by the domain's
+  `version` field. Back up the JSON/SQLite file before upgrades.
+- **Session logs** are written under `$DSH_HOME/sessions/...` by the normal DSH
+  session persistence; the plugin's working directory is
+  `$DSH_HOME/a2a-sessions`.
 
-## 8. Exposure and security
+## Access and security
 
-The token and dashboard security model is in
-[Concepts: security model](concepts.md#10-security-model). Operational notes:
-
-- The dashboard API is **loopback-only** by construction. Putting the web app
-  behind a reverse proxy does not make `/a2a/api` remotely callable.
-- The A2A endpoints ride the same web server as the GUI. If you expose that
+- **The dashboard API is loopback-only by construction.** `/a2a/api` accepts
+  only `127.0.0.1`, `::1` or `::ffff:127.0.0.1`; any other peer gets `403`.
+  Putting the web app behind a reverse proxy does not make it remotely callable.
+- **A2A endpoints ride the same web server as the GUI.** If you expose that
   server to a network, configure a bearer token on every inbound instance and
-  terminate TLS at the proxy. The plugin adds no TLS; its request/body/
+  terminate TLS at the proxy. The plugin adds no TLS; request, body and
   concurrency limits are process-local, not a distributed quota.
-- Use a distinct token per inbound instance so one leak does not grant access
-  to every published agent. Outbound tokens are resolved per call, so rotating
-  the credential takes effect on the next tool call without a restart.
+- **Tokens are credential references.** The panel writes each token through
+  `ctx.credentials.set` under `A2A_INBOUND_<ID>` or `A2A_OUTBOUND_<ID>`
+  (uppercased, non-alphanumerics replaced by `_`). The record keeps only the
+  name; the card stores only the scheme, and the panel never echoes the value
+  back. Resolution runs when an instance is assembled (add, update, boot and
+  `setAuth`), reading the credentials service first and the process environment
+  second.
+- **Inbound auth.** With a token configured, every request needs
+  `Authorization: Bearer <token>`, otherwise `401` with `WWW-Authenticate:
+  Bearer`. Streaming requests are authorized before the `200` SSE headers.
+- Use a distinct token per inbound instance so one leak does not grant access to
+  every published agent. Changing a token in the panel rebuilds that instance
+  immediately; an externally exported variable is read the next time the
+  instance is assembled.
+- There is no OAuth, mTLS or per-client credential model.
 
-## 9. Upgrade and uninstall
-
-Upgrade:
+## Upgrade and uninstall
 
 ```sh
 dsh plugin --profile web add @hanphone/dsh-a2a@latest
 ```
 
-Restart `dsh web` after the install. Instances and tasks live in the domain and
+Restart `dsh web` after installing. Instances and tasks live in the domain and
 survive the upgrade; live sessions do not.
-
-Uninstall:
 
 ```sh
 dsh plugin --profile web remove @hanphone/dsh-a2a
 ```
 
-Removing the plugin leaves the `a2a` domain data in place. Delete the domain
-rows (or the storage file) only if you intend to discard instance definitions
-and task history.
+Removing the plugin leaves the `a2a` domain data in place. Delete the domain rows
+or the storage file only if you intend to discard instance definitions and task
+history.
 
-## 10. Compatibility
-
-DSH 0.1.7+ runs a peer preflight and refuses a plugin whose ranges do not cover
-the running harness. Upgrade the plugin and the harness together when it
-complains; do not widen ranges without running the compatibility procedure.
-Exact ranges and the procedure are in
+Moving to another harness release is covered in
 [Harness compatibility](../harness-compatibility.md).

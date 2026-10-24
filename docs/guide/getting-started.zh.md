@@ -1,95 +1,72 @@
 ---
 name: 快速开始
-description: 安装 @hanphone/dsh-a2a，发布第一个入站 A2A server，用 curl 调用，并把远端 agent 接成模型工具
-create-time: 2026-10-19
-update-time: 2026-10-24
-version: v0.5.0
-relative-docs:
-  - docs/guide/concepts.zh.md
-  - docs/guide/operations.zh.md
-  - docs/reference/http-api.zh.md
+description: 安装插件、发布一个入站 A2A server、调用它，并把远端 A2A agent 接入为模型工具
+update-time: 2026-10-25
 ---
 
 # 快速开始
 
 [English](getting-started.md) · **中文**
 
-本页从零开始，跑通两个方向：
+本页从一个全新安装走到两个可用方向：远端 A2A 客户端调用这个 DSH，以及这个 DSH
+调用远端 agent。表单逐字段说明见[运维指南](operations.zh.md#面板)，完整报文格式
+见 [HTTP API 参考](../reference/http-api.zh.md)。
 
-1. **入站**——其他 A2A 客户端把任务发给这个 DSH。
-2. **出站**——这个 DSH 把远端 A2A agent 当成模型工具调用。
+## 开始之前
 
-两个方向都在 **设置 → A2A 连接** 面板里操作。`/a2a` 聊天命令和仅回环的 HTTP API
-是等价的控制面；面板是主入口。
+需要 DeepSeek Harness `0.2.1-rc.2`（本版本核对所用的版本）和运行中的 web 应用，
+默认地址为 `http://127.0.0.1:3080/`。基础 `web` profile 已挂载插件用到的全部服务；
+自定义组合见[宿主服务](operations.zh.md#宿主服务)。
 
-## 1. 前置条件
-
-- DeepSeek Harness **0.2.1-rc.2**（本版本核对的 harness），使用 `web` profile。
-- 正在运行的 `dsh web`，默认地址 `http://127.0.0.1:3080/`。
-- `dsh` 命令；如果从源码 checkout 运行，则是 `pnpm dsh`。
-
-基础 `web` profile 已挂载插件用到的全部宿主服务。自定义组合见
-[运维指南：宿主服务](operations.zh.md#6-宿主服务)。
-
-## 2. 安装
+## 安装与验证
 
 ```sh
 dsh plugin --profile web add @hanphone/dsh-a2a
 ```
 
-从 harness checkout 运行时：
+在 harness checkout 内可用它的启动器：
 
 ```sh
 cd deepseek-harness
 pnpm dsh plugin --profile web add @hanphone/dsh-a2a
 ```
 
-安装后**重启一次** web（`dsh web` 或 `pnpm dsh web`）。浏览器端插件表在 host 启动时扫描，
-只刷新页面不够。
+重启 web 应用（`dsh web` 或 `pnpm dsh web`）。刷新页面不够：浏览器端 bundle 在宿主
+启动时才被扫描。
 
-确认插件已挂载：
+验证插件已挂载：
 
 ```text
 /a2a status
 ```
 
-命令会输出一个 JSON 快照，含 `inbounds` 与 `outbounds` 数组。同一快照也能从
-`GET http://127.0.0.1:3080/a2a/api` 读到。
+命令返回含 `inbounds` 与 `outbounds` 的 JSON 快照。同一份快照也在
+`GET http://127.0.0.1:3080/a2a/api`。
 
-## 3. 发布第一个入站 server
+## 发布一个入站 server
 
-打开 **设置 → A2A 连接 → 入站 Servers → 新建入站 Server**，填写：
-
-| 字段 | 含义 |
-|---|---|
-| 名称 | 显示在 AgentCard 和面板里的名字 |
-| 版本 | AgentCard 的版本字符串（默认 `1.0.0`） |
-| Agent preset | 该入站 server 的会话由哪个 DSH preset 组装；技能从该 preset 派生 |
-| Bearer Token | 可选。设置后请求必须带 `Authorization: Bearer <token>` |
-| 描述 | AgentCard 描述 |
-
-创建后面板会显示端点和 AgentCard URL：
+打开 **设置 → A2A 连接 → 入站 Servers**，填写创建表单（名称、版本、preset、可选
+Bearer Token、描述）并提交。实例会立即启用并发布：
 
 ```text
 http://127.0.0.1:3080/a2a/<id>
 http://127.0.0.1:3080/a2a/<id>/agent-card.json
 ```
 
-技能**不需要手写**。AgentCard 宣告的是所选 preset 技能目录中模型可调用的条目。
-如果组合里没有 skills 服务或 preset 挂载，则回退到内置的 `chat` 技能。
+不需要填写技能。卡片宣告所选 preset 技能目录中模型可调的条目；解析不到时回退到
+内置 `chat` 技能。
 
-### 验证 AgentCard
+读取卡片：
 
 ```sh
 curl -sS http://127.0.0.1:3080/a2a/<id>/agent-card.json
 ```
 
-返回标准 A2A `AgentCard`，含 `name`、`version`、`supportedInterfaces`、`capabilities`
-和 `skills`。配置了 Bearer 的 server 还会宣告 `bearer` 安全方案；token 值不会出现在卡片里。
+返回 A2A `AgentCard`，含 `name`、`version`、`supportedInterfaces`、
+`capabilities` 与 `skills`。配置了 Bearer Token 的实例还会声明 `bearer` 方案；
+token 明文永远不会出现在卡片里。
 
-### 发送任务
-
-`SendMessage` 会创建任务并**阻塞到任务落定**：
+发送任务：
 
 ```sh
 curl -sS http://127.0.0.1:3080/a2a/<id> \
@@ -108,52 +85,55 @@ curl -sS http://127.0.0.1:3080/a2a/<id> \
   }'
 ```
 
-成功时返回的任务 `status.state` 为 `TASK_STATE_COMPLETED`，回复在 `artifacts` 里。
+`SendMessage` 阻塞到任务落定。成功响应的任务处于 `TASK_STATE_COMPLETED`，
+`artifacts` 里是回复。复用同一个 `contextId` 可继续同一段对话；复用同一个
+`messageId` 可幂等重试。
 
-如果不想等，可以发 `SendStreamingMessage`（或 `SubscribeToTask`），并带
-`Accept: text/event-stream`。每个 SSE 帧是一行 `data: <StreamResponse>`，最后一帧是
-落定的 `task`；方法表与帧的完整口径见
-[协议参考](../reference/http-api.zh.md#2-a2a-端点)。
+要接收进度而不是阻塞等待，用 `SendStreamingMessage` 带
+`Accept: text/event-stream` 与 `curl -N`；已创建的任务改用 `SubscribeToTask`。
+方法表与帧格式见[HTTP API：A2A 端点](../reference/http-api.zh.md#2-a2a-端点)。
 
-如果入站 server 配置了 token，加上：
+如果实例配置了 token，每次调用都要加：
 
 ```sh
 -H 'authorization: Bearer <token>'
 ```
 
-## 4. 把远端 agent 接成工具
+## 连接一个远端 agent
 
-你需要远端 agent 的 **AgentCard URL**（例如
-`https://remote.example/a2a/<id>/agent-card.json`），以及远端要求时的 Bearer Token。
+需要远端 agent 的 AgentCard URL；若远端要求鉴权，还要 token。
 
-打开 **设置 → A2A 连接 → 出站 Servers**：
+在 **设置 → A2A 连接 → 出站 Servers**：
 
-1. 填 AgentCard URL（以及 token，如有），点 **导入**。
-2. 确认读到的名称、版本、描述、端点和技能列表。
-3. 填本地名称、preset、超时，点 **连接**。
+1. 粘贴 AgentCard URL（和 token），点 **导入**。
+2. 核对读到的名称、版本、描述、端点与技能。
+3. 确认本地名称、preset、超时，点 **连接**。
 
-成功后卡片显示 `connected`、导入的技能数和注册的工具数。每个远端技能变成一个模型工具：
+连接成功的卡片显示状态、导入技能数与已注册工具数。每个启用的远端技能变成一个模型工具：
 
 ```text
 a2a__<连接名>__<技能 id>
 ```
 
-连接名 `weather`、远端技能 `chat`，工具就是 `a2a__weather__chat`。它只有一个参数：
+连接名 `weather`、远端技能 `chat` 对应工具 `a2a__weather__chat`。参数为：
 
 ```json
-{ "prompt": "要发给远端 agent 的任务或指令" }
+{
+  "prompt": "要发给远端 agent 的任务或指令",
+  "taskId": "可选：续接一个被中断的远端任务"
+}
 ```
 
-让模型调用它，例如：
+让模型使用它：
 
 ```text
-调用 a2a__weather__chat，prompt 为 "Reply with exactly OK"，然后原样输出结果。
+用 a2a__weather__chat 工具，prompt 为 "Reply with exactly OK"，原样显示结果。
 ```
 
-工具会通过 A2A 调用远端 agent，返回落定任务的文本。远端任务失败会抛工具错误并带上远端消息；
-`INPUT_REQUIRED` 或 `AUTH_REQUIRED` 会以文本形式返回，而不是抛错。
+远端任务失败会抛出带远端消息的工具错误；`INPUT_REQUIRED` 与 `AUTH_REQUIRED`
+以文本返回并带上远端 `taskId`，模型可以用该 id 继续。
 
-## 5. 检查两个方向
+## 检查两个方向
 
 ```text
 /a2a inbound list
@@ -162,11 +142,8 @@ a2a__<连接名>__<技能 id>
 /a2a sessions
 ```
 
-也可以看面板的 **连接与任务** 页：入站对端、按 `contextId` 的会话、任务，以及取消/关闭操作。
+面板的 **连接与任务** 页把同样的数据展示为对端、会话、任务三张表，带取消与关闭操作。
 
-## 下一步
-
-- [核心概念](concepts.zh.md)——preset、技能、任务、上下文、执行器怎么串起来。
-- [运维指南](operations.zh.md)——GUI 字段、`/a2a` 参考、配置、存储、安全。
-- [HTTP API 与 A2A 协议](../reference/http-api.zh.md)——精确的请求体和协议方法。
-- [排障](troubleshooting.zh.md)——空回复、401、连接失败、工具不可见。
+接下来：[核心概念](concepts.zh.md)解释实例、preset 与会话的关系；
+[运维指南](operations.zh.md)讲面板与配置；[排障](troubleshooting.zh.md)处理
+空回复、401 与连接失败。

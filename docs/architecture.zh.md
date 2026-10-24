@@ -1,202 +1,189 @@
-# dsh-a2a 架构
+---
+name: 架构
+description: Cordis 插件、入站与出站 manager、任务存储、会话层与浏览器半区如何组成
+update-time: 2026-10-25
+---
 
-Agent2Agent（A2A）v1.0.1 双端插件，用于 DeepSeek Harness。
+# 架构
 
 [English](architecture.md) · **中文**
 
-本参考描述已交付的插件：manager、执行器、路由、存储与安全边界。术语见
-[核心概念](guide/concepts.zh.md)，线上细节见
-[HTTP API 与 A2A 协议](reference/http-api.zh.md)，测试分层见
-[测试](testing.zh.md)。
+本页说明已交付代码的组织：一条插件行、两个 manager、一个存储域和浏览器半区。
+术语见[核心概念](guide/concepts.zh.md)，线上细节见
+[HTTP API 参考](reference/http-api.zh.md)。
 
 ## 总览
 
-插件以一条 Cordis 行（id `a2a`）挂载到任何装有标准宿主服务的 DSH profile 上。核心
-抽象是 **server 实例**：一套可复用的框架——端点 + 身份/技能宣告 + preset 绑定 +
-鉴权——入站方向每实例一份、出站连接每份一份。
+插件以一条 Cordis 行（id `a2a`）挂载到任何装有标准宿主服务的 DSH profile 上。
+核心抽象是 **server 实例**：一套可复用的框架——端点 + 身份/技能宣告 + preset
+绑定 + 鉴权——入站方向每实例一份、出站连接每份一份。
 
 ```
 ┌─ GUI（浏览器, settings.section "A2A 连接"） ─────────────────────────────┐
-│  入站 server 实例（创建/preset/技能/鉴权/启停/编辑）                       │
-│  出站 server 实例（创建/URL/preset/鉴权/超时/启停）                       │
-│  任务（按实例查看/取消）· 入站对端 · 会话                                 │
+│  入站实例（创建/preset/技能/鉴权/启停/编辑）                              │
+│  出站实例（创建/URL/preset/鉴权/超时/启停）                               │
+│  指标 · 对端 · 会话 · 任务（查看/取消）                                   │
 └───────────────────────────────────────┬─────────────────────────────────┘
-                                        │ loopback-only /a2a/api
+                                        │ 仅回环 /a2a/api
 ┌─ Host 半区 ───────────────────────────▼─────────────────────────────────┐
 │  InboundServerManager    每实例：preset 化会话池 + A2AServer +           │
 │                            A2aRoutes（独立端点 + 卡片路由）              │
 │  OutboundServerManager   每实例：OutboundAgentRegistry（独立 agent 存储）│
 │                            + 远端 A2AClient + 工具                       │
-│  A2aDomain（tasks/contexts/agents/identity/inbound_servers/             │
-│            outbound_servers）· ctx.a2a facade                           │
+│  A2aDomain（tasks/contexts/agents/inbound_servers/outbound_servers）     │
+│  A2aMetrics · ctx.a2a facade · /a2a 命令                                 │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-## 设计
+插件只注入 `storageDomain`。其他宿主服务都是探测式可选；缺少某个只会让对应能力空闲，
+不会让插件挂掉。逐服务影响见[运维指南：宿主服务](guide/operations.zh.md#宿主服务)。
 
-1. **协议层直接实现** — JSON-RPC/SSE 手写，对齐官方 A2A v1.0.1 规范：
-   PascalCase 方法（`SendMessage` 等）、`TASK_STATE_*` / `ROLE_*` 枚举、完整
-   `AgentCard` 结构（`supportedInterfaces`、`capabilities`、`securitySchemes`、
-   `skills`）、规范错误码表。
-2. **包身份** — `@hanphone/dsh-a2a`，经 `dsh plugin add` 安装（npm 或本地
-   tarball）。
-3. **多实例、GUI 管理** — 实例在设置面板创建、编辑、启停，持久化于 `a2a` 域而非
-   插件配置。插件 `Config` 只承载宿主级默认值（`baseUrl`、`subagentProvider`、
-   `defaultTimeoutMs`）。
-4. **preset 绑定实例** — 每个实例绑定一个具体 roster preset（GUI 只列
-   id/name/描述，默认选中 `agentPresets.defaultId`）。入站实例的 preset 组装执行
-   其任务的每个会话；出站实例的 preset 是未来本地衔接会话的持久化元数据，当前工具
-   直接调用远端。
-5. **技能宣告从 preset 派生** — 入站实例的 AgentCard 技能 = 该 preset 技能目录中
-   模型可调（`invocation.modelInvocable`）的条目：
-   `agentPresets.standingKeyFor(preset)` 取得该 preset standing scope key，
-   `ctx.skills.list({ scope })` 返回该 preset agent 实际可见的目录（preset 层 +
-   部署全局）。skills 服务缺失时兜底内置 `chat` 技能，保持最小组合可启动可验证。
+## 模块地图
 
-## 协议面
+| 路径 | 职责 |
+|---|---|
+| `src/index.ts` | 插件入口：`Config`、服务探测、manager 组装、面板路由、卸载 |
+| `src/service.ts` | `ctx.a2a` facade，命令、面板和其他插件共用 |
+| `src/api.ts` | 仅回环 `/a2a/api` 的快照、读取与控制动作 |
+| `src/commands.ts` | `/a2a` 聊天命令 |
+| `src/protocol.ts` | A2A 类型、方法、任务状态、错误码、ProtoJSON 辅助 |
+| `src/jsonrpc.ts` | JSON-RPC 帧与解析辅助 |
+| `src/update.ts` | 版本读取与 npm/GitHub 更新检查 |
+| `src/servers/inbound-manager.ts` | 入站实例生命周期、技能派生、作用域存储 |
+| `src/servers/outbound-manager.ts` | 出站实例生命周期、自动刷新、每实例 registry |
+| `src/server/a2a-server.ts` | JSON-RPC 分发、任务生命周期、SSE、限流、鉴权检查 |
+| `src/server/routes.ts` | HTTP 绑定：卡片与端点路由、请求体上限、启停 |
+| `src/server/card.ts` | 纯函数式 AgentCard 组装 |
+| `src/server/store.ts` | `a2a` 域定义、`DomainTaskStore`、`MemoryTaskStore`、`ScopedTaskStore` |
+| `src/server/exec/` | 会话池、session/subagent 执行器、附件准入 |
+| `src/server/executor.ts` | 执行器契约与技能→执行器解析 |
+| `src/server/session-registry.ts` | 按上下文的会话视图与 SSE 流计数 |
+| `src/server/inbound-registry.ts` | 活跃入站对端注册表 |
+| `src/server/metrics.ts` | 计数器与有界审计环 |
+| `src/outbound/calls.ts` | A2A 客户端：卡片发现、发送/轮询/流式、取消、重试 |
+| `src/outbound/registry.ts` | 已连接 agent、每实例视图、工具 disposer |
+| `src/outbound/tools.ts` | 远端技能对应的模型工具 |
+| `src/client/` | React 设置页、样式、更新状态格式化 |
 
-方法：`SendMessage`（`messageId` 幂等、`taskId` 续接）、`SendStreamingMessage`
-（SSE，assistant/工具增量 + 事件 id）、`GetTask`、`ListTasks`、`CancelTask`、
-`SubscribeToTask`（SSE，支持进程内 `Last-Event-ID` 回放）、
-`GetExtendedAgentCard`。Push 通知方法在方法面声明并按
-`PushNotificationNotSupported` 应答。序列化按 ADR-001 ProtoJSON；传输校验
-`A2A-Version` 头；错误使用规范错误码表。完整方法表、任务状态与错误码见
-[协议参考](reference/http-api.zh.md#2-a2a-端点)。
+## 插件形态
+
+`apply()` 打开 `a2a` 域，构建两个 manager，注册 facade、可选的 `/a2a` 命令和
+面板路由，并返回会拆除所有实例的 disposer。`Config` 只承载宿主级默认值；实例经
+facade 创建并持久化在域里。
+
+该包刻意**不是** harness checkout 的 workspace 成员：自带 `package.json`，
+`@deepseek-ai/*` 为 peer 依赖，`zod` 是唯一自有运行时依赖；它通过项目引用消费
+harness 源码图的已构建 `lib/types` 声明来做类型检查。构建产出宿主的
+`lib/index.js` 与浏览器的 `lib/client.js`；浏览器 bundle 由
+`scripts/build-client.mjs` 包装成 `window.__ModuleLoader__.load` 契约。
 
 ## 入站半区
 
-### InboundServerManager
+### Manager 与实例
 
 `InboundServerManager` 拥有活跃实例集。每个持久化 `InboundServerRecord`
 （`inbound_servers` 表）在启动时成为一个活实例：
 
-- preset 化 `ContextSessionPool`（装有 `agents` 时）——会话按 `record.preset` 经
-  `agentPresets.resolve` + `mount` 组装；
-- 共享域存储之上的 `ScopedTaskStore`（按实例 `serverId` 过滤）上的 `A2AServer`，
-  带独立端点（`/a2a/<id>`）与卡片路由（`/a2a/<id>/agent-card.json`）；
-- `A2aRoutes` 注册（启停）、`ExecutorSet`（session/subagent）、
-  `LiveInboundRegistry`（对端监控）。
+- 挂载 `agents` 时的 `ContextSessionPool`，按有效 preset（`record.preset` 或部署
+  默认）组装；
+- 该实例 `ScopedTaskStore` 之上的 `A2AServer`，带自己的端点路径与卡片路径；
+- `A2aRoutes` 注册、`ExecutorSet`、`LiveInboundRegistry` 与
+  `ContextSessionRegistry`。
 
-管理器拥有完整生命周期：`add`（持久化 + 组装 + 启用）、`update`（持久化 + 重建
-卡片 + 换装）、`setEnabled`（路由启停）、`remove`（dispose + 反持久化）。技能按
-实例从所绑 preset 的技能目录派生，无 skills 服务时兜底内置 `chat`；门禁的宣告技能
-白名单即派生列表，远端技能调用总能落到该实例的 preset 会话内。任务访问按 `serverId`
-限定：`GetTask`/`ListTasks`/`CancelTask`/`SubscribeToTask` 看不到其他实例的任务；
-context 绑定与派生 session id 也带实例命名空间，两个实例可安全复用同一客户端
-`contextId`。任务还有可配置执行超时，实例有请求/请求体/并发限制。
+管理器拥有 `add`、`update`、`setEnabled`、`setAuth`、`remove`。`add` 派生技能、
+解析 token、组装、持久化并启用；`update` 持久化 patch、重新派生技能与鉴权，然后在
+保留路由状态的前提下换装活实例；`setEnabled` 注册或注销路由并持久化启用标志；
+`remove` dispose 并写入空 tombstone。
 
-### 任务生命周期
+### 技能与门禁
+
+技能在添加、更新和启动时派生：preset 的 standing scope key
+（`agentPresets.standingKeyFor`）加 `ctx.skills.list({ scope })`，筛选
+`invocation.modelInvocable !== false`。服务缺失、挂载失败或目录为空时回退到内置
+`chat`。
+
+实例门禁先检查请求的技能在派生集合内，再把 `a2a/inbound-task` 作为 waterfall
+分发。监听者可以设置 `rejected.reason` 否决任务；门禁同时记录日志。
+
+### 请求管线
 
 ```
 POST /a2a/<id> (SendMessage)
-  → parseRpc（JSON-RPC 2.0、A2A-Version、按实例鉴权）
-  → server.ensureTask(message)
-      contextId + skill（metadata.skill ?? 'chat'）；任务记录来源 serverId
-      → store.create → taskId a2a-<uuid>、SUBMITTED（急切持久化）
-  → gate(input)
-      按实例的宣告技能白名单
-      ctx.waterfall('a2a/inbound-task', decision)   # 否决/审计
-  → runTask(record)
-      WORKING → executor.execute(...)               # 事件 → store + SSE
-      成功 → artifact 'result' → COMPLETED
-      失败 → FAILED（携带执行器错误）
-  → 取消路径：CancelTask / facade → abort signal → CANCELED
+  → routes：请求体上限，然后 A2AServer.preflight（限流、Bearer 鉴权）
+  → A2A-Version 检查
+  → parseRpc（JSON-RPC 2.0）
+  → gate（宣告技能 + a2a/inbound-task）
+  → ensureTask
+      contextId + skill（metadata.skill ?? 'chat'）
+      messageId 重放 → 返回原任务
+      taskId 续接 → 在非终态且空闲的任务上替换 parts
+      否则 store.create → taskId a2a-<uuid>、SUBMITTED
+  → runTask
+      WORKING → executor.execute → 事件写入 store 与 SSE
+      成功 → COMPLETED 带 'result' artifact；失败 → FAILED
+      INPUT_REQUIRED / AUTH_REQUIRED 让任务保持中断
+  → 取消：CancelTask 或 facade abort → CANCELED
 ```
 
-`SubscribeToTask` / `SendStreamingMessage` 在订阅时补发当前状态帧，然后流式推送更新
-与终态任务。
+任务访问按 `serverId` 限定：别的实例的任务与不存在的任务无法区分。上下文绑定带实例
+id 命名空间，因此两个实例可以复用同一个客户端 `contextId` 而不共享会话。
 
-### 执行器
+服务端还执行配置的每任务超时与每实例并发上限。超时把任务落为 `FAILED`；超配额任务
+以可读消息失败。限流按来源地址、在进程内执行。
 
-- **session** — 每个 `contextId` 一个 DSH 会话，按实例 preset 组装；结果 =
-  落定回复。
-- **subagent** — 委托 `ctx.subagents`，工具调用过程以 `artifact` 事件流式回传。
-  没有 agent 循环时 server 仍以可读拒绝应答。
+### 会话层
 
-### 入站会话层（按 contextId）
+每个 `(实例, contextId)` 保留一个 DSH 会话，id 固定为
+`a2a-<实例 id>-<contextId>`。会话池经 `agents` 创建会话并挂载 preset；若该会话 id
+已存在则恢复。同一上下文的多轮是串行的。
 
-会话层让每个 contextId 的 DSH 会话可观测、可回收，且完全不动 A2A 协议面（协议只
-认识 task/contextId）。
+某上下文的会话首次打开时，会话池经任务存储持久化 `contextId → sessionId` 绑定。
+持久化失败只记日志，绝不让任务失败。
 
-- **绑定** — 某 context 的会话首次打开时，会池的 `onSessionOpened` 钩子（恰在
-  `justOpened` 时触发）经 `TaskStore.setContextSession` 持久化
-  `contextId → sessionId` 绑定（内存先行，保持域写链可见）。绑定写入失败只记日志，
-  绝不放倒进行中的任务。
-- **视图** — `SessionView` 行按 `contextId` 聚合：共享任务存储给出计数、running/idle、
-  首次/最近活动，再折叠活跃观测——每实例 `ContextSessionRegistry` 的流式计数（由
-  `A2AServer` 的 SSE 开/关钩子喂养）与会池句柄存在性。数据来源实时优先、任务存储
-  推导兜底；没有 agent 循环的组合仍能从任务记录渲染会话表；重启后因任务持久化，
-  行以降级形态（无句柄/无流式）保留。
-- **回收** — `cancelSessionTasks(contextId)` 经 `A2AServer.abort` 中止该 context 的
-  全部非终态任务；`closeSession(contextId)` 额外经
-  `ContextSessionPool.disposeContext` 释放该 context 的活跃句柄。**关闭是内存级
-  资源释放，不是会话墓碑**——同一 contextId 之后再来任务经 `agentFor` 自动重开新
-  句柄、永不拒绝。重开后的 DSH 会话是否恢复持久化历史属宿主行为，不在本插件控制内。
-- **归属** — 每个 `A2AServer` 把它创建的每条任务记录盖上实例 id
-  （`TaskStore.create.serverId`），会话行与任务列表的来源列因此能指出入站实例。
+`SessionView` 行按 `(serverId, contextId)` 聚合。任务计数、running/idle 与时间戳来自
+持久任务存储；流式来自每实例的 SSE 计数；`live` 来自会话池句柄。因此重启后行以降级
+形态保留，没有 agent 循环时也能渲染。`closeSession` 中止该上下文的非终态任务并释放
+句柄；下一个任务会重新打开。关闭不是墓碑。
 
-facade 暴露 `listSessions` / `cancelSessionTasks` / `closeSession`；会话也随
-`status()` 快照（`sessions` 字段）与回环 API（`session.cancel` / `session.close`）
-输出。
+每个 A2A server 给自己创建的任务盖上实例 id，会话与任务视图因此能把一行归到某个
+入站实例。
 
-### 任务存储与域
+## 存储
 
-任务与绑定存于 `a2a` 存储域（`DomainFacility.open` → `Domain` → 类型化
-`KvTable`），JSON 编码记录。表清单见
-[核心概念](guide/concepts.zh.md#9-身份存储与会话)。`DomainTaskStore` 自持写链可见的
-活跃视图，使同步读能看到自身写入。
+`openDomain` 在路由后的存储后端上打开 `a2a` 域（`tasks`、`contexts`、`agents`、
+`inbound_servers`、`outbound_servers`）。记录是 JSON 字符串；域的 `version` 守护
+格式变化。
+
+`DomainTaskStore` 在域之上保留活跃内存视图，让同步读在排队中的域写入落盘前就能看到
+自己的写入。`ScopedTaskStore` 追加每实例过滤，并给上下文绑定加命名空间。后端选择与
+运维注意见[运维指南：存储](guide/operations.zh.md#存储)。
 
 ## 出站半区
 
-### OutboundServerManager
+`OutboundServerManager` 为每个持久化 `OutboundServerRecord`
+（`outbound_servers` 表）拥有一个 `OutboundAgentRegistry`。每个 registry 在
+`agents` 表上有自己的 agent 存储（键 `out:<id>`）和自己的工具 disposer。
 
-`OutboundServerManager` 拥有活跃连接集。每个持久化 `OutboundServerRecord`
-（`outbound_servers` 表）在启动时成为一个 `OutboundAgentRegistry`，带独立按实例
-`AgentStore`（`agents` 表，键 `out:<id>`）。管理器拥有完整生命周期：`add`
-（持久化 + 连接）、`setEnabled`、`refresh`、`remove`（dispose + 反持久化）；
-`viewFor` 折合注册表视图与记录（GUI 读 `OutboundServerView`，含 `preset`）。
+生命周期：`add` 持久化记录后连接；`setEnabled` 切换活跃连接的工具并持久化标志；
+`refresh` 重读卡片；`update` 持久化 patch 并重建连接；`setAuth` 写入或清除凭据并
+重建；`remove` dispose 并反持久化。启用的实例按配置间隔刷新卡片。
 
-### 工具
+每个启用的技能由 `registerAgentTools` 注册为一个模型工具。工具用稳定的 per-caller
+上下文 id 发消息；远端卡片宣告流式时走流式；传播调用方 abort（任务 id 已知后发
+`CancelTask`）；对瞬时传输/5xx 失败重试。连接失败会以 `failed` 与 `lastError`
+保留在视图里，可编辑或刷新。
 
-每个已连接实例的每个启用技能经 `registerAgentTools` 映射为模型工具
-`a2a__<name>__<skill>`（规范化、冲突哈希；per-skill 启停与名称/描述覆盖持久化在
-实例上）。执行工具以稳定 per-caller contextId 发送 A2A 消息；远端卡片支持时流式；
-传播调用方 abort（任务 id 已知后发 `CancelTask`）；重试瞬时传输/5xx 失败；接受
-`taskId` 续接被中断的远端任务。连接按配置间隔自动刷新 AgentCard。
+## 浏览器半区
 
-## GUI 面板
+`src/client/` 经 `ctx.slots.inject` 注册一个 `settings.section`（`A2A 连接`），由
+DSH web shell 加载。它只是 `/a2a/api` 的读写客户端：不含协议知识，也从不直接访问
+A2A 端点。宿主喂给它实例、任务、对端、会话、preset、指标与更新结果的快照。样式基于
+宿主 `--dsw-alias-*` token，写在 `dashboard.css.ts`。
 
-浏览器半区（`src/client/`）是 React 插件，经 `ctx.slots.inject` 注册为
-`settings.section`（"A2A 连接"），由 DSH web shell 加载其客户端 bundle。它经仅回环
-`/a2a/api` 读写；host 端喂给它入站/出站 server 视图、任务、对端、会话、preset 名单
-与更新检查结果。GUI、`/a2a` 命令与 `ctx.a2a` 消费方共用同一 facade 实现。面板布局与
-操作见[运维指南](guide/operations.zh.md#2-面板)与
-[协议参考](reference/http-api.zh.md#1-面板-api)。
+GUI、`/a2a` 命令与 `ctx.a2a` 消费方都调用同一个 facade 实现，所以状态不会互相矛盾。
+面板每 3 秒轮询快照；版本条只问一次，并把更新结果缓存 6 小时。
 
-## 安全模型
+## 信任边界
 
-GUI 把 Bearer Token 经 harness 凭据服务（`ctx.credentials.set` → 托管 `.env`/凭据库，
-目录 `0o700`）写入；实例记录只保留自动生成的变量名（`A2A_INBOUND_<id>` /
-`A2A_OUTBOUND_<id>`）。运行时 `resolveAuthToken` 每操作分层读取（凭据 → 进程环境），
-外部 export 同名变量仍兼容。token 明文绝不进 `a2a` 域、插件配置或 AgentCard，GUI
-不回显。面板 API 仅回环，远程对端无法驱动。完整模型见
-[核心概念](guide/concepts.zh.md#10-安全模型)。
-
-## 独立项目
-
-该包刻意**不是** harness checkout 的 workspace 成员：自带 `package.json` 与依赖图，
-`@deepseek-ai/*` 为 peer 依赖，`zod` 为唯一自有运行时依赖。它通过项目引用消费
-harness 源码图的已构建 `lib/types` 声明做类型检查；全新 checkout 需先构建宿主聚合。
-
-## 非目标
-
-插件刻意不做的架构工作：
-
-- push notification 投递（仅方法面声明）；
-- 出站 preset 衔接会话组装接缝；
-- OAuth 2.0 / 每客户端凭据、gRPC 绑定；
-- 互操作 conformance 套件（以规范审计 + 交叉测试替代）；
-- 入站对端历史持久化与会话恢复——对端与会话都是活跃的内存记录；唯一历史是持久化
-  任务存储。
-
-面向用户的限制列表见[协议参考](reference/http-api.zh.md#4-当前限制)。
+面板控制面仅回环；协议端点使用每实例 Bearer Token，token 保存在凭据层。完整访问
+模型见[运维指南：访问与安全](guide/operations.zh.md#访问与安全)。

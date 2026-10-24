@@ -1,36 +1,32 @@
-# Testing
+---
+name: Testing
+description: Test layers, commands, the hermetic e2e flow, the visual harness and CI
+update-time: 2026-10-25
+---
 
-Test strategy for `@hanphone/dsh-a2a`, the layers that catch what, and how to
-run them. The short version: **a plugin can pass every stub test and still be
-broken against the real harness.** The layers below exist so that a harness
-contract change fails a test before it reaches a release.
+# Testing
 
 **English** · [中文](testing.zh.md)
 
-## Why this exists
-
-Stub tests run against in-memory host services. A real profile also runs a
-durable session codec, an agent loop, and manifest/mount machinery that stubs
-never touch, so a plugin can pass every unit test and still fail end to end.
-The mirror check, the real-persistence suite, and the e2e smoke exist to observe
-those layers: a structural mirror catches a type drift, the persistence suite
-catches a rejected message shape, and the e2e smoke catches a broken released
-artifact.
+A plugin can pass every stub test and still be broken against the real harness.
+The layers below exist so a host-contract change fails a test before it reaches
+a release. What each layer covers, and why stubs are not enough, is the point of
+this page.
 
 ## Layers
 
-| Layer | Lives in | Catches | Needs a harness checkout |
+| Layer | Lives in | Catches | Needs built harness artifacts |
 |---|---|---|---|
-| Mirror check | `tests/types/mirrors.typecheck.ts` | Structural mirrors drifting from real `@deepseek-ai/dsh-*` types | yes (project references) |
+| Mirror check | `tests/types/mirrors.typecheck.ts` | Structural mirrors drifting from real `@deepseek-ai/dsh-*` types | yes (`lib/types`) |
 | Unit / composition | `tests/unit`, `tests/composition` | Protocol framing, routes, stores, registries, `apply()` wiring over stub host services | no |
-| Real-persistence integration | `tests/integration/persistence.spec.ts` | Durable session codec, agent-loop contract, inbox sources | yes (source graph) |
-| Profile e2e | `scripts/e2e-a2a.mjs` | A released artifact against two real harness instances: manifest/mount, routes, discovery, JSON-RPC, tool registration, model → tool → remote agent | yes (built artifacts) |
+| Real-persistence integration | `tests/integration/persistence.spec.ts` | Durable session codec, agent-loop contract, inbox sources | yes (JSONL addon) |
+| Profile e2e | `scripts/e2e-a2a.mjs` | A released artifact against two real harness instances: manifest/mount, routes, discovery, JSON-RPC, tool registration, model → tool → remote agent | yes (host + plugin) |
 
 ## Commands
 
 ```sh
 pnpm typecheck        # host (tsc -b) + client + mirror check
-pnpm test             # vitest run: unit + composition + integration
+pnpm test             # vitest run: unit + composition + integration (178 tests)
 pnpm test:integration # only the real-persistence suite
 pnpm build            # tsc + tsdown + browser bundle -> lib/
 pnpm test:e2e         # hermetic two-instance A2A smoke (needs a built plugin)
@@ -39,21 +35,22 @@ pnpm test:all         # typecheck + test + build + test:e2e
 
 `pnpm test:e2e` needs:
 
-- a built plugin (`pnpm build`) — it fails fast with a clear message if
+- a built plugin (`pnpm build`); it fails fast with a clear message if
   `lib/index.js` is missing;
 - a sibling `../deepseek-harness` checkout (`DSH_A2A_HARNESS_DIR` overrides)
   whose host artifacts are built (`pnpm install && pnpm run build`);
 - nothing else: the model is the harness's own mock LLM server.
 
-`DSH_A2A_KEEP=1` keeps the two temp homes and child processes for debugging.
+`DSH_A2A_KEEP=1` keeps the two temp homes, logs and child processes for
+debugging.
 
 ## The e2e flow
 
 `scripts/e2e-a2a.mjs` is hermetic and deterministic:
 
 1. Two temp Harness homes (`a` and `b`) get a `web` profile (and `headless` for
-   `a`) whose bundle list mounts the built plugin directly; no registry, no
-   user home.
+   `a`) whose bundle list mounts the built plugin directly; no registry, no user
+   home.
 2. Each home starts a scripted mock LLM server
    (`@deepseek-ai/dsh-llm-mock-server`), and `dsh web` is pointed at it with
    `DEEPSEEK_BASE_URL` / `DEEPSEEK_API_KEY`.
@@ -69,7 +66,7 @@ pnpm test:all         # typecheck + test + build + test:e2e
 
 `pnpm visual:a2a` boots the same hermetic pair and serves an interactive
 dashboard at a printed loopback URL. It shows the two instances, the task
-timeline, peers, sessions, and two buttons:
+timeline, peers and sessions, with two buttons:
 
 - **Inbound** sends a `SendMessage` straight to B's endpoint.
 - **Outbound** runs A's headless model against a scripted tool call, which
@@ -80,18 +77,20 @@ manual inspection, not a CI gate. `Ctrl+C` tears down every child and temp home.
 
 ## Adding a test
 
-- **Behavior change** → a unit/`composition` test that fails without it, per
-  `AGENTS.md`.
-- **New host contract surface** (a new runtime service, a message shape, a
-  storage field) → extend the mirror check if it has a structural mirror, and
-  add a real-persistence or e2e assertion if it is only observable end to end.
+- **Behavior change** → a unit or composition test that fails without it.
+- **New host contract surface** (a runtime service, a message shape, a storage
+  field) → extend the mirror check if it has a structural mirror, and add a
+  real-persistence or e2e assertion if it is only observable end to end.
 - **New e2e step** → add it to `scripts/e2e-a2a.mjs` and keep it offline: the
   mock LLM server is the only model allowed in the default run.
 
 ## CI
 
-`.github/workflows/ci.yml` runs `check` (typecheck + tests) on every push and
-pull request, and `e2e` against the pinned harness version on pull requests.
-The scheduled nightly run and manual dispatch cover the full matrix of harness
-versions the peer ranges claim (`0.2.1-rc.2`, `0.2.1-alpha.2`, `0.1.7-rc.2`).
-Widen the matrix in the same change that widens `peerDependencies`.
+`.github/workflows/ci.yml` runs `check` (typecheck, unit, composition and
+real-persistence tests) on every push and pull request, and `e2e-pinned`
+against `dsh-v0.2.1-rc.2`. The nightly schedule and manual dispatch run the e2e
+matrix over every harness version the peer ranges claim (`0.2.1-rc.2`,
+`0.2.1-alpha.2`, `0.1.7-rc.2`).
+
+Widen the matrix in the same change that widens `peerDependencies`, and record
+the result in [Harness compatibility](harness-compatibility.md).

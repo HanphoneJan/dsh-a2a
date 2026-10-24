@@ -1,56 +1,40 @@
 ---
 name: Getting started
-description: Install @hanphone/dsh-a2a, publish an inbound A2A server, call it with curl, and connect a remote agent as a model tool
-create-time: 2026-10-19
-update-time: 2026-10-24
-version: v0.5.0
-relative-docs:
-  - docs/guide/concepts.md
-  - docs/guide/operations.md
-  - docs/reference/http-api.md
+description: Install the plugin, publish an inbound A2A server, call it, and connect a remote A2A agent as a model tool
+update-time: 2026-10-25
 ---
 
 # Getting started
 
 **English** · [中文](getting-started.zh.md)
 
-This page takes you from a fresh install to two working directions:
+This walkthrough takes a fresh install to two working directions: an A2A client
+calling this DSH, and this DSH calling a remote agent. Field-level details for
+the forms are in [Operations](operations.md#the-panel); the full wire format
+is in the [HTTP API reference](../reference/http-api.md).
 
-1. **Inbound** — another A2A client sends a task to this DSH.
-2. **Outbound** — this DSH calls a remote A2A agent as a model tool.
+## Before you start
 
-Both directions work from the **Settings → A2A connections** panel. The
-`/a2a` chat command and the loopback HTTP API are equivalent control surfaces;
-the panel is the primary one.
+You need DeepSeek Harness `0.2.1-rc.2` (the version this release is verified
+against) and a running web app, normally at `http://127.0.0.1:3080/`. The base
+`web` profile mounts every service the plugin uses; for a custom composition see
+[host services](operations.md#host-services).
 
-## 1. Before you start
-
-You need:
-
-- DeepSeek Harness **0.2.1-rc.2** (the version this release is verified
-  against) with the `web` profile.
-- A running `dsh web` instance. The default address is
-  `http://127.0.0.1:3080/`.
-- The `dsh` command, or the repository checkout command `pnpm dsh`.
-
-The base `web` profile mounts every service the plugin uses. For a custom
-composition, see [Operations: host services](operations.md#6-host-services).
-
-## 2. Install
+## Install and verify
 
 ```sh
 dsh plugin --profile web add @hanphone/dsh-a2a
 ```
 
-If you are working from a harness checkout, use the launcher form:
+From a harness checkout, use its launcher:
 
 ```sh
 cd deepseek-harness
 pnpm dsh plugin --profile web add @hanphone/dsh-a2a
 ```
 
-Restart the web app once (`dsh web`, or `pnpm dsh web`). The browser bundle is
-scanned at startup, so a page refresh alone is not enough after installation.
+Restart the web app (`dsh web`, or `pnpm dsh web`). A page refresh is not
+enough: the browser bundle is scanned when the host starts.
 
 Verify the plugin is mounted:
 
@@ -58,47 +42,35 @@ Verify the plugin is mounted:
 /a2a status
 ```
 
-The command prints a JSON snapshot with `inbounds` and `outbounds` arrays.
-The same snapshot is available at `GET http://127.0.0.1:3080/a2a/api`.
+The command returns a JSON snapshot with `inbounds` and `outbounds`. The same
+snapshot is at `GET http://127.0.0.1:3080/a2a/api`.
 
-## 3. Publish your first inbound server
+## Publish an inbound server
 
-Open **Settings → A2A connections → Inbound servers → New inbound server** and
-fill in:
-
-| Field | Meaning |
-|---|---|
-| Name | Human-readable name shown in the AgentCard and the panel |
-| Version | AgentCard version string (default `1.0.0`) |
-| Agent preset | The DSH preset that composes sessions for this server. Skills are derived from this preset. |
-| Bearer token | Optional. When set, every request must send `Authorization: Bearer <token>`. |
-| Description | AgentCard description |
-
-Create the server. The panel shows the endpoint and the AgentCard URL:
+Open **Settings → A2A 连接 → 入站 Servers**, fill the create form (name, version,
+preset, optional bearer token, description) and submit. The instance is enabled
+and publishes:
 
 ```text
 http://127.0.0.1:3080/a2a/<id>
 http://127.0.0.1:3080/a2a/<id>/agent-card.json
 ```
 
-Skills are **not typed by hand**. The card advertises the model-invocable
-skills of the selected preset's skill directory. When no skills service or
-preset mount is available, the card advertises the built-in `chat` skill.
+You do not type skills. The card advertises the model-invocable entries of the
+selected preset's skill directory; if that cannot be resolved, it falls back to
+the built-in `chat` skill.
 
-### Verify the card
+Read the card:
 
 ```sh
 curl -sS http://127.0.0.1:3080/a2a/<id>/agent-card.json
 ```
 
 The response is an A2A `AgentCard` with `name`, `version`,
-`supportedInterfaces`, `capabilities`, and `skills`. A bearer-protected server
-also advertises the `bearer` security scheme; the token value is never in the
-card.
+`supportedInterfaces`, `capabilities` and `skills`. A bearer-protected server
+also declares the `bearer` scheme; the token value is never in the card.
 
-### Send a task
-
-The `SendMessage` method creates a task and **blocks until the task settles**:
+Send a task:
 
 ```sh
 curl -sS http://127.0.0.1:3080/a2a/<id> \
@@ -117,60 +89,62 @@ curl -sS http://127.0.0.1:3080/a2a/<id> \
   }'
 ```
 
-A successful response contains a task whose `status.state` is
-`TASK_STATE_COMPLETED` and whose `artifacts` hold the reply.
+`SendMessage` blocks until the task settles. A successful response carries a
+task in `TASK_STATE_COMPLETED` whose `artifacts` hold the reply. Reuse the same
+`contextId` to continue one conversation; reuse the same `messageId` to retry
+idempotently.
 
-To receive progress frames instead of waiting, send `SendStreamingMessage`
-(or `SubscribeToTask`) with `Accept: text/event-stream`. Each SSE frame is a
-`data: <StreamResponse>` line and the final frame carries the settled task; the
-method table and frame vocabulary are in the
-[protocol reference](../reference/http-api.md#2-a2a-endpoints).
+To receive progress instead of waiting, send `SendStreamingMessage` with
+`Accept: text/event-stream` and `curl -N`; for an already created task, use
+`SubscribeToTask`. The method table and frame vocabulary are in
+[HTTP API: A2A endpoints](../reference/http-api.md#2-a2a-endpoints).
 
-If the inbound server has a bearer token, add:
+If the instance has a bearer token, add this header to every call:
 
 ```sh
 -H 'authorization: Bearer <token>'
 ```
 
-## 4. Connect a remote agent as a tool
+## Connect a remote agent
 
-You need the remote agent's **AgentCard URL** (for example
-`https://remote.example/a2a/<id>/agent-card.json`), plus a bearer token if the
-remote requires one.
+You need the remote agent's AgentCard URL, plus a token if the remote requires
+one.
 
-Open **Settings → A2A connections → Outbound servers**, then:
+In **Settings → A2A 连接 → 出站 Servers**:
 
-1. Paste the AgentCard URL (and token, if any) and click **Import**.
-2. Review the discovered name, version, description, endpoint, and skills.
-3. Confirm the local name, preset, timeout, and click **Connect**.
+1. Paste the AgentCard URL (and token) and click **Import**.
+2. Review the discovered name, version, description, endpoint and skills.
+3. Confirm the local name, preset and timeout, then click **Connect**.
 
-On success the panel shows `connected`, the number of imported skills, and the
-number of registered tools. Each remote skill becomes a model tool:
+A connected card shows its state, imported skill count and registered tool
+count. Each enabled remote skill becomes a model tool:
 
 ```text
 a2a__<connection-name>__<skill-id>
 ```
 
 For a connection named `weather` and a remote skill `chat`, the tool is
-`a2a__weather__chat`. Its only argument is:
+`a2a__weather__chat`. Its arguments are:
 
 ```json
-{ "prompt": "the task or instruction to send to the remote agent" }
+{
+  "prompt": "the task or instruction to send to the remote agent",
+  "taskId": "optional: continue an interrupted remote task"
+}
 ```
 
-Ask the model to use it, for example:
+Ask the model to use it:
 
 ```text
 Use the a2a__weather__chat tool with prompt "Reply with exactly OK" and show
 the result verbatim.
 ```
 
-The tool calls the remote agent over A2A and returns the settled task's text.
-A failed remote task raises a tool error with the remote message; an
-`INPUT_REQUIRED` or `AUTH_REQUIRED` task is surfaced as text instead of a
-throw.
+A failed remote task raises a tool error with the remote message;
+`INPUT_REQUIRED` and `AUTH_REQUIRED` are returned as text that includes the
+remote `taskId`, so the model can continue with that id.
 
-## 5. Check both directions
+## Check both directions
 
 ```text
 /a2a inbound list
@@ -179,12 +153,10 @@ throw.
 /a2a sessions
 ```
 
-Or use the panel's **Connections and tasks** tab, which shows inbound peers,
-per-`contextId` sessions, and tasks, with cancel and close actions.
+The panel's **连接与任务** tab shows the same data as tables of peers, sessions
+and tasks, with cancel and close actions.
 
-## Next steps
-
-- [Concepts](concepts.md) — how presets, skills, tasks, contexts, and executors fit together.
-- [Operations](operations.md) — GUI fields, `/a2a` reference, configuration, storage, security.
-- [HTTP API and A2A protocol](../reference/http-api.md) — exact payloads and methods.
-- [Troubleshooting](troubleshooting.md) — empty replies, 401s, failed connections, missing tools.
+Next: [Concepts](concepts.md) explains what the instances, presets and sessions
+mean; [Operations](operations.md) covers the panel and configuration;
+[Troubleshooting](troubleshooting.md) covers empty replies, 401s and failed
+connections.

@@ -1,191 +1,147 @@
 ---
 name: Concepts
-description: The A2A model, inbound servers, outbound connections, presets, skills, tasks, contexts, executors, and the security model
-create-time: 2026-10-19
-update-time: 2026-10-24
-version: v0.5.0
-relative-docs:
-  - docs/architecture.md
-  - docs/guide/operations.md
-  - docs/reference/http-api.md
+description: The A2A model, inbound servers, outbound connections, presets, skills, tasks, contexts, executors and the AgentCard
+update-time: 2026-10-25
 ---
 
 # Concepts
 
 **English** · [中文](concepts.zh.md)
 
-This page defines the vocabulary the rest of the manual uses. It describes the
-current behavior of `0.5.0`, including places where the implementation is
-narrower than the protocol.
+This page defines the vocabulary the rest of the manual uses. Exact wire fields
+are in the [HTTP API reference](../reference/http-api.md); operational
+configuration is in [Operations](operations.md).
 
-## 1. A2A in one paragraph
+## A2A in one paragraph
 
 Agent2Agent (A2A) is an HTTP + JSON-RPC protocol for one agent to call another.
-A **server** publishes an AgentCard describing its identity, endpoint, and
-skills; a **client** reads the card, sends a message to the endpoint, and waits
-for a task to settle (or subscribes to streaming updates). This plugin
-implements the A2A `1.0.1` JSON-RPC binding and declares protocol version
-`1.0`. It does not implement the gRPC or HTTP+JSON bindings.
+A **server** publishes an AgentCard describing its identity, endpoint and
+skills. A **client** reads the card, sends a message to the endpoint, and waits
+for the task to settle or subscribes to updates. This plugin implements the A2A
+`1.0.1` JSON-RPC binding and declares protocol version `1.0`; the gRPC and
+HTTP+JSON bindings are not implemented.
 
-## 2. The two directions
+## The two directions
 
 | Direction | Who calls whom | Plugin surface |
 |---|---|---|
 | **Inbound** | A remote A2A client calls this DSH | One **inbound server** per published agent |
 | **Outbound** | This DSH calls a remote A2A agent | One **outbound connection** per remote card |
 
-The directions are independent. A profile can have zero or more of each, and
-they can point at other DSH instances or at non-DSH A2A agents.
+The directions are independent. A profile can have any number of each, pointing
+at other DSH instances or at non-DSH A2A agents.
 
-## 3. Inbound server
+## Inbound server
 
-An inbound server instance is a published agent. It owns:
+An inbound server instance is one published agent. It owns:
 
 - an **endpoint** at `/a2a/<id>`;
 - an **AgentCard** at `/a2a/<id>/agent-card.json`;
-- a **name**, description, and version shown on the card;
-- an **agent preset** that composes the DSH sessions behind the endpoint;
+- the card's **name**, description and version;
+- an **agent preset** that composes every DSH session behind the endpoint;
 - the **skills** derived from that preset;
 - an optional **bearer token**;
 - an **enabled** flag that registers or unregisters its routes.
 
-Instances are created, edited, enabled, disabled, and deleted from the panel
-or the `/a2a` command. They are persisted; a restart re-assembles them and
+Instances are created, edited, enabled, disabled and deleted from the panel or
+the `/a2a` command, and are persisted. A restart reassembles them and
 re-registers the enabled ones.
 
-## 4. Outbound connection
+## Outbound connection
 
-An outbound connection instance is one remote agent this DSH can call. It
-owns:
+An outbound connection is one remote agent this DSH can call. It owns:
 
 - the remote **AgentCard URL**;
-- a local **name** that becomes the tool-name segment;
+- a local **name** that becomes a tool-name segment;
 - the imported **skills**, each registered as a model tool;
 - an optional **bearer token**;
-- a per-connection **timeout**;
-- an optional **preset** (persisted metadata; see §7);
+- a **timeout** for calls to that remote;
+- an optional **preset** (recorded metadata, see below);
 - an **enabled** flag.
 
-On connect, the plugin fetches the card, imports its skills, and registers one
-tool per skill. A failed connection stays in the panel with its `lastError`
-and can be refreshed or edited.
+Connecting fetches the card, imports its skills and registers one tool per
+enabled skill. A failed connection stays in the panel with `lastError` and can
+be refreshed or edited.
 
-## 5. Presets and skills
+The outbound `preset` is persisted and shown in the panel, but the current tools
+call the remote directly: no local hand-off session is composed from it yet.
 
-A **preset** is a DSH agent preset: a named composition of instructions,
-tools, skills, and model defaults. The inbound server binds one preset and
-composes a fresh DSH session from it for each A2A context.
+## Presets and skills
 
-**Skills are derived, not typed.** At create/update/boot, the plugin:
+A **preset** is a DSH agent preset: a named composition of instructions, tools,
+skills and model defaults. An inbound instance binds one preset and composes a
+fresh DSH session from it for each A2A context.
 
-1. resolves the preset and its standing scope;
-2. lists the skills visible to that preset;
-3. advertises the model-invocable entries on the AgentCard.
+**Skills are derived, not typed.** At create, update and boot the plugin:
 
-If the skills service or preset mount is unavailable, the card falls back to a
-single built-in `chat` skill. The same `chat` skill is the default routing
-target when a request omits `message.metadata.skill`.
+1. resolves the preset and its standing scope key
+   (`agentPresets.standingKeyFor`);
+2. lists the skills visible to that preset (`ctx.skills.list({ scope })`);
+3. advertises the entries whose `invocation.modelInvocable` is not `false`.
 
-A request whose `metadata.skill` is not in the advertised set is rejected by
-the skill gate before execution.
+If the preset or skills service is unavailable, or the catalogue is empty, the
+card falls back to one built-in `chat` skill. `chat` is also the default routing
+target when a request omits `message.metadata.skill`. A request naming a skill
+outside the advertised set is rejected by the gate before execution.
 
-## 6. Tasks and contexts
+The same gate dispatches every inbound task through the
+`a2a/inbound-task` waterfall, where a policy plugin can reject it.
+
+## Tasks and contexts
 
 An inbound `SendMessage` creates a **task**:
 
 - the task id is `a2a-<uuid>`;
-- the context id is supplied by the caller or generated;
-- the task records its skill, input parts, state, artifacts, timestamps, and
-  the inbound server instance that received it.
+- the context id comes from the caller or is generated;
+- the task records its skill, input parts, state, artifacts, timestamps and the
+  inbound instance it arrived through.
 
-States follow the A2A vocabulary (`TASK_STATE_*`); the full table, including
-which states are terminal, is in the
-[protocol reference](../reference/http-api.md#25-task-states).
+States follow the A2A vocabulary (`TASK_STATE_*`); the table, including which
+states are terminal, is in
+[the protocol reference](../reference/http-api.md#25-task-states).
 
-A **context** is one conversation. The plugin keeps **one live DSH session per
-context**, with the deterministic id `a2a-<contextId>`. Reusing a `contextId`
-reuses that session; a different `contextId` opens a different one.
+A **context** is one conversation. The plugin keeps one live DSH session per
+`(instance, contextId)` pair, with the deterministic id
+`a2a-<instanceId>-<contextId>`. Reusing a `contextId` on the same instance
+reuses that session; a different context or a different inbound instance opens a
+different one.
 
-Session handles are memory-only. The panel's **Close** action cancels the
-context's active tasks and releases the live handle; the next task on the same
-`contextId` opens a fresh handle. Tasks and context→session bindings are
-persisted, so a restart keeps task history but does not resurrect sessions.
+Session handles are memory-only. The panel's **Close** cancels the context's
+active tasks and releases the live handle; the next task on the same context
+opens a fresh one. Tasks and context→session bindings are durable, so a restart
+keeps task history but does not resurrect sessions.
 
-## 7. Executors
+## Executors
 
-The inbound half has an executor seam with two implementations:
+The inbound half has one executor seam with two implementations:
 
 - **session** — run one turn on the context's DSH session and return the last
-  assistant text. This is the executor used for every skill in the current
-  default composition.
-- **subagent** — delegate the task to a configured subagent provider. The
-  implementation exists and is wired when `ctx.subagents` is mounted, but the
-  current default skill→executor map binds only `chat` to `session`; unknown
-  skills also default to `session`. There is no public configuration that
-  selects `subagent` today.
+  assistant text. This is the default for every skill.
+- **subagent** — delegate the task to `ctx.subagents`. It is wired when
+  `agents` and `ctx.subagents` are mounted, but the current skill→executor map
+  binds only `chat` to `session`, and unknown skills also default to `session`.
+  No public configuration selects `subagent` today.
 
-On the outbound side, the `preset` field is persisted and shown in the panel,
-but current tools call the remote directly: there is no local hand-off session
-composition behind it yet. Treat it as forward-looking metadata, not an active
-routing rule.
+## AgentCard
 
-## 8. AgentCard
-
-The card is a pure function of the instance record plus the advertised base URL
-and endpoint path: identity fields, a fixed DeepSeek provider, capabilities,
-text modes, the derived skills, and one JSON-RPC `supportedInterfaces` entry.
+The card is a pure function of the instance record, the advertised base URL and
+the endpoint path: identity fields, a fixed DeepSeek provider, capabilities,
+input/output modes, derived skills and one JSON-RPC `supportedInterfaces` entry.
 A configured token adds a `bearer` scheme declaration, never the secret.
 
 The card is served at the instance's `cardPath`. The well-known
-`/.well-known/agent-card.json` path is not used for instances; use the full
+`/.well-known/agent-card.json` is not used for instances; use the full
 per-instance URL printed by the panel. The exact JSON shape is in the
 [protocol reference](../reference/http-api.md#27-agentcard).
 
-## 9. Identity, storage, and sessions
+## Trust boundary
 
-Durable state lives in the `a2a` storage domain:
+Dashboard controls are loopback-only; protocol endpoints use per-instance
+bearer tokens stored as credential references. See
+[Operations: access and security](operations.md#access-and-security).
 
-| Table | Contents |
-|---|---|
-| `tasks` | Task records, including source instance id |
-| `contexts` | `contextId` → `sessionId` bindings |
-| `agents` | Per-outbound-instance agent records |
-| `identity` | Legacy service identity record |
-| `inbound_servers` | Inbound instance records |
-| `outbound_servers` | Outbound instance records |
+## What is not implemented
 
-The default backend is the profile's JSON storage; the `a2a` domain can be
-routed to SQLite. See [Operations](operations.md#7-storage).
-
-Inbound session working directories live under `$DSH_HOME/a2a-sessions`.
-Tasks and instances survive a restart; live sessions and stream subscriptions
-do not.
-
-## 10. Security model
-
-- **Dashboard API is loopback-only.** `/a2a/api` accepts only `127.0.0.1`,
-  `::1`, or `::ffff:127.0.0.1`; any other peer gets `403`. A remote A2A client
-  can call the protocol endpoint but can never drive the control panel.
-- **Bearer tokens are credential references, not domain data.** The panel
-  writes a token through the harness credentials service under a managed
-  name (`A2A_INBOUND_<id>`, `A2A_OUTBOUND_<id>`). The instance record stores
-  only that name; the AgentCard stores only the scheme.
-- **Resolution is layered.** A token is read from the credentials service
-  first, then the process environment, on every operation. Exporting the same
-  variable externally keeps working.
-- **Inbound auth.** When a token is configured, the endpoint requires
-  `Authorization: Bearer <token>` and returns `401` with
-  `WWW-Authenticate: Bearer` otherwise. Streaming requests are authorized
-  before the `200` SSE headers are written.
-- **No OAuth, mTLS, or per-client credentials.** A single shared bearer token
-  protects an instance. The protocol's push-notification, gRPC, and OAuth
-  capabilities are not implemented.
-
-## 11. What this plugin is not
-
-It is not a model proxy, a general HTTP gateway, or an automatic router between
-inbound and outbound: you connect the two directions explicitly. It does not
-persist live sessions — only tasks and bindings are durable.
-
-The full list of protocol and feature limits is in the
-[protocol reference](../reference/http-api.md#4-current-limits).
+Only the JSON-RPC binding is provided; push notifications, OAuth, mTLS and
+per-client credentials are not. The complete list is in
+[HTTP API: current limits](../reference/http-api.md#4-current-limits).

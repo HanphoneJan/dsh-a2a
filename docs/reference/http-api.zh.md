@@ -1,50 +1,47 @@
 ---
 name: HTTP API 与 A2A 协议
-description: 仅回环面板动作、入站 JSON-RPC 端点、SSE 流式、任务状态、错误码、AgentCard 与出站工具契约
-create-time: 2026-10-19
-update-time: 2026-10-24
-version: v0.5.0
-relative-docs:
-  - docs/guide/getting-started.zh.md
-  - docs/guide/concepts.zh.md
-  - docs/architecture.zh.md
+description: 回环面板动作、入站 JSON-RPC 端点、SSE 流式、任务状态、错误码、AgentCard 与出站工具契约
+update-time: 2026-10-25
 ---
 
 # HTTP API 与 A2A 协议
 
 [English](http-api.md) · **中文**
 
-本页是 `0.5.0` 的线上参考，分两部分：
+本页是线上参考，覆盖两个互相独立的界面：
 
-1. 面板使用的**仅回环控制 API**（`/a2a/api`）；
+1. 面板使用的**仅回环面板 API**（`/a2a/api`）；
 2. 入站 server 发布的 **A2A 端点**（`/a2a/<id>`）。
 
-控制 API 是控制面；A2A 端点是对外协议面。两者分开：远端客户端能调入站端点，
-但驱动不了面板。
+远端 A2A 客户端能调用入站端点，但驱动不了面板。
 
 ## 1. 面板 API
 
-基础路径：`/a2a/api`。它挂在 profile 的 web server 上，只接受回环来源
-（`127.0.0.1`、`::1`、`::ffff:127.0.0.1`）；其他来源 `403`。
+基础路径 `/a2a/api`，挂在 profile 的 web server 上。只接受回环来源
+（`127.0.0.1`、`::1`、`::ffff:127.0.0.1`），其他来源返回 `403`。POST 请求体上限
+固定为 1 MB，与 A2A 的 `maxBodyBytes` 配置无关。
 
-### 1.1 读接口
+### 1.1 读端点
 
 | 方法与路径 | 返回 |
 |---|---|
-| `GET /a2a/api` | 快照：`{ version, inbounds, outbounds, tasks, peers, sessions }` |
+| `GET /a2a/api` | 快照：`{ version, inbounds, outbounds, tasks, taskTotal, taskNextOffset, peers, sessions, metrics }` |
 | `GET /a2a/api/presets` | Agent preset 名单：`[{ id, name?, description?, isDefault? }]` |
-| `GET /a2a/api/update` | 插件版本与更新检查结果（见下）；`?refresh=1` 绕过缓存 |
-| `GET /a2a/api/card?id=<inbound>` | 单个入站 AgentCard |
-| `GET /a2a/api/task?id=<task>` | 单条任务 |
-| `GET /a2a/api/session?contextId=<id>&serverId=<instance>` | 单个会话视图 |
+| `GET /a2a/api/update` | 插件版本与更新检查结果；`?refresh=1` 跳过缓存 |
+| `GET /a2a/api/card?id=<inbound>` | 一个入站 AgentCard；未知 id 返回 `404` |
+| `GET /a2a/api/task?id=<task>` | 一条任务；未知 id 返回 `404` |
+| `GET /a2a/api/session?contextId=<id>&serverId=<instance>` | 某个活跃上下文会话的派生对话消息；不带 `serverId` 且上下文有歧义时返回 `409` |
 | `GET /a2a/api/metrics` | 指标快照 |
 
-`version` 是已安装的插件版本，随快照返回，因此面板在第一次网络请求之前就能显示它。
-`outbounds[].agentVersion` 是连接存活时远端 AgentCard 宣告的版本。`GET /a2a/api`
-还接受 `taskLimit`、`taskOffset`、`taskState`、`taskContextId`、`taskServerId`
-控制任务页。
+`GET /a2a/api` 接受 `taskLimit`（默认 50）、`taskOffset`、`taskState`、
+`taskContextId`、`taskServerId` 来分页任务列表。
 
-快照样例（值已缩写）：
+`version` 是已安装的插件版本，随快照返回，让面板在任何网络调用之前就能显示。
+`outbounds[].agentVersion` 是连接存活时远端卡片宣告的版本。`inbounds[]` 里的
+`cardUrl` 是宣告的端点 URL（来自 `supportedInterfaces`），卡片 JSON 本身在
+`cardPath`。
+
+快照示例（值有省略）：
 
 ```json
 {
@@ -77,8 +74,11 @@ relative-docs:
     }
   ],
   "tasks": [],
+  "taskTotal": 0,
+  "taskNextOffset": null,
   "peers": [],
-  "sessions": []
+  "sessions": [],
+  "metrics": {}
 }
 ```
 
@@ -94,54 +94,58 @@ relative-docs:
   "error": null,
   "source": "npm",
   "repoUrl": "https://github.com/HanphoneJan/dsh-a2a",
+  "packageName": "@hanphone/dsh-a2a",
   "checkedAt": 1790000000000,
   "cached": false,
   "runtime": { "node": "24.20.0", "platform": "linux", "arch": "x64", "profile": "web" }
 }
 ```
 
-它同时查询 npm registry 的 `latest` 标签与插件 manifest 中 GitHub 仓库的
-`package.json`，取其中更高的版本。结果缓存 6 小时；`?refresh=1` 绕过缓存。
-`runtime` 带 Node 版本、平台/架构，以及宿主 export 的 `DSH_PROFILE`（当前
-profile），面板据此生成对应 profile 的更新命令。两条源都查不到时仍返回
-`200`，但 `ok: false`、`latest: null` 并带 `error`——查询失败绝不会显示成
-「已是最新」。检查是只读的：不安装、不重启、不改 profile。
+它查询 npm registry 的 `latest` 标签与插件 manifest 中 GitHub 仓库的
+`package.json`，取较高版本。结果缓存 6 小时；`?refresh=1` 跳过缓存。`runtime`
+带 Node 版本、平台/架构，以及宿主导出 `DSH_PROFILE` 时的当前 profile。所有源都
+失败时，端点仍返回 `200`，但 `ok: false`、`latest: null` 并带 `error`。检查是只读的。
 
 ### 1.2 控制动作
 
-`POST /a2a/api`，body 里的 `action` 为下列之一。
+`POST /a2a/api`，JSON body 的 `action` 为下列之一。
 
 #### 入站
 
-| 动作 | 必填 | 可选 |
+| 动作 | 必填字段 | 可选字段 |
 |---|---|---|
 | `inbound.create` | `name`、`description`、`version` | `endpointPath`、`preset`、`authTokenEnv`、`enabled` |
 | `inbound.update` | `id` | `name`、`description`、`version`、`endpointPath`、`preset`、`authTokenEnv` |
 | `inbound.remove` | `id` | — |
 | `inbound.enable` / `inbound.disable` | `id` | — |
-| `inbound.setAuth` | `id` | `token`（省略或空串表示清除） |
+| `inbound.setAuth` | `id` | `token`（省略或空串即清除） |
 | `inbound.sendTest` | `id`、`text` | `contextId`、`skill` |
 | `inbound.close` | `id`（对端 id） | — |
 
+`inbound.sendTest` 走与线上端点相同的门禁和任务生命周期，但不走 HTTP 鉴权；
+它只能从回环调用。
+
 #### 出站
 
-| 动作 | 必填 | 可选 |
+| 动作 | 必填字段 | 可选字段 |
 |---|---|---|
 | `outbound.create` | `name`、`agentCardUrl` | `bearerTokenEnv`、`preset`、`enabled`、`timeoutMs`、`disabledSkills`、`skillOverrides` |
 | `outbound.update` | `id` | `name`、`preset`、`timeoutMs`、`disabledSkills`、`skillOverrides` |
 | `outbound.remove` | `id` | — |
 | `outbound.enable` / `outbound.disable` | `id` | — |
 | `outbound.refresh` | `id` | — |
-| `outbound.setAuth` | `id` | `token`（省略或空串表示清除） |
+| `outbound.setAuth` | `id` | `token`（省略或空串即清除） |
 | `outbound.discover` | `agentCardUrl` | `token` |
+
+`outbound.update` 不改 `agentCardUrl`；要换卡片地址请删除后重新创建连接。
 
 #### 任务与会话
 
-| 动作 | 必填 | 效果 |
+| 动作 | 必填字段 | 效果 |
 |---|---|---|
-| `task.cancel` | `id`（任务 id） | 中止并标记任务为取消 |
-| `session.cancel` | `id`（context id） | 取消该上下文的活跃任务；可选 `serverId` 限定实例 |
-| `session.close` | `id`（context id） | 取消活跃任务并释放活跃会话句柄；可选 `serverId` |
+| `task.cancel` | `id`（任务 id） | 中止任务并标记为 canceled |
+| `session.cancel` | `id`（上下文 id） | 取消该上下文的活跃任务；可选 `serverId` 限定实例 |
+| `session.close` | `id`（上下文 id） | 取消活跃任务并释放活跃会话句柄；可选 `serverId` |
 
 ### 1.3 响应与状态码
 
@@ -152,17 +156,18 @@ profile），面板据此生成对应 profile 的更新命令。两条源都查�
 ```
 
 `inbound.create` 与 `outbound.create` 带 `id`；`outbound.discover` 带
-`preview`（远端名称、版本、描述、端点、技能）。失败动作返回 `409`：
+`preview` 对象，含远端名称、版本、描述、端点与技能。失败的动作返回 `409` 与
 `{ ok: false, message, ... }`。
 
 | 状态 | 含义 |
 |---|---|
-| `200` | 动作成功，或读取成功 |
+| `200` | 动作或读取成功 |
 | `400` | body 不是合法 JSON |
 | `403` | 调用方不是回环 |
+| `404` | 请求的卡片或任务不存在 |
 | `405` | 方法不是 `GET`/`POST` |
-| `413` | 请求体超过配置上限 |
-| `409` | 动作失败（如未知 id、连接失败） |
+| `409` | 动作失败，或会话有歧义 |
+| `413` | 请求体超过面板上限 |
 
 ### 1.4 示例
 
@@ -181,7 +186,7 @@ curl -sS -X POST http://127.0.0.1:3080/a2a/api \
   }'
 ```
 
-设置 Bearer Token：
+设置它的 Bearer Token：
 
 ```sh
 curl -sS -X POST http://127.0.0.1:3080/a2a/api \
@@ -189,7 +194,7 @@ curl -sS -X POST http://127.0.0.1:3080/a2a/api \
   -d '{ "action": "inbound.setAuth", "id": "reports-1a2b3c4d", "token": "s3cr3t" }'
 ```
 
-只发现远端卡片、不建立连接：
+只读取远端卡片、不创建连接：
 
 ```sh
 curl -sS -X POST http://127.0.0.1:3080/a2a/api \
@@ -219,36 +224,39 @@ curl -sS -X POST http://127.0.0.1:3080/a2a/api \
 | `/a2a/<id>/agent-card.json` | `GET` | AgentCard JSON |
 | `/a2a/<id>` | `POST` | JSON-RPC 端点 |
 
-端点按实例的 `endpointPath`（默认 `/a2a/<id>`）前缀注册。停用实例会注销两条路由。
+端点路径就是实例的 `endpointPath`（默认 `/a2a/<id>`），卡片路径是该路径加
+`/agent-card.json`。停用实例会注销两条路由。
 
 ### 2.1 鉴权
 
-没有 token 时不需要 `Authorization`。配置 token 后，每个请求必须带：
+没有 token 时不需要 `Authorization` 头。配置 token 后，每个请求都要带：
 
 ```http
 Authorization: Bearer <token>
 ```
 
-缺失或错误返回 `401` 和 `WWW-Authenticate: Bearer`。流式请求在写 `200` SSE 头之前先鉴权，
-所以 `401` 仍是干净的 HTTP 状态。
+缺失或错误返回 `401` 与 `WWW-Authenticate: Bearer`。流式请求在写 `200` SSE 头
+之前鉴权，所以 `401` 仍是干净的 HTTP 状态。
+
+token 在实例组装时解析；凭据模型见[运维指南](../guide/operations.zh.md#访问与安全)。
 
 ### 2.2 方法
 
-端点说 A2A `1.0.1` 的 JSON-RPC 绑定，方法名为 PascalCase。
+端点使用 A2A `1.0.1` 的 JSON-RPC 绑定，方法名为 PascalCase。
 
 | 方法 | 参数 | 行为 |
 |---|---|---|
-| `SendMessage` | `message` | 创建任务并**阻塞到终态/中断态**；返回任务 |
-| `SendStreamingMessage` | `message` | 创建任务并流式推送；需要 `Accept: text/event-stream` |
-| `GetTask` | `id` | 返回一个任务 |
-| `ListTasks` | `contextId`、`status`、`pageSize`、`pageToken`、`statusTimestampAfter`、`includeArtifacts`、`historyLength` | 按条件过滤、游标分页，按最近更新倒序；响应含 `totalSize` |
+| `SendMessage` | `message`、`configuration?` | 创建或续接任务，等待到终态/中断；返回 `{task}` |
+| `SendStreamingMessage` | `message`、`configuration?` | 创建或续接任务并流式推送；要求 `Accept: text/event-stream` |
+| `GetTask` | `id`、`historyLength?` | 返回一条任务 |
+| `ListTasks` | `contextId`、`status`、`pageSize`、`pageToken`、`statusTimestampAfter`、`includeArtifacts`、`historyLength` | 过滤、游标分页，按最近更新排序；响应含 `totalSize` |
 | `CancelTask` | `id` | 取消非终态任务；终态任务返回 `TASK_CANCEL_NOT_ALLOWED` |
-| `SubscribeToTask` | `id` | 对非终态任务补发当前 Task 并流到终态；终态任务返回 `UNSUPPORTED_OPERATION`；支持进程内 `Last-Event-ID` 回放 |
-| `GetExtendedAgentCard` | 无 | 返回同一张 AgentCard |
+| `SubscribeToTask` | `id` | 流式订阅非终态任务；终态任务以 `UNSUPPORTED_OPERATION` 拒绝；支持进程内 `Last-Event-ID` 回放 |
+| `GetExtendedAgentCard` | 无 | 返回同一份 AgentCard |
 
-不支持的方法返回 `METHOD_NOT_FOUND`；由于卡片宣告
-`capabilities.pushNotifications: false`，push notification 配置方法返回
-`PUSH_NOTIFICATION_NOT_SUPPORTED`（`-32003`）。
+未知方法返回 `METHOD_NOT_FOUND`。push notification 配置方法返回
+`PUSH_NOTIFICATION_NOT_SUPPORTED`（`-32003`），因为卡片宣告
+`capabilities.pushNotifications: false`。
 
 ### 2.3 消息形状
 
@@ -269,18 +277,20 @@ Authorization: Bearer <token>
 }
 ```
 
-- `parts` 可以是文本、文件或数据。文本与数据进入 DSH 提示词；带 `raw` 的图片/文件
-  （`raw` + `mediaType`/`filename`）会经宿主 attachment store 准入，作为真实附件进入会话；
-  只有 URL 的文件 part 仍按文本处理（服务端不会主动抓取远端 URL）。
-- `metadata.skill` 选择宣告的技能；省略默认 `chat`，不在宣告集合里会被门禁拒绝。
-- `contextId` 是对话键。复用即复用活跃 DSH 会话；省略则生成新上下文。
-- `messageId` 是幂等键：重发同一 id 返回原任务，不会重复执行。`taskId` 用于继续
-  非终态任务；终态任务会拒绝后续消息；对仍在运行的任务续接会返回
-  `UNSUPPORTED_OPERATION`，不会静默丢弃。
-- `SendMessage` 返回 `result: { "task": ... }`（直接消息响应为 `{ "message": ... }`），
-  与规范 oneof 一致。
-- 每个请求可带 `A2A-Version`（header 或 query）。不支持的版本返回
-  `VERSION_NOT_SUPPORTED`（`-32007`）；响应会带 `A2A-Version: 1.0`。
+- `parts` 可以是文本、文件或数据 part。文本与数据 part 作为文本进入 DSH prompt。
+  带 `raw` 与 `mediaType`/`filename` 的原始图片/文件 part，在挂载了宿主附件存储时
+  经它落成真实附件；只有 URL 的文件 part 仍是文本（服务端不抓取远程 URL）。
+  没有附件存储时，原始 part 变成占位文本。
+- `metadata.skill` 选择宣告的技能，默认为 `chat`；不在宣告集合内会被门禁拒绝。
+- `contextId` 是对话键。复用它就复用活跃 DSH 会话；省略则生成新上下文。
+- `messageId` 是幂等键：重发同一个 id 返回原任务，不再跑一轮。`taskId` 续接一个
+  非终态任务；终态任务拒绝后续消息，仍在运行的任务以 `UNSUPPORTED_OPERATION` 拒绝。
+- `configuration.returnImmediately: true` 在启动任务后立即返回；否则 `SendMessage`
+  阻塞。`configuration.historyLength` 裁剪返回的历史。
+- `configuration.acceptedOutputModes` 只接受文本模式；排除文本的请求得到
+  `CONTENT_TYPE_NOT_SUPPORTED`。
+- 每个请求都可带 `A2A-Version`（头或查询参数）。主/次版本不匹配返回
+  `VERSION_NOT_SUPPORTED`（`-32007`）；响应带 `A2A-Version: 1.0`。
 
 ### 2.4 流式
 
@@ -298,47 +308,48 @@ curl -N http://127.0.0.1:3080/a2a/<id> \
   }'
 ```
 
-每个 SSE 事件是 JSON-RPC result envelope（可选带 `id:` 行用于
-`Last-Event-ID` 回放）：
+每个 SSE 事件是一个 JSON-RPC result 信封。status 与 artifact 帧带可回放的 `id:` 行；
+首尾两个 task 快照不带。
 
 ```text
 id: 7
 data: {"jsonrpc":"2.0","id":2,"result":{"artifactUpdate":{...}}}
 ```
 
-首帧是当前 `task`，之后是 `statusUpdate` / `artifactUpdate`。增量 artifact
-带 `append: true`；省略/false 表示替换。错误帧使用 JSON-RPC error envelope
+首个事件是当前 `task`；后续帧是 `statusUpdate` 与 `artifactUpdate`。artifact 分片
+在扩展已有 artifact 时带 `append: true`，否则替换它。错误使用 JSON-RPC error 信封
 （`data: {"jsonrpc":"2.0","id":...,"error":{...}}`）。
 
-`SubscribeToTask` 用同一传输，先发送当前 Task，再流到终态。终态任务返回
-`UNSUPPORTED_OPERATION`；带 `Last-Event-ID` 时发送快照并只回放非 artifact 帧，
-避免 append 分片重复。
+`SubscribeToTask` 使用同一传输，先发当前任务，再流到任务落定（终态或中断）。终态任务
+以 `UNSUPPORTED_OPERATION` 拒绝。带 `Last-Event-ID` 时，服务端先发当前快照，然后只回放
+非 artifact 帧，避免分片被追加两次。
 
-#### 2.4.1 流里到底有什么
+#### 2.4.1 流里有什么
 
-默认 `session` 执行器会把实时 assistant 文本增量投影为 `artifactUpdate` 分片
-（`lastChunk: false`），最后再发一个 `lastChunk: true` 收尾。工具调用增量会作为
-`data` part 放在 `tool-call-<id>` artifact 里。流形状：
+默认 `session` 执行器把实时 assistant 文本增量投影成 `artifactUpdate` 分片
+（`lastChunk: false`），最后以 `lastChunk: true` 收尾。工具调用增量是
+`tool-call-<id>` artifact 下的结构化 `data` part。流的形状是：
 
-- 初始 `task`，带当前状态和 task id；
-- 零个或多个 `artifactUpdate`，承载 assistant/工具进度；
-- 最终 `task`，带完整 artifacts。
+- 一个初始 `task`，带当前状态与任务 id；
+- 零个或多个携带 assistant/工具进度的 `artifactUpdate` 帧；
+- 一个带完整 artifact 集合的最终 `task`。
 
-推理增量故意不投影。以落定任务为准。
+推理增量故意不投影。落定后的任务才是事实来源。
 
-#### 2.4.2 断连与重连
+#### 2.4.2 断线与重连
 
-客户端断连**不会**取消任务。`SendMessage` 与 `SendStreamingMessage` 都会把执行器跑完并持久化任务；
-SSE 订阅只负责投递。
+客户端断线**不会**取消任务。执行器跑完并持久化任务，SSE 订阅只负责投递。
 
-- 每个流帧都带 SSE `id:`。重连时用 `SubscribeToTask` + `Last-Event-ID: <id>`：
-  服务端先发当前 Task 快照，再只回放 status 帧（artifact 分片已在快照里）；
-  日志有界（每任务 200 帧）且仅存在于当前进程。
-- `SendMessage` 只在任务落定后返回任务。如果连接在响应前断开，用同一
-  `messageId` 重试（幂等），或用 `ListTasks` 找回任务。继续中断任务时带上原 `taskId`。
-- 复用 `contextId` 延续活跃 DSH 对话；任务续传与对话连续性是两件事。新的 `contextId` 开启新对话。
-- DSH 进程重启会保留任务与 context 绑定，但不保留活跃会话或 SSE 订阅。
-  进程死亡时处于 `TASK_STATE_WORKING` 的任务没有崩溃恢复，可能一直停在该状态。
+- 从首帧 `task` 记下 `taskId`。重连时用 `GetTask` 轮询，或用 `SubscribeToTask`
+  从当前状态继续流。
+- status 与 artifact 帧都带 SSE `id:`。用 `SubscribeToTask` 加
+  `Last-Event-ID: <id>` 重连：服务端先发当前任务，然后只回放 status 帧。日志每任务
+  保留 200 帧，且只在进程内。
+- 如果 `SendMessage` 响应前断线，用同一 `messageId` 重试（幂等），或用 `ListTasks`
+  找任务。续接被中断的任务，重发时带它的 `taskId`。
+- 复用 `contextId` 续接对话；任务续接与对话连续性是两个独立概念。
+- 进程重启保留任务与上下文绑定，但不保留活跃会话或 SSE 订阅。进程死亡时处于
+  `TASK_STATE_WORKING` 的任务没有崩溃恢复，可能一直停在该状态。
 
 ### 2.5 任务状态
 
@@ -346,12 +357,16 @@ SSE 订阅只负责投递。
 |---|---|---|
 | `TASK_STATE_SUBMITTED` | 否 | 任务已记录，未开始 |
 | `TASK_STATE_WORKING` | 否 | 执行器运行中 |
-| `TASK_STATE_INPUT_REQUIRED` | 否（中断） | 远端 agent 需要更多输入 |
-| `TASK_STATE_AUTH_REQUIRED` | 否（中断） | 远端 agent 需要认证 |
+| `TASK_STATE_INPUT_REQUIRED` | 否（中断） | agent 需要更多输入 |
+| `TASK_STATE_AUTH_REQUIRED` | 否（中断） | agent 需要鉴权 |
 | `TASK_STATE_COMPLETED` | 是 | 完成，带 artifacts |
 | `TASK_STATE_FAILED` | 是 | 执行失败；状态消息带错误 |
-| `TASK_STATE_CANCELED` | 是 | 调用方或面板取消 |
+| `TASK_STATE_CANCELED` | 是 | 被调用方或会话面板取消 |
 | `TASK_STATE_REJECTED` | 是 | 执行前被拒绝 |
+
+入站路径会产生 `SUBMITTED`、`WORKING`、`COMPLETED`、`FAILED`、`CANCELED`、
+`INPUT_REQUIRED` 与 `AUTH_REQUIRED`。`REJECTED` 属于状态词表，但门禁拒绝发生在
+任务创建之前，因此不会留下该状态的任务。
 
 ### 2.6 错误码
 
@@ -372,9 +387,14 @@ SSE 订阅只负责投递。
 | `-32008` | `INVALID_AGENT_RESPONSE` |
 | `-32040` | `UNAUTHORIZED`（HTTP 401 映射） |
 
-当前 dispatch 实际使用其中一部分：`INVALID_REQUEST`、`INVALID_PARAMS`、
-`METHOD_NOT_FOUND`、`INTERNAL_ERROR`、`TASK_NOT_FOUND`、
-`TASK_CANCEL_NOT_ALLOWED` 与 `401` 映射。
+实现会发出 `INVALID_REQUEST`、`INVALID_PARAMS`、`METHOD_NOT_FOUND`、
+`INTERNAL_ERROR`、`TASK_NOT_FOUND`、`TASK_CANCEL_NOT_ALLOWED`、
+`PUSH_NOTIFICATION_NOT_SUPPORTED`、`UNSUPPORTED_OPERATION`、
+`CONTENT_TYPE_NOT_SUPPORTED`、`VERSION_NOT_SUPPORTED`、`401` 映射，以及限流拒绝和
+流式路径技能门禁拒绝所用的 `-32000`。非流式路径的技能门禁拒绝用
+`INVALID_PARAMS`；并发与超时失败把任务落为 `FAILED`，不返回 RPC 错误。
+`PARSE_ERROR`、`STREAMING_NOT_SUPPORTED`、`INVALID_AGENT_RESPONSE` 在协议表里，
+但入站 dispatcher 不发它们。
 
 ### 2.7 AgentCard
 
@@ -403,38 +423,53 @@ SSE 订阅只负责投递。
 }
 ```
 
-配置 Bearer 时，卡片额外带 `bearer` 安全方案与要求，但绝不含 token 值。
+挂载 `attachments` 服务时，`defaultInputModes` 还会宣告图片类型与
+`application/octet-stream`。配置 Bearer Token 时，卡片增加 `bearer` 安全方案与要求；
+它绝不含 token 值。
 
 ## 3. 出站工具契约
 
-每个已连接远端技能变成一个模型工具：
+每个启用的远端技能变成一个模型工具：
 
 ```text
 a2a__<连接名>__<技能 id>
 ```
 
-名称规范化为 `[A-Za-z0-9_-]`（其他字符变 `_`），截断到 64 字符，冲突时加哈希区分。参数 schema：
+名称规范化为 `[A-Za-z0-9_-]` 并截断到 64 个字符；冲突时加短哈希后缀。参数 schema：
 
 ```json
 {
-  "prompt": "要发给远端 agent 的任务或指令。"
+  "prompt": "要发给远端 agent 的任务或指令。",
+  "taskId": "可选。续接一个被中断的远端任务。"
 }
 ```
 
-工具用稳定的 per-caller `contextId` 发 A2A 消息；远端卡片支持流式时走流式，
-会把调用方 abort 传下去（拿到 task id 后本地取消还会发 `CancelTask`），并对瞬时传输/5xx
-失败重试。`FAILED` 任务抛工具错误并带远端消息；`INPUT_REQUIRED` 与 `AUTH_REQUIRED`
-以文本返回并带上远端 `taskId`，模型可用 `taskId` 继续。
+`prompt` 必填。工具用稳定的 per-caller `contextId` 发送 A2A 消息；远端卡片宣告
+流式时走流式；传播调用方 abort（任务 id 已知后发 `CancelTask`）；对瞬时传输/5xx
+失败重试。
+
+`TASK_STATE_FAILED` 任务抛出带远端消息的工具错误。中断状态以文本返回并带远端任务 id：
+
+```text
+[remote agent TASK_STATE_INPUT_REQUIRED task=<id>] <message>
+```
+
+模型可以用该 id 再次调用。空结果渲染为 `(remote agent returned no output)`。
 
 ## 4. 当前限制
 
-这些是 `0.5.0` 的已知或有意行为，不要假设相反：
+以下行为在 `0.5.0` 是有意为之或已知的：
 
-- `SendMessage` 默认阻塞；`configuration.returnImmediately: true` 会在启动任务后立即返回。`historyLength` 已应用于 `GetTask`、`SendMessage` 和 `ListTasks`（history 从持久化任务输入/输出重建，不是逐轮完整 transcript）。
-- `acceptedOutputModes` 只接受文本模式；排除文本的请求返回 `CONTENT_TYPE_NOT_SUPPORTED`。
-- 未实现 push notifications；push 配置方法返回 `PUSH_NOTIFICATION_NOT_SUPPORTED`（`-32003`）。
+- `SendMessage` 默认阻塞；`configuration.returnImmediately: true` 在启动任务后返回。
+  历史由持久任务的输入/输出重建，不是完整的逐轮 transcript。
+- `acceptedOutputModes` 只接受文本模式；排除文本的请求得到
+  `CONTENT_TYPE_NOT_SUPPORTED`。
+- 没有实现 push notification；push 配置方法返回
+  `PUSH_NOTIFICATION_NOT_SUPPORTED`（`-32003`）。
 - 只实现 JSON-RPC 绑定（没有 gRPC 或 HTTP+JSON）。
-- 没有 OAuth、mTLS 或按客户端凭据；限流是进程内、按来源、可配置的，没有分布式配额。
-- SSE 事件日志在内存里：`Last-Event-ID` 只支持同一进程内重连恢复，不支持重启恢复。
-- 出站 `preset` 目前仍是未来本地衔接会话的持久化元数据；出站工具直接调用远端。
+- 没有 OAuth、mTLS 或按客户端凭据。限流是进程内、按来源、可配置的；没有分布式配额
+  或计费。
+- SSE 事件日志在内存里：`Last-Event-ID` 只能恢复到同一进程的重连，跨重启不行。
+- 出站 `preset` 是持久化元数据；不会从它组装本地衔接会话，工具直接调用远端。
 - `subagent` 执行器存在，但默认技能表不会选中它。
+- 进程死亡时处于 `TASK_STATE_WORKING` 的任务没有崩溃恢复。
