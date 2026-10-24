@@ -2,8 +2,8 @@
 name: Concepts
 description: The A2A model, inbound servers, outbound connections, presets, skills, tasks, contexts, executors, and the security model
 create-time: 2026-10-19
-update-time: 2026-10-19
-version: v0.4.0
+update-time: 2026-10-24
+version: v0.5.0
 relative-docs:
   - docs/architecture.md
   - docs/guide/operations.md
@@ -15,7 +15,7 @@ relative-docs:
 **English** · [中文](concepts.zh.md)
 
 This page defines the vocabulary the rest of the manual uses. It describes the
-current behavior of `0.4.0`, including places where the implementation is
+current behavior of `0.5.0`, including places where the implementation is
 narrower than the protocol.
 
 ## 1. A2A in one paragraph
@@ -98,11 +98,9 @@ An inbound `SendMessage` creates a **task**:
 - the task records its skill, input parts, state, artifacts, timestamps, and
   the inbound server instance that received it.
 
-States follow the A2A vocabulary: `TASK_STATE_SUBMITTED`,
-`TASK_STATE_WORKING`, `TASK_STATE_INPUT_REQUIRED`,
-`TASK_STATE_AUTH_REQUIRED`, `TASK_STATE_COMPLETED`, `TASK_STATE_FAILED`,
-`TASK_STATE_CANCELED`, `TASK_STATE_REJECTED`. The last four are terminal;
-`INPUT_REQUIRED` and `AUTH_REQUIRED` are interrupted but not terminal.
+States follow the A2A vocabulary (`TASK_STATE_*`); the full table, including
+which states are terminal, is in the
+[protocol reference](../reference/http-api.md#25-task-states).
 
 A **context** is one conversation. The plugin keeps **one live DSH session per
 context**, with the deterministic id `a2a-<contextId>`. Reusing a `contextId`
@@ -134,22 +132,14 @@ routing rule.
 ## 8. AgentCard
 
 The card is a pure function of the instance record plus the advertised base URL
-and endpoint path:
+and endpoint path: identity fields, a fixed DeepSeek provider, capabilities,
+text modes, the derived skills, and one JSON-RPC `supportedInterfaces` entry.
+A configured token adds a `bearer` scheme declaration, never the secret.
 
-- `name`, `description`, `version` from the instance;
-- `provider` fixed to DeepSeek;
-- `capabilities`: streaming `true`, push notifications `false`, extended card
-  `true`, state-transition history `false`;
-- `defaultInputModes` / `defaultOutputModes`: `text/plain`;
-- `skills`: the derived skill list;
-- `supportedInterfaces`: one JSON-RPC interface at the instance endpoint,
-  protocol version `1.0`;
-- when a token is configured, a `bearer` security scheme and requirement,
-  with no secret value.
-
-The card is served as JSON at the instance's `cardPath`. The well-known
+The card is served at the instance's `cardPath`. The well-known
 `/.well-known/agent-card.json` path is not used for instances; use the full
-per-instance URL printed by the panel.
+per-instance URL printed by the panel. The exact JSON shape is in the
+[protocol reference](../reference/http-api.md#27-agentcard).
 
 ## 9. Identity, storage, and sessions
 
@@ -193,9 +183,9 @@ do not.
 
 ## 11. What this plugin is not
 
-- It is not a model proxy or a general HTTP gateway.
-- It does not route between inbound and outbound automatically; you connect
-  them explicitly.
-- It does not persist live sessions; only tasks and bindings are durable.
-- It does not support A2A push notifications, gRPC, or the HTTP+JSON binding.
-- It does not currently expose a local hand-off session for outbound calls.
+It is not a model proxy, a general HTTP gateway, or an automatic router between
+inbound and outbound: you connect the two directions explicitly. It does not
+persist live sessions — only tasks and bindings are durable.
+
+The full list of protocol and feature limits is in the
+[protocol reference](../reference/http-api.md#4-current-limits).

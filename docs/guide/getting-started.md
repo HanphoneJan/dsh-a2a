@@ -2,8 +2,8 @@
 name: Getting started
 description: Install @hanphone/dsh-a2a, publish an inbound A2A server, call it with curl, and connect a remote agent as a model tool
 create-time: 2026-10-19
-update-time: 2026-10-19
-version: v0.4.0
+update-time: 2026-10-24
+version: v0.5.0
 relative-docs:
   - docs/guide/concepts.md
   - docs/guide/operations.md
@@ -33,10 +33,8 @@ You need:
   `http://127.0.0.1:3080/`.
 - The `dsh` command, or the repository checkout command `pnpm dsh`.
 
-The base `web` profile already mounts the services this plugin needs:
-`storageDomain`, `webServer`, `tools`, `agents`, `agentPresets`, `skills`,
-and `credentials`. A custom composition that omits one of them idles only the
-affected half; see [Operations](operations.md#host-services).
+The base `web` profile mounts every service the plugin uses. For a custom
+composition, see [Operations: host services](operations.md#6-host-services).
 
 ## 2. Install
 
@@ -120,47 +118,13 @@ curl -sS http://127.0.0.1:3080/a2a/<id> \
 ```
 
 A successful response contains a task whose `status.state` is
-`TASK_STATE_COMPLETED` and whose `artifacts` hold the reply:
+`TASK_STATE_COMPLETED` and whose `artifacts` hold the reply.
 
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "1",
-  "result": {
-    "id": "a2a-...",
-    "contextId": "...",
-    "status": { "state": "TASK_STATE_COMPLETED", "timestamp": "..." },
-    "artifacts": [{ "artifactId": "result", "parts": [{ "text": "OK" }] }],
-    "metadata": { "skill": "chat" }
-  }
-}
-```
-
-To receive progress frames instead of waiting, send
-`SendStreamingMessage` (or `SubscribeToTask`) with
-`Accept: text/event-stream`:
-
-```sh
-curl -N http://127.0.0.1:3080/a2a/<id> \
-  -H 'content-type: application/json' \
-  -H 'accept: text/event-stream' \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": "2",
-    "method": "SendStreamingMessage",
-    "params": {
-      "message": {
-        "role": "ROLE_USER",
-        "parts": [{ "text": "Count to three slowly" }],
-        "metadata": { "skill": "chat" }
-      }
-    }
-  }'
-```
-
-Each SSE frame is a `data: <StreamResponse>` line; the final frame carries the
-settled `task`. See [HTTP API and A2A protocol](../reference/http-api.md#a2a-endpoints)
-for the frame vocabulary.
+To receive progress frames instead of waiting, send `SendStreamingMessage`
+(or `SubscribeToTask`) with `Accept: text/event-stream`. Each SSE frame is a
+`data: <StreamResponse>` line and the final frame carries the settled task; the
+method table and frame vocabulary are in the
+[protocol reference](../reference/http-api.md#2-a2a-endpoints).
 
 If the inbound server has a bearer token, add:
 

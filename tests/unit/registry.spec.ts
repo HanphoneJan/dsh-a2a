@@ -73,6 +73,8 @@ describe('OutboundAgentRegistry', () => {
     const tools = registry.list()
     expect(tools[0]?.toolCount).toBe(2)
     expect(tools[0]?.skillCount).toBe(2)
+    // The remote card's advertised version is surfaced for the dashboard.
+    expect(tools[0]?.agentVersion).toBe('1.0.0')
   })
 
   it('skips disabled agents at load', async () => {

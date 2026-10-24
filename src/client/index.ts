@@ -21,6 +21,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { createElement, useEffect, useState, type ReactElement } from 'react'
 import { injectDashboardStyles } from './dashboard.css.ts'
+import { updateCommandFor, updateStatusText, updateToneOf, type UpdateInfo } from './update-status.ts'
 
 /** Services this plugin needs from the client runtime. */
 export const inject = ['slots']
@@ -82,6 +83,8 @@ export interface OutboundServerView {
   readonly skillCount: number
   readonly toolCount: number
   readonly skills: readonly OutboundSkillView[]
+  /** The remote AgentCard's advertised version (absent when unknown). */
+  readonly agentVersion?: string
   readonly lastError?: string
   readonly lastCardAt?: string
 }
@@ -95,6 +98,8 @@ export interface PresetView {
 }
 
 export interface ApiSnapshot {
+  /** Installed plugin version (also present when the update check has not run). */
+  readonly version: string
   readonly inbounds: readonly InboundServerView[]
   readonly outbounds: readonly OutboundServerView[]
   readonly tasks: readonly TaskView[]
@@ -134,6 +139,9 @@ export interface AuditEvent {
   readonly source?: string
   readonly detail?: string
 }
+
+/** The host's update-check answer is exported by `./update-status.ts`. */
+export type { UpdateInfo } from './update-status.ts'
 
 interface DiscoverPreview {
   readonly name: string
@@ -203,6 +211,12 @@ async function fetchPresets(): Promise<PresetView[]> {
   return (await res.json()) as PresetView[]
 }
 
+async function fetchUpdate(force = false): Promise<UpdateInfo> {
+  const res = await fetch(`/a2a/api/update${force ? '?refresh=1' : ''}`, { headers: { accept: 'application/json' } })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return (await res.json()) as UpdateInfo
+}
+
 async function postControl(payload: Record<string, unknown>): Promise<{ readonly ok: boolean; readonly message: string; readonly preview?: unknown; readonly task?: unknown }> {
   const res = await fetch('/a2a/api', {
     method: 'POST',
@@ -232,6 +246,9 @@ export function A2aSection(_props: SectionProps): ReactElement {
   const [error, setError] = useState<string | undefined>(undefined)
   const [notice, setNotice] = useState<string | undefined>(undefined)
   const [busy, setBusy] = useState(false)
+  const [update, setUpdate] = useState<UpdateInfo | undefined>(undefined)
+  const [updateBusy, setUpdateBusy] = useState(false)
+  const [updateError, setUpdateError] = useState<string | undefined>(undefined)
   const [tab, setTab] = useState<'inbound' | 'outbound' | 'activity'>('inbound')
   const [taskFilter, setTaskFilter] = useState('')
   const [taskLimit, setTaskLimit] = useState(50)
@@ -296,6 +313,29 @@ export function A2aSection(_props: SectionProps): ReactElement {
       clearInterval(timer)
     }
   }, [taskFilter, taskLimit])
+
+  // The version strip asks once on mount; the host caches the answer for six
+  // hours and only an explicit click (refresh=1) reaches the network again.
+  useEffect(() => {
+    let alive = true
+    fetchUpdate()
+      .then((info) => { if (alive) setUpdate(info) })
+      .catch((err: unknown) => { if (alive) setUpdateError((err as Error).message) })
+    return () => { alive = false }
+  }, [])
+
+  const checkUpdate = async (): Promise<void> => {
+    if (updateBusy) return
+    setUpdateBusy(true)
+    setUpdateError(undefined)
+    try {
+      setUpdate(await fetchUpdate(true))
+    } catch (err) {
+      setUpdateError((err as Error).message)
+    } finally {
+      setUpdateBusy(false)
+    }
+  }
 
   const control = async (payload: Record<string, unknown>): Promise<{ ok: boolean; message: string; preview?: unknown; task?: unknown }> => {
     setBusy(true)
@@ -504,6 +544,22 @@ export function A2aSection(_props: SectionProps): ReactElement {
   )
   const empty = (text: string): ReactElement => createElement('div', { className: 'dsh-a2a-empty' }, text)
 
+  const pluginVersion = update?.current || snap?.version || ''
+  const updateStatus = updateStatusText(update, updateError)
+  const updateTone = updateToneOf(update, updateError)
+  const runtime = update?.runtime
+  const profile = runtime?.profile ?? 'web'
+  const updateCommand = updateCommandFor(profile)
+  const copyUpdateCommand = (): void => {
+    if (navigator.clipboard === undefined) {
+      setNotice('复制不了，请手动选中命令')
+      return
+    }
+    navigator.clipboard.writeText(updateCommand)
+      .then(() => setNotice('更新命令已复制'))
+      .catch(() => setNotice('复制不了，请手动选中命令'))
+  }
+
   return createElement(
     'div',
     { className: 'dsh-a2a-root' },
@@ -511,6 +567,32 @@ export function A2aSection(_props: SectionProps): ReactElement {
       'div',
       { className: 'dsh-a2a-section' },
       createElement('p', { className: 'dsh-a2a-intro' }, '管理本 DSH 的 A2A 连接：入站 server 把 DSH 作为 Agent 发布（每个绑定一个 agent preset，技能自动派生）；出站 server 连接并调用远程 A2A Agent。'),
+      // ── version / update strip ───────────────────────────────────────
+      createElement('div', { className: 'dsh-a2a-verbar' },
+        createElement('div', { className: 'dsh-a2a-verbar-main' },
+          createElement('span', { className: 'dsh-a2a-verbar-name' }, 'dsh-a2a'),
+          createElement('span', { className: 'dsh-a2a-verbar-version dsh-a2a-mono' }, pluginVersion !== '' ? `v${pluginVersion}` : 'v—'),
+          createElement('span', { className: 'dsh-a2a-verbar-status', 'data-tone': updateTone }, updateStatus),
+        ),
+        createElement('div', { className: 'dsh-a2a-verbar-side' },
+          runtime !== undefined
+            ? createElement('span', { className: 'dsh-a2a-verbar-runtime' }, `Node ${runtime.node} · ${runtime.platform}/${runtime.arch}`)
+            : null,
+          createElement('button', { className: 'dsh-a2a-btn', type: 'button', disabled: updateBusy, onClick: () => { void checkUpdate() } }, updateBusy ? '检查中…' : '检查更新'),
+        ),
+      ),
+      update !== undefined && update.hasUpdate
+        ? createElement('div', { className: 'dsh-a2a-update-detail' },
+            createElement('div', { className: 'dsh-a2a-hint' }, `发现新版本 v${update.latest ?? ''}（当前 v${update.current}，来源 ${update.source ?? '未知'}）。先卸旧版再装新版；直接安装可能拿到缓存里的旧副本。命令使用当前 profile（${profile}），装完重启一次 DSH。`),
+            createElement('pre', { className: 'dsh-a2a-command dsh-a2a-mono' }, updateCommand),
+            createElement('div', { className: 'dsh-a2a-btn-row' },
+              createElement('button', { className: 'dsh-a2a-btn', type: 'button', onClick: copyUpdateCommand }, '复制命令'),
+              update.repoUrl !== null
+                ? createElement('a', { className: 'dsh-a2a-link', href: update.repoUrl, target: '_blank', rel: 'noreferrer' }, '打开仓库')
+                : null,
+            ),
+          )
+        : null,
       error !== undefined ? createElement('div', { className: 'dsh-a2a-notice dsh-a2a-error' }, `加载失败：${error}`) : null,
       notice !== undefined ? createElement('div', { className: 'dsh-a2a-notice' }, notice) : null,
       // ── tabs ─────────────────────────────────────────────────────────
@@ -534,6 +616,7 @@ export function A2aSection(_props: SectionProps): ReactElement {
                           createElement('span', { 'data-state': v.enabled ? 'connected' : 'disabled', className: 'dsh-a2a-dot' }),
                           createElement('span', { className: 'dsh-a2a-card-name' }, v.name),
                           createElement('span', { className: 'dsh-a2a-badge' }, presetLabel(presets, v.preset)),
+                          createElement('span', { className: 'dsh-a2a-badge dsh-a2a-mono' }, `v${v.version}`),
                           createElement('span', { className: 'dsh-a2a-auth' }, v.authTokenEnv !== undefined ? '· 已配置鉴权' : '· 匿名'),
                         ),
                         createElement('div', { className: 'dsh-a2a-card-sub dsh-a2a-mono' }, `${v.endpointPath} · ${v.cardUrl ?? v.cardPath}`),
@@ -621,6 +704,9 @@ export function A2aSection(_props: SectionProps): ReactElement {
                           createElement('span', { 'data-state': dotState(v.state), className: 'dsh-a2a-dot' }),
                           createElement('span', { className: 'dsh-a2a-card-name' }, v.name),
                           createElement('span', { className: 'dsh-a2a-badge' }, presetLabel(presets, v.preset)),
+                          v.agentVersion !== undefined
+                            ? createElement('span', { className: 'dsh-a2a-badge dsh-a2a-mono' }, `v${v.agentVersion}`)
+                            : null,
                           createElement('span', { className: 'dsh-a2a-auth' }, `· ${v.state} · 工具 ${v.toolCount}/${v.skillCount}`),
                         ),
                         createElement('div', { className: 'dsh-a2a-card-sub dsh-a2a-mono' }, v.agentCardUrl),

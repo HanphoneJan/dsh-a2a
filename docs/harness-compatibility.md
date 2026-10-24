@@ -5,11 +5,10 @@ Agent2Agent (A2A) v1.0.1 dual-end plugin for DeepSeek Harness.
 **English** · [中文](harness-compatibility.zh.md)
 
 `@hanphone/dsh-a2a` is built against a sibling DeepSeek Harness checkout rather
-than against published packages, so every harness release is an opportunity for
-the plugin's build layout, manifest contract, or runtime API assumptions to
-drift. This reference is the maintenance procedure for that drift plus the
-record of what actually broke and how it was fixed. Architecture is in
-[architecture.md](architecture.md).
+than against published packages, so every harness release can move the plugin's
+build layout, manifest contract, or runtime API assumptions. This page is the
+maintenance procedure for that coupling and the current verification status.
+Architecture is in [architecture.md](architecture.md).
 
 ## When to run this procedure
 
@@ -132,179 +131,40 @@ the message, and produce the tarball:
 pnpm pack --pack-destination <dir>
 ```
 
-## Compatibility record
+## Current status
 
-| dsh-a2a | Harness verified against | Changes required | Evidence |
-|---|---|---|---|
-| 0.4.0 | 0.2.1-rc.2 | A2A wire conformance: SendMessage `{task}` envelope, JSON-RPC SSE frames + event ids, ListTasks `totalSize`, A2A-Version validation, push methods return `-32003`; per-address rate limiting; running-task continuation rejection; artifact `append` semantics; outbound stream replay/Last-Event-ID; returnImmediately/historyLength; remove unused outbound handoff session | `pnpm typecheck` (host + client + mirror check) clean; `pnpm test` 159/159; `pnpm build` produced `lib/index.js`+`lib/client.js`; `pnpm test:e2e` passed inbound + outbound round trip against two real `0.2.1-rc.2` instances |
-| 0.3.8 | 0.2.1-rc.2 | CLI fix: `/a2a inbound create` and `outbound create` consumed an extra leading token; the inbound description is now joined from the remaining words; command-parser tests added | `pnpm typecheck` (host + client + mirror check) clean; `pnpm test` 121/121; `pnpm build` produced `lib/index.js`+`lib/client.js`; `pnpm test:e2e` passed inbound + outbound round trip against two real `0.2.1-rc.2` instances |
-| 0.3.7 | 0.2.1-rc.2 | source fix: inbound message `source.kind` `plugin` → producer-owned `a2a`; test-layer additions (mirror check, real-persistence suite, e2e smoke); `standardDecoratorPlugin` in `vitest.config.ts` | `pnpm typecheck` (host + client + mirror check) clean; `pnpm test` 114/114; `pnpm build` produced `lib/index.js`+`lib/client.js`; `pnpm test:e2e` passed inbound + outbound round trip against two real `0.2.1-rc.2` instances |
-| 0.3.6 | 0.2.1-rc.2 | none — peer ranges, zod pin, build layout, and manifest contract already compatible; version bump and record only | clean-cache `pnpm typecheck` host+client zero errors; `pnpm test` 110/110; full `pnpm build` produced `lib/index.js`+`lib/client.js`+`lib/types` |
-| 0.3.5 | 0.2.1-alpha.2 | peer ranges widened to the 0.2 line; zod pinned to the harness's zod line; tests-scoped tsconfig for Vite 8 path resolution | `pnpm typecheck` host+client clean; `pnpm test` 110/110; full `pnpm build` produced `lib/index.js`+`lib/client.js`+`lib/types`; `dsh web` boots and serves |
-| 0.3.4 | 0.1.7-rc.2 | `tsconfig.client.json` reference fix; peer ranges made truthful | typecheck host+client clean; `vitest run` 110/110; full `pnpm build` succeeded |
-| 0.3.3 | 0.1.5-rc.2 | none — code and metadata already compatible | consumer `pnpm typecheck` clean |
+`0.5.0` is verified against harness `0.2.1-rc.2`: `pnpm typecheck` (host + client
++ mirror check) clean, `pnpm test` 178/178, `pnpm build` produced
+`lib/index.js` + `lib/client.js`, and `pnpm test:e2e` passed an inbound and
+outbound round trip against two real instances. The CI matrix also exercises
+`0.2.1-alpha.2` and `0.1.7-rc.2`.
 
-### 0.4.0 details
+## Known pitfalls
 
-A protocol-conformance and hardening release. `SendMessage` now returns the
-spec oneof (`result.task` / `result.message`); streamed events are JSON-RPC
-result/error envelopes with SSE event ids; artifact chunks carry `append`
-semantics; `ListTasks` includes `totalSize`; `A2A-Version` is validated and
-returned; push-configuration methods return `PUSH_NOTIFICATION_NOT_SUPPORTED`
-(`-32003`). Rate limiting keys by client address, continuation of a running
-task is rejected rather than silently dropped, and the outbound client honors
-`Last-Event-ID` on stream reconnect. `returnImmediately`, `historyLength`, and
-text-only `acceptedOutputModes` are now implemented. The unused outbound
-hand-off session composition was removed.
-
-### 0.3.8 details
-
-A CLI bug-fix release. `/a2a inbound create` and `/a2a outbound create`
-destructured the command tail as `[action, id, ...args]` but read the name/URL
-from `args[0]`, so the first real argument was discarded and a placeholder was
-needed. The create branches now read the name/URL from `id`, the inbound
-description is joined from the remaining words (so it can contain spaces), and
-`tests/unit/commands.spec.ts` covers the parsing. The manual's command table
-and troubleshooting page no longer describe a placeholder.
-
-### 0.3.7 details
-
-A bug-fix release, not a harness adaptation. Two changes:
-
-1. **Inbound `(no reply)` fix.** The session executor sent the agent a message
-   with `source: { kind: 'plugin', plugin: 'a2a' }`; the JSONL v4 codec refuses
-   `kind: 'plugin'`, the write failed in the handle's background flush, and the
-   agent loop contained the error, so every inbound task settled `COMPLETED`
-   with `(no reply)`. The source is now the producer-owned `{ kind: 'a2a' }`.
-2. **Test layers that would have caught it.** `tests/types/mirrors.typecheck.ts`
-   (compile-time source contract), `tests/integration/persistence.spec.ts`
-   (real JSONL v4 codec + agent loop), and `scripts/e2e-a2a.mjs` (two real
-   instances + mock LLM, inbound and outbound). `vitest.config.ts` gained the
-   harness `standardDecoratorPlugin` so tests can import harness source. See
-   [testing.md](testing.md).
-
-Gate: `pnpm test:all` — typecheck (host + client + mirror check), 114 tests,
-build, and the hermetic e2e smoke, all against the `0.2.1-rc.2` checkout.
-
-### 0.3.6 details
-
-The harness moved from `0.2.1-alpha.2` to `0.2.1-rc.2` (990 commits). No
-adaptation was needed; only the version bump and this record changed.
-
-1. `peerDependencies` still cover the new host. `vendor/cordis` moved
-   `4.0.5-alpha.1 → 4.0.5` and `vendor/schemastery` `3.18.5-alpha.1 → 3.18.5`,
-   both now stable and inside the existing `~4.0.2` and `3.*` ranges.
-   `@deepseek-ai/dsh-commands` and `@deepseek-ai/dsh-storage-domain` keep
-   `>=0.1.3 <0.3`, which covers the `0.2` line the preflight evaluates. The two
-   exact prerelease alternatives stay: they keep the plugin truthful for a host
-   still on the alpha line.
-2. `dependencies.zod` stays pinned to `~4.4.3`; the harness root still resolves
-   `zod@4.4.3`, so the two-copy `exactOptionalPropertyTypes` failure does not
-   return.
-3. Build layout is unchanged. `tsconfig.base.json` only gained `paths` aliases
-   (plugin-market, cua, remote-access, and others this plugin does not consume);
-   `tsconfig.base.client.json` and the referenced packages' tsconfig leaves are
-   unchanged, so the project references and the `ui-settings/tsconfig.client.json`
-   leaf reference still resolve.
-4. The manifest contract is unchanged: `DshClientManifest.inject`,
-   `DshBundleManifest.patch`, and the `- insert:` patch form have zero diff
-   across `alpha.2..rc.2`.
-
-Post-release, a real `dsh web` round trip exposed the inbound `(no reply)` bug
-above: the 110-test stub suite could not see it, and the typecheck/build steps
-of this procedure could not either. `0.3.7` fixes it and adds the mirror check,
-the real-persistence suite, and the e2e smoke (see the `0.3.7` record).
-
-### 0.3.5 details
-
-Plugin source was unchanged; three metadata/build-layout fixes were needed.
-
-1. `peerDependencies` widened to cover the `0.2` line. `@deepseek-ai/dsh-commands` and `@deepseek-ai/dsh-storage-domain` went from `">=0.1.3 <0.2"` to `">=0.1.3 <0.3"`, which covers `0.2.1-alpha.2` because prereleases participate in range matching. `@deepseek-ai/cordis` gained the `4.0.5-alpha.1` alternative and `@deepseek-ai/schemastery` the `3.18.5-alpha.1` alternative: the `0.2.1-alpha` host vendors those prereleases, which the stable `~4.0.2`/`3.*` ranges do not admit.
-2. `dependencies.zod` pinned from `^4.4.3` to `~4.4.3`. The harness resolves zod `4.4.3`; a fresh install of `^4.4.3` floats to `4.6.5`, and the two zod copies make `@deepseek-ai/schemastery`'s `Config` types mutually incompatible under `exactOptionalPropertyTypes`. The pin keeps the plugin on the harness's zod line.
-3. `tests/tsconfig.json` extends the build config so Vite 8's native `resolve.tsconfigPaths` applies the harness `paths` map to spec files. The build config's `include` is `src`; the composition suite imports `@deepseek-ai/cordis` as a value directly from `tests/`, so without a tests-scoped config the paths map did not reach it and resolution fell through to a `node_modules` that holds no harness packages.
-
-Two build-environment details back these fixes. pnpm 11+ reads workspace settings from `pnpm-workspace.yaml`, not `.npmrc`, so `autoInstallPeers: false` and `verifyDepsBeforeRun: false` live there; the harness peers have no registry version inside their truthful ranges, so any dependency reify (including the pre-script check) fails and must stay disabled. `pnpm run clean` in the harness is also a prerequisite, not an optional step (see the stale-residue entry below).
-
-### 0.3.4 details
-
-Two metadata fixes were needed; plugin source was unchanged.
-
-1. `tsconfig.client.json` referenced the `ui-settings` package directory. In
-   0.1.7 that directory's `tsconfig.json` became a solution file (`files: []`)
-   over `tsconfig.host.json` and `tsconfig.client.json`, so the reference has to
-   name `../deepseek-harness/packages/client/ui-settings/tsconfig.client.json`.
-   Referencing the solution directory fails with TS6306.
-2. `peerDependencies` moved from `@deepseek-ai/cordis: "4.0.2"` to `"~4.0.2"`
-   (the 0.1.7 host ships 4.0.4) and from `"*"` to `">=0.1.3 <0.2"` for
-   `@deepseek-ai/dsh-commands` and `@deepseek-ai/dsh-storage-domain`. The
-   truthful range covers every harness version this plugin has been tested
-   against and satisfies the 0.1.7 preflight without an exemption.
-
-### 0.3.3 details
-
-Across the 0.1.3 → 0.1.5 range `vendor/cordis` (4.0.2) and
-`vendor/schemastery` (3.18.2) were unchanged, and the packages this plugin
-consumes only received version bumps and README rewrites. Consumer typecheck
-against the harness source graph passed with zero errors, so no change shipped.
-
-## Breakages and fixes
-
-- **`(no reply)` on every inbound task — retired `plugin` source kind.** The
-  inbound executor sent the agent a message with
-  `source: { kind: 'plugin', plugin: 'a2a' }`. The in-memory `session.append`
-  check accepts any non-empty kind, so all stub tests passed; the JSONL v4
-  encoder
-  (`packages/session/session-format-v3-to-v4/src/message-sources.ts`) refuses
-  `kind: 'plugin'` because the harness has no shared catch-all plugin kind. The
-  refusal happened in the session handle's background flush, the agent loop
-  contained the driver error, and the task settled `COMPLETED` with
-  `(no reply)`. Fix: use the producer-owned kind `{ kind: 'a2a' }`. Covered by
-  `tests/integration/persistence.spec.ts` (asserts the persisted v4 log after
-  teardown) and `tests/types/mirrors.typecheck.ts` (fails to compile on the old
-  shape).
-- **Vite `SyntaxError` importing harness source in tests.** Harness source uses
-  standard TypeScript decorators (`@Remote`); Vite's default parser rejects
-  them. `vitest.config.ts` now installs the harness's
-  `standardDecoratorPlugin`, which the integration and type tests need because
-  they value-import `@deepseek-ai/dsh-*` modules directly.
-- **TS6306 from a solution reference.** A harness client package that exposes a
-  solution `tsconfig.json` must be referenced through its `tsconfig.client.json`
-  (or `tsconfig.host.json`) leaf. Symptom: `pnpm typecheck` fails on the client
-  program before reading plugin source.
-- **`incompatible-version` refusal after a harness minor bump.** The plugin
-  declared `"*"` ranges, which `evaluatePluginCompatibility` treats as a range
-  that must still satisfy the runtime; `"*"` normally satisfies, so the practical
-  failure came from the exact `cordis` pin fighting the host copy and from
-  ranges that did not describe tested versions. Fix by stating the tested range.
-- **Empty `lib/` with a successful-looking `tsc -b`.** Stale tsbuildinfo. Clear
+- **Empty `lib/` after a successful-looking `tsc -b`.** Stale tsbuildinfo; clear
   `node_modules/.cache/dsh-a2a/`.
 - **Client typecheck reading stale declarations.** Harness `lib/types` is
-  gitignored and survives a checkout reset; rebuild the harness referenced
+  gitignored and survives a checkout reset; rebuild the referenced harness
   packages after switching versions.
-- **Stale manifest-less harness package residue breaks the host build.** After
-  the checkout moved from 0.1.7 to 0.2.1-alpha.2,
-  `packages/session/session-title-all-prompts-llm/` survived as `lib/` +
-  `node_modules/` only; the package now lives under `packages/experimental/`.
-  tsdown's host workspace globs `packages/*/*`, bundled the stale
-  `lib/types/index.js`, and failed with
-  `MISSING_EXPORT "registerSessionTitleLlmProvider"`. Fix: run
-  `pnpm run clean` in the harness before rebuilding — it removes
-  manifest-less package directories whose only entries are known residue.
-- **Two zod copies after a fresh install.** `dependencies.zod: "^4.4.3"` floats
-  to the newest `4.x`, while the harness stays on `4.4.3`; typecheck then
-  reports `exactOptionalPropertyTypes` mismatches deep inside zod's
-  `$ZodCheck`/`$ZodType` types. Pin the plugin to the harness's zod line
-  (`~4.4.3`).
+- **Stale manifest-less harness package residue.** `pnpm run clean` in the
+  harness before rebuilding; tsdown's `packages/*/*` glob otherwise bundles
+  leftover `lib/types` output and fails with `MISSING_EXPORT`.
+- **Two zod copies.** Pin `dependencies.zod` to the harness's line (`~4.4.3`);
+  a floating `^4.4.3` gives mutually incompatible `Config` types under
+  `exactOptionalPropertyTypes`.
+- **`ERR_PNPM_NO_MATCHING_VERSION` before every script run.** The harness peers
+  have no registry version inside their truthful ranges. pnpm 11+ reads
+  `autoInstallPeers: false` and `verifyDepsBeforeRun: false` from
+  `pnpm-workspace.yaml`; `.npmrc` alone is not enough.
+- **TS6306 from a solution reference.** A harness package that exposes a
+  solution `tsconfig.json` must be referenced through its `tsconfig.client.json`
+  (or `tsconfig.host.json`) leaf.
+- **Vite `SyntaxError` importing harness source in tests.** Harness source uses
+  standard TypeScript decorators; `vitest.config.ts` installs the harness's
+  `standardDecoratorPlugin`.
 - **Spec imports miss the harness paths map.** Vite 8's native
-  `resolve.tsconfigPaths` applies a tsconfig's `paths` only to files it
-  includes. The build config includes `src`, so a spec importing
-  `@deepseek-ai/cordis` directly failed to resolve; `tests/tsconfig.json`
-  extends the build config and includes the specs.
-- **`ERR_PNPM_NO_MATCHING_VERSION` before every script run.** pnpm reifies the
-  tree before running a script and cannot resolve the harness peer ranges, whose
-  registry versions sit outside them. pnpm 11+ reads `autoInstallPeers` and
-  `verifyDepsBeforeRun` from `pnpm-workspace.yaml`; `.npmrc` alone is not
-  enough.
+  `resolve.tsconfigPaths` only applies `paths` to files a tsconfig includes.
+  `tests/tsconfig.json` extends the build config and includes the specs.
 
 ## Publishing
 
@@ -326,12 +186,10 @@ Two registries with different rules:
 ## Known limitations
 
 - Every harness version this plugin has been verified against is a prerelease
-  (`0.1.5-rc.2`, `0.1.7-rc.2`, `0.2.1-alpha.2`, `0.2.1-rc.2`). The compatibility
-  record names the exact version rather than a range because no final release has
-  been tested.
+  (`0.1.5-rc.2`, `0.1.7-rc.2`, `0.2.1-alpha.2`, `0.2.1-rc.2`); no final release
+  has been tested.
 - The plugin couples to harness packages by path through `../deepseek-harness`.
   A checkout at a different relative path needs the `tsconfig*.json` references
   updated.
-- `0.2.1-rc.2` is the newest tag at the time of writing (confirmed with
-  `git ls-remote --tags origin`); the checkout is pinned to it plus the local
-  `llm-pi-ai` `sessionHeader` patch.
+- The checkout is pinned to `0.2.1-rc.2` plus the local `llm-pi-ai`
+  `sessionHeader` patch.

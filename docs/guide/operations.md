@@ -2,8 +2,8 @@
 name: Operations
 description: GUI and /a2a command reference, lifecycle semantics, configuration, host services, storage, and exposure
 create-time: 2026-10-19
-update-time: 2026-10-19
-version: v0.4.0
+update-time: 2026-10-24
+version: v0.5.0
 relative-docs:
   - docs/guide/concepts.md
   - docs/reference/http-api.md
@@ -16,7 +16,7 @@ relative-docs:
 
 This page is the day-to-day reference: where the controls are, what each field
 does, how instances behave across restarts, and how to configure storage and
-security. It applies to `0.4.0` on DeepSeek Harness `0.2.1-rc.2`.
+security. It applies to `0.5.0` on DeepSeek Harness `0.2.1-rc.2`.
 
 ## 1. Control surfaces
 
@@ -33,7 +33,21 @@ refreshes every 3 seconds.
 
 ## 2. The panel
 
-### 2.1 Inbound servers
+### 2.1 Version and update check
+
+Above the tabs the panel shows the installed `dsh-a2a` version and the Node
+runtime. **Check for updates** queries the npm registry and the GitHub
+repository named in the plugin's `package.json`, keeps the higher version, and
+reports one of: up to date, a newer version, or an honest "could not check"
+(a failed lookup is never shown as up to date). The answer is cached for six
+hours; the button forces a refresh. When a newer version exists it shows the
+two-step update command (`remove`, then `add`) with a copy button. Checking is
+read-only — it does not install, restart, or modify the profile.
+
+Inbound cards also show the version the instance advertises in its AgentCard;
+outbound cards show the remote AgentCard's version once connected.
+
+### 2.2 Inbound servers
 
 Each card shows the name, endpoint path, preset badge, authentication state,
 derived skill chips, and the live AgentCard URL. Actions:
@@ -49,7 +63,7 @@ The create/edit form has name, version, preset, bearer token, and description.
 Skills are shown after creation; you do not type them. The preset picker lists
 only real roster presets and preselects the deployment default.
 
-### 2.2 Outbound servers
+### 2.3 Outbound servers
 
 Adding is a two-phase flow:
 
@@ -68,7 +82,7 @@ inbound form. Outbound has no clear button: send an empty `token` through
 `outbound.setAuth`; leaving the edit form's token field empty keeps the
 existing token.
 
-### 2.3 Connections and tasks
+### 2.4 Connections and tasks
 
 Three tables:
 
@@ -230,18 +244,18 @@ Operational notes:
 
 ## 8. Exposure and security
 
+The token and dashboard security model is in
+[Concepts: security model](concepts.md#10-security-model). Operational notes:
+
 - The dashboard API is **loopback-only** by construction. Putting the web app
   behind a reverse proxy does not make `/a2a/api` remotely callable.
 - The A2A endpoints ride the same web server as the GUI. If you expose that
   server to a network, configure a bearer token on every inbound instance and
-  terminate TLS at the proxy. The plugin does not add TLS; it applies its own
-process-local request/body/concurrency limits, but no distributed quota.
-- Tokens are stored through the credentials service and referenced by name.
-  They are never written to the `a2a` domain or the AgentCard.
+  terminate TLS at the proxy. The plugin adds no TLS; its request/body/
+  concurrency limits are process-local, not a distributed quota.
 - Use a distinct token per inbound instance so one leak does not grant access
-  to every published agent.
-- Outbound tokens are resolved per call, so rotating the credential takes
-  effect on the next tool call; no restart is required.
+  to every published agent. Outbound tokens are resolved per call, so rotating
+  the credential takes effect on the next tool call without a restart.
 
 ## 9. Upgrade and uninstall
 
@@ -266,10 +280,8 @@ and task history.
 
 ## 10. Compatibility
 
-The plugin declares peer ranges for the DSH versions it supports. DSH 0.1.7+
-runs a peer preflight and refuses a plugin whose ranges do not cover the
-running version. Upgrade the plugin and the harness together when the preflight
+DSH 0.1.7+ runs a peer preflight and refuses a plugin whose ranges do not cover
+the running harness. Upgrade the plugin and the harness together when it
 complains; do not widen ranges without running the compatibility procedure.
-
-See [Harness compatibility](../harness-compatibility.md) for the exact ranges,
-the verification procedure, and the release record.
+Exact ranges and the procedure are in
+[Harness compatibility](../harness-compatibility.md).

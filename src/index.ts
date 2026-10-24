@@ -9,7 +9,7 @@
  * `outbound_servers` tables) and created/edited/started/stopped entirely from
  * the GUI — the plugin `Config` is minimal and instance setup is not
  * patch-config driven. The protocol surface is aligned with the official A2A
- * v1.0.1 spec (see docs/design.md).
+ * v1.0.1 spec (see docs/reference/http-api.md).
  *
  * Optional services are probed rather than injected so a composition lacking
  * one half idles just that half; only the storage domain is required.
@@ -23,6 +23,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { mkdirSync } from 'node:fs'
 import { openDomain, DomainTaskStore, type A2aDomain, type TaskStore } from './server/store.ts'
 import { probeService, type AgentPresetsLike, type AgentRegistryLike, type AttachmentsLike, type CredentialsLike, type SkillsLike } from './server/exec/agent-runtime.ts'
@@ -31,6 +32,7 @@ import { A2aMetrics } from './server/metrics.ts'
 import { isTerminal, Role } from './protocol.ts'
 import type { SubagentsLike } from './server/exec/subagent.ts'
 import { handleApiRequest } from './api.ts'
+import { createUpdateChecker } from './update.ts'
 import { A2AService, type A2AServiceImpl, type InboundCreateInput, type InboundServerView, type OutboundCreateInput, type OpResult, type PresetView, type SkillView, type TaskListPage, type TaskListQuery } from './service.ts'
 import { buildA2aCommand } from './commands.ts'
 import { InboundServerManager, DomainInboundStore, resolveAuthToken, type InboundManagerHost, type WebServerLike as InboundWebServerLike } from './servers/inbound-manager.ts'
@@ -77,6 +79,10 @@ export function apply(ctx: Context, config: A2AConfig) {
   const logger = ctx.logger('a2a')
   const subagentProvider = config.subagentProvider
   const inboundCwd = inboundSessionCwd()
+  // One checker per plugin instance: the dashboard version strip and the
+  // explicit update check share its six-hour cache, while snapshot traffic
+  // never reaches the network.
+  const updateChecker = createUpdateChecker({ packageRoot: pluginPackageRoot() })
 
   ctx.inject(['storageDomain'], (ctx) => {
     ctx.effect(async () => {
@@ -160,7 +166,7 @@ export function apply(ctx: Context, config: A2AConfig) {
         ctx.effect(() => webServer.register({
           kind: 'prefix',
           path: '/a2a/api',
-          handler: (req: unknown, res: unknown) => handleApiRequest(req as never, res as never, impl),
+          handler: (req: unknown, res: unknown) => handleApiRequest(req as never, res as never, impl, updateChecker),
         }), 'a2a: dashboard api')
       } else {
         logger.warn('a2a: webServer not mounted; GUI dashboard API idle')
@@ -465,6 +471,11 @@ function inboundSessionCwd(): string {
 
 function noopRegister(): () => void {
   return () => {}
+}
+
+/** The plugin package root in source and bundled layouts (src/ or lib/ → root). */
+function pluginPackageRoot(): string {
+  return fileURLToPath(new URL('..', import.meta.url))
 }
 
 /** The listening port of a mounted webServer (undefined when unavailable). */

@@ -14,6 +14,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { A2AServiceImpl } from './service.ts'
+import type { UpdateChecker } from './update.ts'
 
 /** Control actions the dashboard can issue. */
 export type ApiAction =
@@ -32,6 +33,8 @@ export type ApiAction =
 
 /** One snapshot of the whole plugin for the dashboard. */
 export interface ApiSnapshot {
+  /** Installed plugin version, shown without waiting for an update check. */
+  readonly version: string
   readonly inbounds: readonly unknown[]
   readonly outbounds: readonly unknown[]
   readonly tasks: readonly unknown[]
@@ -80,6 +83,7 @@ export async function handleApiRequest(
   req: IncomingMessage,
   res: ServerResponse,
   impl: A2AServiceImpl,
+  update?: UpdateChecker,
 ): Promise<void> {
   if (!isLoopback(req)) {
     res.writeHead(403, { 'content-type': 'text/plain' })
@@ -88,6 +92,19 @@ export async function handleApiRequest(
   }
   const parsed = new URL(req.url ?? '/', 'http://127.0.0.1')
   const path = parsed.pathname
+  if (req.method === 'GET' && path === '/a2a/api/update') {
+    if (update === undefined) {
+      json(res, 200, { ok: false, error: 'update checker is not mounted' })
+      return
+    }
+    try {
+      json(res, 200, await update.check(parsed.searchParams.get('refresh') === '1'))
+    } catch (err) {
+      // A lookup failure is a reportable result, not a broken dashboard.
+      json(res, 200, { ok: false, current: update.current, latest: null, error: (err as Error).message })
+    }
+    return
+  }
   if (req.method === 'GET' && path === '/a2a/api/presets') {
     json(res, 200, await impl.presets())
     return
@@ -121,7 +138,7 @@ export async function handleApiRequest(
     return
   }
   if (req.method === 'GET') {
-    json(res, 200, snapshotOf(impl, parsed.searchParams))
+    json(res, 200, snapshotOf(impl, parsed.searchParams, update))
     return
   }
   if (req.method === 'POST') {
@@ -146,7 +163,7 @@ export async function handleApiRequest(
   res.end('Method Not Allowed')
 }
 
-function snapshotOf(impl: A2AServiceImpl, params: URLSearchParams): ApiSnapshot {
+function snapshotOf(impl: A2AServiceImpl, params: URLSearchParams, update?: UpdateChecker): ApiSnapshot {
   const status = impl.status() as { inbounds: readonly unknown[]; outbounds: readonly unknown[]; tasks: number; peers?: readonly unknown[]; sessions?: readonly unknown[] }
   const limit = parsePositiveInt(params.get('taskLimit'), 50)
   const offset = parseNonNegativeInt(params.get('taskOffset'), 0)
@@ -164,6 +181,7 @@ function snapshotOf(impl: A2AServiceImpl, params: URLSearchParams): ApiSnapshot 
     ? { tasks: result, total: result.length, nextOffset: null }
     : result
   return {
+    version: update?.current ?? '',
     inbounds: status.inbounds ?? [],
     outbounds: status.outbounds ?? [],
     tasks: page.tasks,

@@ -2,8 +2,8 @@
 name: 核心概念
 description: A2A 模型、入站 server、出站连接、preset、技能、任务、上下文、执行器与安全模型
 create-time: 2026-10-19
-update-time: 2026-10-19
-version: v0.4.0
+update-time: 2026-10-24
+version: v0.5.0
 relative-docs:
   - docs/architecture.zh.md
   - docs/guide/operations.zh.md
@@ -14,7 +14,7 @@ relative-docs:
 
 [English](concepts.md) · **中文**
 
-本页定义手册后面会用到的术语，描述 `0.4.0` 的当前行为——也包括实现比协议更窄的地方。
+本页定义手册后面会用到的术语，描述 `0.5.0` 的当前行为——也包括实现比协议更窄的地方。
 
 ## 1. 一句话理解 A2A
 
@@ -86,11 +86,8 @@ Agent2Agent（A2A）是让一个 agent 通过 HTTP + JSON-RPC 调用另一个 ag
 - 上下文 id 由调用方提供或自动生成；
 - 任务记录技能、输入 parts、状态、artifacts、时间戳，以及接收它的入站实例。
 
-状态使用 A2A 词汇：`TASK_STATE_SUBMITTED`、`TASK_STATE_WORKING`、
-`TASK_STATE_INPUT_REQUIRED`、`TASK_STATE_AUTH_REQUIRED`、
-`TASK_STATE_COMPLETED`、`TASK_STATE_FAILED`、`TASK_STATE_CANCELED`、
-`TASK_STATE_REJECTED`。后四个是终态；`INPUT_REQUIRED` 和 `AUTH_REQUIRED`
-是中断态，但不是终态。
+状态使用 A2A 词汇（`TASK_STATE_*`）；完整状态表（含哪些是终态）见
+[协议参考](../reference/http-api.zh.md#25-任务状态)。
 
 **上下文**是一条对话。插件为每个上下文保留**一个活跃 DSH 会话**，
 id 固定为 `a2a-<contextId>`。复用同一个 `contextId` 就复用该会话；不同的
@@ -115,19 +112,13 @@ id 固定为 `a2a-<contextId>`。复用同一个 `contextId` 就复用该会话�
 
 ## 8. AgentCard
 
-卡片是实例记录 + 对外 base URL + 端点路径的纯函数：
+卡片是实例记录 + 对外 base URL + 端点路径的纯函数：身份字段、固定的 DeepSeek
+provider、capabilities、文本模式、派生技能，以及一个 JSON-RPC
+`supportedInterfaces` 条目。配置 token 时只增加 `bearer` 方案声明，绝不含密钥值。
 
-- `name`、`description`、`version` 来自实例；
-- `provider` 固定为 DeepSeek；
-- `capabilities`：streaming `true`、push notifications `false`、extended card `true`、
-  state-transition history `false`；
-- `defaultInputModes` / `defaultOutputModes`：`text/plain`；
-- `skills`：派生出的技能列表；
-- `supportedInterfaces`：一个 JSON-RPC 接口，指向实例端点，协议版本 `1.0`；
-- 配置 token 时，宣告 `bearer` 安全方案与要求，但不含任何密钥值。
-
-卡片以 JSON 形式在实例的 `cardPath` 提供。实例**不使用** `/.well-known/agent-card.json`；
-请用面板给出的完整 per-instance URL。
+卡片在实例的 `cardPath` 提供。实例**不使用** `/.well-known/agent-card.json`；
+请用面板给出的完整 per-instance URL。精确 JSON 形状见
+[协议参考](../reference/http-api.zh.md#27-agentcard)。
 
 ## 9. 身份、存储与会话
 
@@ -163,8 +154,7 @@ id 固定为 `a2a-<contextId>`。复用同一个 `contextId` 就复用该会话�
 
 ## 11. 这个插件不是什么
 
-- 不是模型代理，也不是通用 HTTP 网关。
-- 不会自动在入站与出站之间路由；连接需要你显式建立。
-- 不持久化活跃会话；只有任务和绑定是持久的。
-- 不支持 A2A push notifications、gRPC 或 HTTP+JSON 绑定。
-- 出站调用目前没有本地衔接会话。
+不是模型代理、通用 HTTP 网关，也不会在入站与出站之间自动路由：两个方向需要你显式
+连接。它不持久化活跃会话——只有任务和绑定是持久的。
+
+协议与功能限制的完整列表见[协议参考](../reference/http-api.zh.md#4-当前限制)。

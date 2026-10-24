@@ -59,6 +59,8 @@ export interface OutboundServerView {
   readonly skillCount: number
   readonly toolCount: number
   readonly skills: readonly OutboundSkillView[]
+  /** The remote AgentCard's advertised version (absent when unknown). */
+  readonly agentVersion?: string
   readonly lastError?: string
   readonly lastCardAt?: string
 }

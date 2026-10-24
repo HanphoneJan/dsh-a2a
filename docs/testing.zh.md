@@ -6,14 +6,10 @@
 
 ## 为什么有这份文档
 
-`0.3.6` 发布时，入站执行器交给 agent 的消息 `source` 是 `{ kind: 'plugin', plugin: 'a2a' }`（已在 `0.3.7` 修复）。`session.append` 的内存校验只要求 `source.kind` 是非空字符串，所以 110 个 stub 测试全绿。真正拒绝 `kind: 'plugin'` 的是只在真实组合里才会执行的 JSONL v4 编码器：
-
-```text
-SessionFormatError: format v4 message requires a producer-owned source kind
-    at packages/session/session-format-v3-to-v4/src/message-sources.ts
-```
-
-写入在 session handle 的后台 flush 中失败，agent loop 把驱动错误吞掉，于是每个入站任务都以 `(no reply)` 落定。`pnpm typecheck` 和 `pnpm test` 都看不见。镜像检查与真实持久化集成测试就是为这个缺口加的。
+Stub 测试跑在内存宿主服务上。真实 profile 还会跑持久化 session codec、agent loop
+以及 manifest/mount 机制，而 stub 永远碰不到这些层，所以插件可以单元测试全绿、端到端
+却失败。镜像检查、真实持久化套件与 e2e 冒烟就是为观察这些层而存在：结构镜像抓类型
+漂移，持久化套件抓被拒绝的消息形状，e2e 冒烟抓发布产物本身坏掉。
 
 ## 分层
 
@@ -21,7 +17,7 @@ SessionFormatError: format v4 message requires a producer-owned source kind
 |---|---|---|---|
 | 镜像检查 | `tests/types/mirrors.typecheck.ts` | 结构镜像与真实 `@deepseek-ai/dsh-*` 类型漂移 | 是（project references） |
 | 单元 / 组合 | `tests/unit`、`tests/composition` | 协议帧、路由、store、registry，以及 stub 宿主服务上的 `apply()` 装配 | 否 |
-| 真实持久化集成 | `tests/integration/persistence.spec.ts` | 持久化 session codec、agent loop 契约、inbox source——就是上面那类 bug | 是（源码图） |
+| 真实持久化集成 | `tests/integration/persistence.spec.ts` | 持久化 session codec、agent loop 契约、inbox source | 是（源码图） |
 | Profile 冒烟 | `scripts/e2e-a2a.mjs` | 发布产物对两个真实 harness 实例：manifest/mount、路由、发现、JSON-RPC、工具注册、模型 → 工具 → 远端 agent | 是（已构建产物） |
 
 ## 命令

@@ -2,8 +2,8 @@
 name: 运维指南
 description: GUI 与 /a2a 命令参考、生命周期语义、配置、宿主服务、存储与对外暴露
 create-time: 2026-10-19
-update-time: 2026-10-19
-version: v0.4.0
+update-time: 2026-10-24
+version: v0.5.0
 relative-docs:
   - docs/guide/concepts.zh.md
   - docs/reference/http-api.zh.md
@@ -15,7 +15,7 @@ relative-docs:
 [English](operations.md) · **中文**
 
 本页是日常参考：控件在哪、每个字段做什么、实例跨重启怎么表现、存储与安全怎么配。
-内容对应 `0.4.0` / DeepSeek Harness `0.2.1-rc.2`。
+内容对应 `0.5.0` / DeepSeek Harness `0.2.1-rc.2`。
 
 ## 1. 控制面
 
@@ -31,7 +31,18 @@ relative-docs:
 
 ## 2. 面板
 
-### 2.1 入站 Servers
+### 2.1 版本与更新
+
+页签上方的版本条显示当前 `dsh-a2a` 版本与 Node 运行环境。点「检查更新」会同时
+查询 npm registry 与插件 `package.json` 中 GitHub 仓库的最新版本，取较高者，并
+如实报告：已是最新 / 有新版本 / 暂时查不到（查询失败绝不会显示成已是最新）。
+结果缓存 6 小时；按钮会强制刷新。有新版本时给出两步更新命令（先 `remove` 再
+`add`）和复制按钮。检查是只读的——不安装、不重启、不改 profile。
+
+入站卡片同时显示该实例在 AgentCard 中宣告的版本；出站卡片在连接后显示远端
+AgentCard 的版本。
+
+### 2.2 入站 Servers
 
 每张卡片显示名称、端点路径、preset 徽章、鉴权状态、派生技能 chips，以及实时 AgentCard URL。操作：
 
@@ -45,7 +56,7 @@ relative-docs:
 创建/编辑表单有名称、版本、preset、Bearer Token、描述。技能创建后显示，不需要手填。
 preset 选择器只列真实 roster 预设，并预选部署默认。
 
-### 2.2 出站 Servers
+### 2.3 出站 Servers
 
 添加是两阶段流程：
 
@@ -58,7 +69,7 @@ preset 选择器只列真实 roster 预设，并预选部署默认。
 Token 通过凭据服务单独存储；编辑时 token 留空会保留原值。入站表单有**清除鉴权**；
 出站没有清除按钮：通过 `outbound.setAuth` 提交空 `token`；编辑表单里 token 留空会保留原值。
 
-### 2.3 连接与任务
+### 2.4 连接与任务
 
 三张表：
 
@@ -196,12 +207,13 @@ Token 通过凭据服务单独存储；编辑时 token 留空会保留原值。�
 
 ## 8. 对外暴露与安全
 
+Token 与面板的安全模型见[核心概念：安全模型](concepts.zh.md#10-安全模型)。运维要点：
+
 - 面板 API 在设计上**仅回环**。把 web app 放到反向代理后面，也不会让 `/a2a/api` 可远程调用。
 - A2A 端点与 GUI 共用同一个 web server。如果把该 server 暴露到网络，给每个入站实例配置
-  Bearer Token，并在代理层终止 TLS。插件本身不提供 TLS；它自带进程内请求/请求体/并发限制，但没有分布式配额。
-- Token 通过凭据服务存储，按名称引用；绝不写入 `a2a` 域或 AgentCard。
+  Bearer Token，并在代理层终止 TLS。插件不提供 TLS；请求/请求体/并发限制都是进程内的，不是分布式配额。
 - 每个入站实例用不同 token，避免一次泄露就拿到所有已发布 agent 的访问权。
-- 出站 token 每次调用时解析，轮换凭据后下一次工具调用即生效，无需重启。
+  出站 token 每次调用时解析，轮换凭据后下一次工具调用即生效，无需重启。
 
 ## 9. 升级与卸载
 
@@ -223,7 +235,6 @@ dsh plugin --profile web remove @hanphone/dsh-a2a
 
 ## 10. 兼容性
 
-插件为支持的 DSH 版本声明 peer 范围。DSH 0.1.7+ 会跑 peer 预检，范围不覆盖运行时版本就拒绝加载。
-预检报错时，把插件与 harness 一起升级；不要在没有跑兼容性流程的情况下擅自放宽范围。
-
-精确范围、验证流程与发布记录见 [Harness 兼容性](../harness-compatibility.zh.md)。
+DSH 0.1.7+ 会跑 peer 预检，范围不覆盖运行时版本就拒绝加载。预检报错时，把插件与
+harness 一起升级；不要在没有跑兼容性流程的情况下擅自放宽范围。精确范围与验证流程见
+[Harness 兼容性](../harness-compatibility.zh.md)。

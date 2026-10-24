@@ -105,10 +105,26 @@ const css = String.raw`
 /* auth state */
 .dsh-a2a-auth { font-size: 12px; color: var(--dsw-alias-label-tertiary, #81858c); }
 
+/* version / update strip */
+.dsh-a2a-verbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 10px 14px; border-radius: 10px; background: var(--dsw-alias-bg-layer-2, rgba(127,127,127,.07)); border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.16)); }
+.dsh-a2a-verbar-main { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.dsh-a2a-verbar-side { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.dsh-a2a-verbar-name { font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-primary, #0f1115); }
+.dsh-a2a-verbar-version { font-size: 12px; color: var(--dsw-alias-label-secondary, #61666b); }
+.dsh-a2a-verbar-status { font-size: 12px; color: var(--dsw-alias-label-tertiary, #81858c); }
+.dsh-a2a-verbar-status[data-tone='ok'] { color: var(--dsw-alias-state-success-primary, #12b76a); }
+.dsh-a2a-verbar-status[data-tone='update'] { color: var(--dsw-alias-brand-primary, #4a7dff); font-weight: 600; }
+.dsh-a2a-verbar-status[data-tone='unknown'] { color: var(--dsw-alias-state-warn-primary, #f79009); }
+.dsh-a2a-verbar-runtime { font-size: 11.5px; color: var(--dsw-alias-label-tertiary, #81858c); }
+.dsh-a2a-update-detail { display: flex; flex-direction: column; gap: 8px; padding: 10px 14px; border-radius: 10px; background: color-mix(in srgb, var(--dsw-alias-brand-primary, #4a7dff) 7%, transparent); border: 1px solid color-mix(in srgb, var(--dsw-alias-brand-primary, #4a7dff) 28%, transparent); }
+.dsh-a2a-command { margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--dsw-alias-bg-layer-2, rgba(127,127,127,.1)); color: var(--dsw-alias-label-primary, #0f1115); font-size: 11.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
+
 /* narrow drawer */
 @container a2a (max-width: 460px) {
   .dsh-a2a-form { flex-direction: column; align-items: stretch; }
   .dsh-a2a-card-head { flex-direction: column; align-items: flex-start; }
+  .dsh-a2a-verbar { align-items: flex-start; }
+  .dsh-a2a-verbar-side { width: 100%; }
 }
 `
 

@@ -4,22 +4,21 @@ Agent2Agent（A2A）v1.0.1 双端插件，用于 [DeepSeek Harness](https://gith
 
 `@hanphone/dsh-a2a` 是一个独立开源的 A2A 插件，把 DeepSeek Harness profile 变成多面手 A2A 一等公民：能**同时对外发布多个入站 A2A server**，每个绑定一个自己的 agent preset、拥有独立端点 / AgentCard / 派生技能 / 鉴权；也能**同时接入多个出站 A2A server**，每个独立 preset，远端技能映射为模型工具。所有 server 实例的创建、启停、编辑、删除全部在 GUI 完成——无需改任何配置文件。
 
-架构与设计决策：[docs/architecture.md](docs/architecture.md)。
+工作原理：[docs/architecture.md](docs/architecture.md)。
 跟随 DeepSeek Harness 版本更新：[docs/harness-compatibility.md](docs/harness-compatibility.md)。
 
 ## 功能
 
 - **A2A v1.0.1 协议面，对齐官方规范** — JSON-RPC 上的 `SendMessage`、`SendStreamingMessage`、`GetTask`、`ListTasks`、`CancelTask`、`GetExtendedAgentCard`、`SubscribeToTask`；SSE 流式带补发帧；官方 `TASK_STATE_*` / `ROLE_*` 枚举与 AgentCard 结构（含 `supportedInterfaces`、`capabilities`、完整错误码表）。
-- **多入站 server** — 每实例一个"人格"：独立端点（`/a2a/<id>`）、AgentCard 路由、鉴权 env、派生技能。
-- **每实例 agent preset** — 每个入站 server 绑定一个具体 agent preset（如 `ptc`、`standard`、`minimal`、…）；选择器只列 roster 真实预设（与应用内选择器一致）并默认选中部署默认。入站任务在按该 preset 组装的会话中执行（标准 `agentPresets` resolve+mount 路径）。
-- **技能宣告从 preset 派生** — AgentCard 技能 = 所绑 preset 技能目录中模型可调条目（`agentPresets.standingKeyFor` + `ctx.skills.list`），纯自动派生——"preset 确定、技能确定，一切皆插件"。无需手写技能表单；skills 服务缺失时兜底内置 `chat`。远端用 `metadata.skill` 调技能，由该 preset 会话经其 `tool-skill` 装载执行。
+- **多入站 server，每个绑定一个 preset** — 每实例独立端点（`/a2a/<id>`）、AgentCard、鉴权 env 与 roster preset；会话经标准 `agentPresets` resolve+mount 路径按该 preset 组装。
+- **技能从 preset 派生** — 卡片宣告所绑 preset 技能目录中模型可调的条目（`agentPresets.standingKeyFor` + `ctx.skills.list`）。无需手写技能表单；skills 服务缺失时兜底内置 `chat`，远端用 `metadata.skill` 选择技能。
 - **多出站 server** — 每个连接独立远端 URL、鉴权 env、超时与可选 preset；启用实例把远端技能映射为 `a2a__<name>__<skill>` 模型工具。
 - **持久化任务存储** — 任务存于 `a2a` 存储域（默认 json 后端，可按部署切 SQLite）；服务端生成 id 跨重启存活，每个任务记录来源入站实例。
 - **执行器** — `session`（每个 `contextId` 一个 DSH 会话）与 `subagent`（委托 `ctx.subagents`，工具调用过程流式回传）。
 - **受治理入站** — 每个入站任务经过 `a2a/inbound-task` waterfall，策略插件可否决或审计。
-- **入站连接监控** — 面板展示每个实例的对端连接，可关闭某个对端。
-- **入站会话层（按 contextId）** — 每条 A2A 对话（`contextId`）对应一个活跃 DSH 会话（`a2a-<contextId>`）；GUI 按 contextId 聚合会话（状态、任务数、流式、首次/最近活动），可取消该会话的全部活跃任务或关闭其活跃会话——关闭是内存级释放，同一 contextId 再来任务时自动重开新会话。会话数据全在内存（与对端注册表一致）；没有 agent 循环时表格仍从任务记录降级展示。
+- **入站可观测性** — 面板展示活跃对端与每个 `contextId` 一行会话（状态、计数、流式、活动时间），带关闭/取消操作。会话在内存中；没有 agent 循环时表格降级为任务记录。
 - **直接填 Bearer Token** — GUI 的 Bearer Token 输入框把每个实例的 token 经 harness 凭据服务写入托管 `.env`/凭据库（`0o700`）；记录只保留自动生成的变量名，token 明文绝不进 a2a 域或 AgentCard。运行时读取分层（凭据 → 进程环境），外部 export 同名变量仍兼容。
+- **版本号与检查更新** — 面板显示插件版本、Node 运行环境与各卡片的 AgentCard 版本；「检查更新」同时问 npm 与 GitHub（缓存 6 小时，只读），有新版本时给出两步更新命令。
 - **最小插件配置** — 实例经 GUI 创建并存于域中；插件 `Config` 只承载宿主级默认值（`baseUrl`、`subagentProvider`、`defaultTimeoutMs`）。
 
 ## 安装
@@ -30,11 +29,7 @@ Agent2Agent（A2A）v1.0.1 双端插件，用于 [DeepSeek Harness](https://gith
 dsh plugin --profile web add @hanphone/dsh-a2a
 ```
 
-任意 profile 名均可（`web`、自定义 profile、headless 等）：
-
-```sh
-dsh plugin --profile <name> add @hanphone/dsh-a2a
-```
+任意 profile 名均可（`web`、自定义 profile、headless 等）。
 
 ### 本地构建安装
 
@@ -63,18 +58,15 @@ curl http://127.0.0.1:3080/a2a/<id>/agent-card.json
 ```sh
 curl -X POST http://127.0.0.1:3080/a2a/<id> \
   -H "content-type: application/json" \
-  -d '{"jsonrpc":"2.0","id":"1","method":"SendMessage","params":{"message":{"role":"user","parts":[{"text":"hello"}],"metadata":{"skill":"chat"}}}}'
+  -d '{"jsonrpc":"2.0","id":"1","method":"SendMessage","params":{"message":{"role":"ROLE_USER","parts":[{"text":"hello"}],"metadata":{"skill":"chat"}}}}'
 ```
 
 ## GUI 面板
 
-浏览器端在设置中注册 **A2A 连接** 页，分三个 Tab。无需改文件即可：
-
-- **入站 Servers** — 创建入站 server（名称/描述/版本、agent preset 选择器——只列真实 roster 预设并预选部署默认、Bearer Token 输入框），启停、编辑（含清除鉴权）、删除；每张卡片显示端点、preset 徽章、鉴权状态、preset 派生技能 chips 与实时 AgentCard URL。
-- **出站 Servers** — 两阶段添加出站连接：输入远端 AgentCard URL（± Bearer Token）→「导入」预览远端卡片（名称/版本/技能/端点）→「连接」确认；启停、刷新、编辑（名称/preset/超时/token）、删除。卡片显示连接状态点、工具数与错误。
-- **连接与任务** — 入站对端表（谁在调用、任务数、流式、关闭控制）、按 contextId 的会话表（状态点、任务/活跃数、流式、首次/最近活动、取消活跃/关闭按钮）与任务列表（按来源查看、取消）。
-
-所有面板流量走 profile webServer 上的**仅回环** `/a2a/api` 路由——远程对端永远无法驱动它。
+浏览器端在设置中注册 **A2A 连接** 页：版本/更新条、入站 server 卡片（preset、派生
+技能、鉴权、实时卡片 URL）、出站连接（两阶段"导入 → 预览 → 连接"），以及连接与任务
+页（对端、按上下文的会话、任务）。所有面板流量走**仅回环** `/a2a/api` 路由。
+逐字段说明见[运维指南](docs/guide/operations.zh.md#2-面板)。
 
 ## 配置
 
@@ -92,24 +84,14 @@ GUI 覆盖日常实例管理。插件 `Config` 只有宿主级默认值，如需
 
 ### 所需宿主服务
 
-base 类 profile 全部挂载：`webServer`（`@deepseek-ai/dsh-host-webserver`）、存储栈（`@deepseek-ai/dsh-storage` + `@deepseek-ai/dsh-storage-domain`）、工具注册表（`@deepseek-ai/dsh-tools`）、agent 循环（`@deepseek-ai/dsh-agent` + `@deepseek-ai/dsh-agent-loop`）、agent presets（`@deepseek-ai/dsh-agent-presets`；preset 选择器与 preset 化会话组装需要它）。subagent 执行器还需要 `@deepseek-ai/dsh-subagent`。
+基础 profile 已挂载插件用到的全部服务。自定义组合必须提供存储栈、`webServer`、
+`tools`、agent 循环与 `agentPresets`；缺失某项的具体影响见
+[运维指南：宿主服务](docs/guide/operations.zh.md#6-宿主服务)。
 
 ### 存储后端
 
-任务与实例存储位于 `a2a` 存储域。base 组合默认走 `json` 后端；要切 SQLite，在同一 patch 层路由域并加后端：
-
-```yaml
-- id: storage-domain
-  config:
-    backend: json
-    routes:
-      a2a: sqlite
-- insert:
-    - id: storage-sqlite
-      name: '@deepseek-ai/dsh-storage-sqlite'
-      config:
-        path: /absolute/path/to/a2a.sqlite
-```
+任务与实例存储位于 `a2a` 存储域（默认 JSON；SQLite 是按域路由的选项）。patch 示例见
+[运维指南：存储](docs/guide/operations.zh.md#7-存储)。
 
 ## CLI
 
@@ -123,22 +105,15 @@ a2a status | presets | peers |
     sessions | session cancel|close <contextId> | help
 ```
 
-## 工作原理
-
-- **入站** — `InboundServerManager` 拥有每个实例：每实例 = preset 化会话池 + `A2AServer` + 路由。实例持久化于 `inbound_servers` 表，各自服务独立端点与 AgentCard。任务流经 `a2a/inbound-task` → 执行器 → 任务存储，SSE 帧推送给订阅者。每实例的会话注册表观察 SSE 生命周期钩子；facade 把这些活跃观测与共享任务存储折叠成按 `contextId` 的会话视图。
-- **出站** — `OutboundServerManager` 拥有每个连接：每实例一个带独立 agent 存储的 `OutboundAgentRegistry`，实例持久化于 `outbound_servers` 表。`A2AClient` 发现 AgentCard，每个技能注册为一个工具。
-- **面板** — 浏览器端（React，`settings.section`）经仅回环 `/a2a/api` 路由读写；host 端喂给它入站/出站 server 视图与 preset 名单（`/a2a/api/presets`）。
-
-完整设计见 [docs/architecture.md](docs/architecture.md)。
-
 ## 目录结构
 
 ```
 src/
-  api.ts                  # 回环面板 API (/a2a/api、/a2a/api/presets)
+  api.ts                  # 回环面板 API (/a2a/api、/a2a/api/update 等)
   index.ts                # Cordis 插件入口 (apply)
   protocol.ts             # A2A v1.0.1 协议常量与类型
   jsonrpc.ts              # JSON-RPC 帧
+  update.ts               # 插件版本 + npm/GitHub 更新检查
   servers/                # 多实例管理器
     inbound-manager.ts    #   入站 server 实例（CRUD、路由、生命周期）
     outbound-manager.ts   #   出站连接实例（CRUD、工具）
@@ -150,7 +125,7 @@ src/
   commands.ts             # /a2a 聊天命令
 tests/
   unit/                   # protocol、framing、card、store、registry、server、
-                          #   client、api、inbound-registry、identity
+                          #   update、client update-status、api 等
   composition/            # 在真实 Cordis Context 上以 stub 宿主服务跑 apply()
   integration/            # 真 agent loop + JSONL 持久化 + mock LLM
   types/                  # 对真实 DSH 类型做编译期镜像检查
@@ -162,15 +137,7 @@ cordis.patch.yml          # bundle patch（挂载插件；实例由 GUI 管理�
 
 ## 文档
 
-公开手册按当前行为展开：
-
-- [文档索引](docs/README.zh.md)
-- [快速开始](docs/guide/getting-started.zh.md)
-- [核心概念](docs/guide/concepts.zh.md)
-- [运维指南](docs/guide/operations.zh.md)
-- [HTTP API 与 A2A 协议](docs/reference/http-api.zh.md)
-- [排障](docs/guide/troubleshooting.zh.md)
-
+从[文档索引](docs/README.zh.md)开始（安装、概念、运维、HTTP API、排障）。
 深入文档：[架构](docs/architecture.zh.md)、
 [Harness 兼容性](docs/harness-compatibility.zh.md)、
 [测试](docs/testing.zh.md)。

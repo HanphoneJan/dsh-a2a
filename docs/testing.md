@@ -9,22 +9,13 @@ contract change fails a test before it reaches a release.
 
 ## Why this exists
 
-`0.3.6` shipped with the inbound executor handing the agent a message whose
-`source` was `{ kind: 'plugin', plugin: 'a2a' }` (fixed in `0.3.7`). The
-in-memory `session.append`
-check only requires `source.kind` to be a non-empty string, so all 110 stub
-tests passed. The JSONL v4 encoder, which only runs in a real composition,
-refuses `kind: 'plugin'`:
-
-```text
-SessionFormatError: format v4 message requires a producer-owned source kind
-    at packages/session/session-format-v3-to-v4/src/message-sources.ts
-```
-
-The write failed in the session handle's background flush, the agent loop
-contained the driver error, and every inbound task settled with `(no reply)`.
-Nothing in `pnpm typecheck` or `pnpm test` could see it. The mirror check and
-the real-persistence integration test were added to close exactly that gap.
+Stub tests run against in-memory host services. A real profile also runs a
+durable session codec, an agent loop, and manifest/mount machinery that stubs
+never touch, so a plugin can pass every unit test and still fail end to end.
+The mirror check, the real-persistence suite, and the e2e smoke exist to observe
+those layers: a structural mirror catches a type drift, the persistence suite
+catches a rejected message shape, and the e2e smoke catches a broken released
+artifact.
 
 ## Layers
 
@@ -32,7 +23,7 @@ the real-persistence integration test were added to close exactly that gap.
 |---|---|---|---|
 | Mirror check | `tests/types/mirrors.typecheck.ts` | Structural mirrors drifting from real `@deepseek-ai/dsh-*` types | yes (project references) |
 | Unit / composition | `tests/unit`, `tests/composition` | Protocol framing, routes, stores, registries, `apply()` wiring over stub host services | no |
-| Real-persistence integration | `tests/integration/persistence.spec.ts` | Durable session codec, agent-loop contract, inbox sources — the bug class above | yes (source graph) |
+| Real-persistence integration | `tests/integration/persistence.spec.ts` | Durable session codec, agent-loop contract, inbox sources | yes (source graph) |
 | Profile e2e | `scripts/e2e-a2a.mjs` | A released artifact against two real harness instances: manifest/mount, routes, discovery, JSON-RPC, tool registration, model → tool → remote agent | yes (built artifacts) |
 
 ## Commands

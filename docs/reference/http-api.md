@@ -2,8 +2,8 @@
 name: HTTP API and A2A protocol
 description: Loopback dashboard actions, inbound JSON-RPC endpoints, SSE streaming, task states, error codes, AgentCard, and outbound tool contracts
 create-time: 2026-10-19
-update-time: 2026-10-19
-version: v0.4.0
+update-time: 2026-10-24
+version: v0.5.0
 relative-docs:
   - docs/guide/getting-started.md
   - docs/guide/concepts.md
@@ -14,7 +14,7 @@ relative-docs:
 
 **English** · [中文](http-api.zh.md)
 
-This page is the wire-level reference for `0.4.0`. It has two parts:
+This page is the wire-level reference for `0.5.0`. It has two parts:
 
 1. the **loopback dashboard API** the panel uses (`/a2a/api`);
 2. the **A2A endpoints** published by inbound servers (`/a2a/<id>`).
@@ -33,13 +33,25 @@ loopback peers (`127.0.0.1`, `::1`, `::ffff:127.0.0.1`). Any other peer gets
 
 | Method and path | Returns |
 |---|---|
-| `GET /a2a/api` | Snapshot: `{ inbounds, outbounds, tasks, peers, sessions }` |
+| `GET /a2a/api` | Snapshot: `{ version, inbounds, outbounds, tasks, peers, sessions }` |
 | `GET /a2a/api/presets` | Agent-preset roster: `[{ id, name?, description?, isDefault? }]` |
+| `GET /a2a/api/update` | Plugin version and update-check answer (below); `?refresh=1` bypasses the cache |
+| `GET /a2a/api/card?id=<inbound>` | One inbound AgentCard |
+| `GET /a2a/api/task?id=<task>` | One task |
+| `GET /a2a/api/session?contextId=<id>&serverId=<instance>` | One session view |
+| `GET /a2a/api/metrics` | Metrics snapshot |
+
+`version` is the installed plugin version, served from the snapshot so the
+dashboard can render it before any network call. `outbounds[].agentVersion` is
+the remote AgentCard's advertised version when that connection is live.
+`GET /a2a/api` also accepts `taskLimit`, `taskOffset`, `taskState`,
+`taskContextId`, and `taskServerId` for the task page.
 
 Snapshot example (values abbreviated):
 
 ```json
 {
+  "version": "0.5.0",
   "inbounds": [
     {
       "id": "e2e-b-ade6a7ad",
@@ -63,7 +75,8 @@ Snapshot example (values abbreviated):
       "timeoutMs": 60000,
       "state": "connected",
       "skillCount": 1,
-      "toolCount": 1
+      "toolCount": 1,
+      "agentVersion": "1.0.0"
     }
   ],
   "tasks": [],
@@ -71,6 +84,34 @@ Snapshot example (values abbreviated):
   "sessions": []
 }
 ```
+
+`GET /a2a/api/update` returns:
+
+```json
+{
+  "ok": true,
+  "current": "0.5.0",
+  "latest": "0.5.1",
+  "hasUpdate": true,
+  "ahead": false,
+  "error": null,
+  "source": "npm",
+  "repoUrl": "https://github.com/HanphoneJan/dsh-a2a",
+  "checkedAt": 1790000000000,
+  "cached": false,
+  "runtime": { "node": "24.20.0", "platform": "linux", "arch": "x64", "profile": "web" }
+}
+```
+
+It queries the npm registry's `latest` tag and the `package.json` in the GitHub
+repository named by the plugin manifest, then keeps the higher version. The
+answer is cached for six hours; `?refresh=1` bypasses the cache. `runtime`
+carries the Node version, platform/arch, and the active DSH profile (when the
+host exports `DSH_PROFILE`), so the dashboard can print an update command for
+the right profile. When no source answers, the endpoint still returns `200`
+with `ok: false`, `latest: null`, and an `error` — a failed lookup is never
+reported as "up to date". The check is read-only: it never installs, restarts,
+or modifies the profile.
 
 ### 1.2 Control actions
 
@@ -129,8 +170,6 @@ message, ... }`.
 | `405` | Method other than `GET`/`POST` |
 | `409` | Action failed (for example, unknown id or failed connect) |
 | `413` | Request body exceeded the configured cap |
-
-Read-only endpoints: `GET /a2a/api/card?id=<inbound>`, `GET /a2a/api/task?id=<task>`, `GET /a2a/api/session?contextId=<id>&serverId=<instance>`, and `GET /a2a/api/metrics`. `GET /a2a/api` accepts `taskLimit`, `taskOffset`, `taskState`, `taskContextId`, and `taskServerId` for the task page.
 
 ### 1.4 Examples
 
@@ -426,7 +465,7 @@ text including the remote `taskId`, so the model can call again with
 
 ## 4. Current limits
 
-These are intentional or known at `0.4.0`; do not assume otherwise:
+These are intentional or known at `0.5.0`; do not assume otherwise:
 
 - `SendMessage` blocks by default; `configuration.returnImmediately: true`
   returns after starting the task. `historyLength` is applied to `GetTask`,

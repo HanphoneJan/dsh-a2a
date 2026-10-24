@@ -2,8 +2,8 @@
 name: 快速开始
 description: 安装 @hanphone/dsh-a2a，发布第一个入站 A2A server，用 curl 调用，并把远端 agent 接成模型工具
 create-time: 2026-10-19
-update-time: 2026-10-19
-version: v0.4.0
+update-time: 2026-10-24
+version: v0.5.0
 relative-docs:
   - docs/guide/concepts.zh.md
   - docs/guide/operations.zh.md
@@ -28,9 +28,8 @@ relative-docs:
 - 正在运行的 `dsh web`，默认地址 `http://127.0.0.1:3080/`。
 - `dsh` 命令；如果从源码 checkout 运行，则是 `pnpm dsh`。
 
-基础 `web` profile 已经挂载本插件需要的宿主服务：`storageDomain`、`webServer`、
-`tools`、`agents`、`agentPresets`、`skills`、`credentials`。自定义组合如果缺少其中某个，
-只会让对应的一半空闲；见[运维指南](operations.zh.md#宿主服务)。
+基础 `web` profile 已挂载插件用到的全部宿主服务。自定义组合见
+[运维指南：宿主服务](operations.zh.md#6-宿主服务)。
 
 ## 2. 安装
 
@@ -109,45 +108,12 @@ curl -sS http://127.0.0.1:3080/a2a/<id> \
   }'
 ```
 
-成功时返回的任务 `status.state` 为 `TASK_STATE_COMPLETED`，回复在 `artifacts` 里：
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "1",
-  "result": {
-    "id": "a2a-...",
-    "contextId": "...",
-    "status": { "state": "TASK_STATE_COMPLETED", "timestamp": "..." },
-    "artifacts": [{ "artifactId": "result", "parts": [{ "text": "OK" }] }],
-    "metadata": { "skill": "chat" }
-  }
-}
-```
+成功时返回的任务 `status.state` 为 `TASK_STATE_COMPLETED`，回复在 `artifacts` 里。
 
 如果不想等，可以发 `SendStreamingMessage`（或 `SubscribeToTask`），并带
-`Accept: text/event-stream`：
-
-```sh
-curl -N http://127.0.0.1:3080/a2a/<id> \
-  -H 'content-type: application/json' \
-  -H 'accept: text/event-stream' \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": "2",
-    "method": "SendStreamingMessage",
-    "params": {
-      "message": {
-        "role": "ROLE_USER",
-        "parts": [{ "text": "Count to three slowly" }],
-        "metadata": { "skill": "chat" }
-      }
-    }
-  }'
-```
-
-每个 SSE 帧是一行 `data: <StreamResponse>`；最后一帧是落定的 `task`。帧的完整口径见
-[HTTP API 与 A2A 协议](../reference/http-api.zh.md#a2a-端点)。
+`Accept: text/event-stream`。每个 SSE 帧是一行 `data: <StreamResponse>`，最后一帧是
+落定的 `task`；方法表与帧的完整口径见
+[协议参考](../reference/http-api.zh.md#2-a2a-端点)。
 
 如果入站 server 配置了 token，加上：
 

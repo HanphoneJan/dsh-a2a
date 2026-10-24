@@ -37,6 +37,8 @@ export interface OutboundAgentView {
   readonly skillCount: number
   readonly toolCount: number
   readonly skills: readonly OutboundSkillView[]
+  /** The remote AgentCard's advertised version (absent when unknown). */
+  readonly agentVersion?: string
   readonly lastError?: string
 }
 
@@ -310,6 +312,7 @@ export class OutboundAgentRegistry {
       skillCount,
       toolCount: disposers.length,
       skills,
+      ...(client.card.version !== undefined ? { agentVersion: client.card.version } : {}),
     })
     // Refresh lastCardAt durably; a failed write must not fail this connection.
     try {

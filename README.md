@@ -11,9 +11,8 @@ remote skills appear as model tools. Every server instance is created,
 started, stopped, edited and removed entirely from the GUI — no config-file
 editing.
 
-Architecture and design decisions: [docs/architecture.md](docs/architecture.md).
-Tracking DeepSeek Harness releases:
-[docs/harness-compatibility.md](docs/harness-compatibility.md).
+How it works: [docs/architecture.md](docs/architecture.md). Tracking DeepSeek
+Harness releases: [docs/harness-compatibility.md](docs/harness-compatibility.md).
 
 ## Features
 
@@ -23,21 +22,15 @@ Tracking DeepSeek Harness releases:
   catch-up frames; official `TASK_STATE_*` / `ROLE_*` enums and AgentCard
   structure (including `supportedInterfaces`, `capabilities`, full error-code
   table).
-- **Multiple inbound servers** — one per persona. Each instance gets its own
-  endpoint (`/a2a/<id>`), AgentCard route, authentication env, and skill
-  declarations.
-- **Per-instance agent preset** — every inbound server binds one concrete
-  agent preset (e.g. `ptc`, `standard`, `minimal`, …); the picker lists only
-  real roster presets (matching the in-app selector) and defaults to the
-  deployment default. Inbound tasks execute in sessions composed from that
-  preset through the standard `agentPresets` resolve+mount path.
-- **Preset-derived skill declarations** — the AgentCard's skills are the
-  model-invocable entries of the bound preset's skill directory
-  (`agentPresets.standingKeyFor` + `ctx.skills.list`), derived automatically —
-  "the preset decides its skills; everything is a plugin". No typed skill form;
-  a missing skills service falls back to the built-in `chat` skill. Remotes
-  call a skill via `metadata.skill`, and the preset session executes it
-  through its `tool-skill` loader.
+- **Multiple inbound servers, one preset each** — every instance has its own
+  endpoint (`/a2a/<id>`), AgentCard, auth env and bound roster preset; its
+  sessions are composed from that preset through the standard
+  `agentPresets` resolve+mount path.
+- **Preset-derived skills** — the card advertises the model-invocable entries
+  of the bound preset's skill directory (`agentPresets.standingKeyFor` +
+  `ctx.skills.list`). No typed skill form; a missing skills service falls back
+  to the built-in `chat` skill, and remotes select a skill via
+  `metadata.skill`.
 - **Multiple outbound servers** — each connection has its own remote URL,
   auth env, timeout and preset; enabled instances map remote skills
   to `a2a__<name>__<skill>` model tools.
@@ -49,21 +42,20 @@ Tracking DeepSeek Harness releases:
   (delegates to `ctx.subagents`, streams tool-call artifacts back).
 - **Governed inbound** — every inbound task passes through the
   `a2a/inbound-task` waterfall so policy plugins can veto or audit.
-- **Inbound connection monitoring** — the dashboard shows which remote peers
-  are talking to each instance and can close a peer.
-- **Inbound session layer (per context)** — each A2A conversation
-  (`contextId`) maps to one live DSH session (`a2a-<contextId>`); the GUI
-  aggregates sessions by contextId (status, task counts, streaming, first/last
-  activity) and can cancel a session's active tasks or close its live session
-  — close is an in-memory release, the next task on the same contextId simply
-  re-opens a fresh one. All-in-memory, like the peer registry; without an
-  agent loop the table still renders from task records (degraded).
+- **Inbound observability** — the dashboard shows live peers and one session
+  row per `contextId` (status, counts, streaming, activity) with close/cancel
+  actions. Sessions are in-memory; without an agent loop the table degrades to
+  task records.
 - **Direct bearer-token entry** — the GUI's Bearer Token field writes each
   instance's token through the harness credentials service (managed `.env` /
   credential store, `0o700`); the record keeps only an auto-generated env-var
   name and the value never lands in the a2a domain or the AgentCard. Runtime
   resolution layers credentials → process environment, so externally exported
   env vars keep working.
+- **Version display and update check** — the panel shows the plugin version,
+  Node runtime and each card's AgentCard version; **Check for updates** asks
+  npm and GitHub (six-hour cache, read-only) and prints the two-step update
+  command when a newer version exists.
 - **Minimal plugin config** — instances are created through the GUI and live
   in the domain; the plugin `Config` only carries host-level defaults
   (`baseUrl`, `subagentProvider`, `defaultTimeoutMs`).
@@ -76,11 +68,7 @@ Tracking DeepSeek Harness releases:
 dsh plugin --profile web add @hanphone/dsh-a2a
 ```
 
-Any profile name works (`web`, custom profiles, headless etc.):
-
-```sh
-dsh plugin --profile <name> add @hanphone/dsh-a2a
-```
+Any profile name works (`web`, custom profiles, headless etc.).
 
 ### From a local build
 
@@ -113,31 +101,17 @@ Send a task to an instance (its declared `chat` skill):
 ```sh
 curl -X POST http://127.0.0.1:3080/a2a/<id> \
   -H "content-type: application/json" \
-  -d '{"jsonrpc":"2.0","id":"1","method":"SendMessage","params":{"message":{"role":"user","parts":[{"text":"hello"}],"metadata":{"skill":"chat"}}}}'
+  -d '{"jsonrpc":"2.0","id":"1","method":"SendMessage","params":{"message":{"role":"ROLE_USER","parts":[{"text":"hello"}],"metadata":{"skill":"chat"}}}}'
 ```
 
 ## GUI dashboard
 
-The browser half registers an **A2A 连接** page under Settings, organized in
-three tabs. From it you can, without touching any file:
-
-- **入站 Servers** — create inbound servers (name/description/version, a
-  preset picker listing real roster presets with the deployment default
-  preselected, and a Bearer Token field), start/stop, edit (including clearing
-  auth), and remove them; each card shows its endpoint, preset badge,
-  auth state, preset-derived skill chips and live AgentCard URL.
-- **出站 Servers** — add outbound connections with a two-phase flow: enter
-  the remote AgentCard URL (± bearer token) → **导入** to preview the remote
-  card (name/version/skills/endpoint) → **连接** to confirm; start/stop,
-  refresh, edit (name/preset/timeout/token) and remove them. Cards show
-  connection state (state dot), tool counts and errors.
-- **连接与任务** — the inbound-peer table (who is calling, task counts,
-  streaming, close control), the per-context session table (status dot,
-  task/active counts, streaming, first/last activity, cancel-active / close
-  buttons), and the task list (per-source view, cancel).
-
-All dashboard traffic goes through the **loopback-only** `/a2a/api` route —
-remote peers can never drive it.
+The browser half registers an **A2A 连接** page under Settings: a version/update
+strip, inbound server cards (preset, derived skills, auth, live card URL),
+outbound connections (two-phase discover → preview → connect), and the
+connections/tasks tab (peers, per-context sessions, tasks). All dashboard
+traffic goes through the **loopback-only** `/a2a/api` route. The field-by-field
+reference is in [Operations](docs/guide/operations.md#2-the-panel).
 
 ## Configuration
 
@@ -158,32 +132,16 @@ persisted in the `a2a` domain (`inbound_servers` / `outbound_servers` tables).
 
 ### Required host services
 
-Base-backed profiles mount them all: `webServer` (`@deepseek-ai/dsh-host-webserver`),
-the storage stack (`@deepseek-ai/dsh-storage` + `@deepseek-ai/dsh-storage-domain`),
-the tools registry (`@deepseek-ai/dsh-tools`), an agent loop
-(`@deepseek-ai/dsh-agent` + `@deepseek-ai/dsh-agent-loop`), and agent presets
-(`@deepseek-ai/dsh-agent-presets`; the preset pickers and preset-bound session
-composition need it). The subagent executor additionally needs
-`@deepseek-ai/dsh-subagent`.
+The base profiles mount everything the plugin uses. A custom composition must
+provide the storage stack, `webServer`, `tools`, an agent loop, and
+`agentPresets`; the per-service effect of a missing mount is listed in
+[Operations: host services](docs/guide/operations.md#6-host-services).
 
 ### Storage backend
 
-The task and instance stores live in the `a2a` storage domain. The base
-composition routes storage through the `json` backend; to use SQLite, route
-the domain and add the backend in the same patch layer:
-
-```yaml
-- id: storage-domain
-  config:
-    backend: json
-    routes:
-      a2a: sqlite
-- insert:
-    - id: storage-sqlite
-      name: '@deepseek-ai/dsh-storage-sqlite'
-      config:
-        path: /absolute/path/to/a2a.sqlite
-```
+Task and instance stores live in the `a2a` storage domain (JSON by default;
+SQLite is a per-domain route). The patch example is in
+[Operations: storage](docs/guide/operations.md#7-storage).
 
 ## CLI
 
@@ -197,33 +155,15 @@ a2a status | presets | peers |
     sessions | session cancel|close <contextId> | help
 ```
 
-## How it works
-
-- **Inbound** — an `InboundServerManager` owns every instance: one preset-bound
-  session pool + `A2AServer` + routes per instance. Each instance persists in
-  the `inbound_servers` table and serves its own endpoint + AgentCard. Tasks
-  flow through `a2a/inbound-task` → executor → task store, with SSE frames
-  streamed to subscribers. A per-instance session registry observes SSE
-  lifecycle hooks; the facade folds those live observations over the shared
-  task store into per-`contextId` session views.
-- **Outbound** — an `OutboundServerManager` owns every connection: one
-  `OutboundAgentRegistry` with an isolated agent store per instance,
-  persisted in the `outbound_servers` table. `A2AClient` discovers an
-  AgentCard, and each skill registers as a tool.
-- **Dashboard** — the browser half (React, `settings.section`) reads/writes
-  the loopback-only `/a2a/api` route; the host half feeds it snapshots of
-  inbound/outbound server views and the preset roster (`/a2a/api/presets`).
-
-See [docs/architecture.md](docs/architecture.md) for the full design.
-
 ## Directory structure
 
 ```
 src/
-  api.ts                  # loopback dashboard API (/a2a/api, /a2a/api/presets)
+  api.ts                  # loopback dashboard API (/a2a/api, /a2a/api/update, ...)
   index.ts                # Cordis plugin entry (apply)
   protocol.ts             # A2A v1.0.1 protocol constants + types
   jsonrpc.ts              # JSON-RPC framing
+  update.ts               # plugin version + npm/GitHub update check
   servers/                # multi-instance managers
     inbound-manager.ts    #   inbound server instances (CRUD, routes, lifecycle)
     outbound-manager.ts   #   outbound connection instances (CRUD, tools)
@@ -235,7 +175,7 @@ src/
   commands.ts             # /a2a chat command
 tests/
   unit/                   # protocol, framing, card, store, registry, server,
-                          #   client, api, inbound-registry, identity
+                          #   update, client update-status, api, ...
   composition/            # apply() on a real Cordis Context with stub host services
   integration/            # real agent loop + JSONL persistence, mock LLM
   types/                  # compile-time mirror check against real DSH types
@@ -247,18 +187,9 @@ cordis.patch.yml          # bundle patch (mounts the plugin; instances are GUI-m
 
 ## Documentation
 
-The public manual describes the current behavior in depth:
-
-- [Documentation index](docs/README.md)
-- [Getting started](docs/guide/getting-started.md)
-- [Concepts](docs/guide/concepts.md)
-- [Operations](docs/guide/operations.md)
-- [HTTP API and A2A protocol](docs/reference/http-api.md)
-- [Troubleshooting](docs/guide/troubleshooting.md)
-
-Deep dives: [Architecture](docs/architecture.md),
-[Harness compatibility](docs/harness-compatibility.md), and
-[Testing](docs/testing.md).
+Start at the [documentation index](docs/README.md) (installation, concepts,
+operations, HTTP API, troubleshooting). Deep dives: [Architecture](docs/architecture.md),
+[Harness compatibility](docs/harness-compatibility.md), and [Testing](docs/testing.md).
 
 ## Development
 

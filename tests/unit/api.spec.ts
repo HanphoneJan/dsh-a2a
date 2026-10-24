@@ -7,6 +7,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { handleApiRequest } from '../../src/api.ts'
 import type { A2AServiceImpl } from '../../src/service.ts'
+import type { UpdateChecker, UpdateInfo } from '../../src/update.ts'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { EventEmitter } from 'node:events'
 
@@ -44,8 +45,7 @@ function resCollector() {
   return res
 }
 
-function facadeStub(overrides: Partial<A2AServiceImpl> = {}): A2AServiceImpl {
-  return {
+function facadeStub(overrides: Partial<A2AServiceImpl> = {}): A2AServiceImpl {  return {
     status: () => ({ inbounds: [], outbounds: [], tasks: 0, peers: [] }),
     presets: vi.fn(async () => []),
     listInboundServers: () => [],
@@ -75,6 +75,30 @@ function facadeStub(overrides: Partial<A2AServiceImpl> = {}): A2AServiceImpl {
     closeInbound: vi.fn(async () => ({ ok: true, message: 'peer closed' })),
     inbounds: () => [],
     ...overrides,
+  }
+}
+
+function updateStub(overrides: Partial<UpdateInfo> = {}): UpdateChecker {
+  const current = '0.4.0'
+  return {
+    current,
+    packageName: '@hanphone/dsh-a2a',
+    repoUrl: 'https://github.com/HanphoneJan/dsh-a2a',
+    check: vi.fn(async (_force?: boolean): Promise<UpdateInfo> => ({
+      ok: true,
+      current,
+      latest: current,
+      hasUpdate: false,
+      ahead: false,
+      error: null,
+      source: 'npm',
+      repoUrl: 'https://github.com/HanphoneJan/dsh-a2a',
+      packageName: '@hanphone/dsh-a2a',
+      checkedAt: 1,
+      cached: false,
+      runtime: { node: 'v24.0.0', platform: 'linux', arch: 'x64', profile: 'web' },
+      ...overrides,
+    })),
   }
 }
 
@@ -212,6 +236,31 @@ describe('handleApiRequest', () => {
     const res = resCollector()
     await handleApiRequest(reqWith('127.0.0.1'), res, impl)
     expect(JSON.parse(res.output().body).sessions).toEqual([{ contextId: 'from-facade' }])
+  })
+
+  it('puts the installed plugin version in the snapshot', async () => {
+    const res = resCollector()
+    await handleApiRequest(reqWith('127.0.0.1'), res, facadeStub(), updateStub())
+    expect(JSON.parse(res.output().body).version).toBe('0.4.0')
+  })
+
+  it('serves the update answer and forwards the explicit refresh flag', async () => {
+    const update = updateStub({ latest: '0.5.0', hasUpdate: true })
+    const res = resCollector()
+    await handleApiRequest(reqWith('127.0.0.1', 'GET', '', '/a2a/api/update'), res, facadeStub(), update)
+    expect(update.check).toHaveBeenCalledWith(false)
+    expect(JSON.parse(res.output().body)).toMatchObject({ ok: true, current: '0.4.0', latest: '0.5.0', hasUpdate: true })
+
+    const forced = resCollector()
+    await handleApiRequest(reqWith('127.0.0.1', 'GET', '', '/a2a/api/update?refresh=1'), forced, facadeStub(), update)
+    expect(update.check).toHaveBeenLastCalledWith(true)
+  })
+
+  it('keeps the dashboard usable when the update checker is not mounted', async () => {
+    const res = resCollector()
+    await handleApiRequest(reqWith('127.0.0.1', 'GET', '', '/a2a/api/update'), res, facadeStub())
+    expect(res.output().status).toBe(200)
+    expect(JSON.parse(res.output().body)).toMatchObject({ ok: false })
   })
 })
 

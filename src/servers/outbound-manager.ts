@@ -58,6 +58,8 @@ export interface OutboundServerView {
   readonly skillCount: number
   readonly toolCount: number
   readonly skills: readonly OutboundSkillView[]
+  /** The remote AgentCard's advertised version (absent when unknown). */
+  readonly agentVersion?: string
   readonly lastError?: string
   readonly lastCardAt?: string
 }
@@ -257,6 +259,7 @@ export class OutboundServerManager {
       skillCount: agent?.skillCount ?? 0,
       toolCount: agent?.toolCount ?? 0,
       skills: agent?.skills ?? [],
+      ...(agent?.agentVersion !== undefined ? { agentVersion: agent.agentVersion } : {}),
       ...(agent?.lastError !== undefined ? { lastError: agent.lastError } : {}),
       ...(record.lastCardAt !== undefined ? { lastCardAt: record.lastCardAt } : {}),
     }

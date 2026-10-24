@@ -2,8 +2,8 @@
 name: Troubleshooting
 description: Diagnose empty replies, 401s, unreachable cards, failed outbound connections, missing tools, version preflight, and storage conflicts
 create-time: 2026-10-19
-update-time: 2026-10-19
-version: v0.4.0
+update-time: 2026-10-24
+version: v0.5.0
 relative-docs:
   - docs/guide/getting-started.md
   - docs/reference/http-api.md
@@ -27,32 +27,20 @@ Work in this order; each step narrows the layer:
 ## 1. `(no reply)` or an empty artifact
 
 A completed task whose artifact is `(no reply)` means the inbound session
-executor finished without an assistant message. In `0.3.6` this was a known
-bug: the executor sent the agent a message with
-`source: { kind: 'plugin', plugin: 'a2a' }`. The JSONL v4 session codec refuses
-`kind: 'plugin'`; the write failed in the session handle's background flush,
-the agent loop contained the error, and the task settled `COMPLETED` with no
-reply. **Fixed in 0.3.7** by using the producer-owned `{ kind: 'a2a' }`.
+executor finished without an assistant message. Narrow it down:
 
-If you still see an empty reply on 0.3.7 or newer:
-
-1. Confirm the installed version:
-   ```sh
-   node -p "require('/path/to/profile/node_modules/@hanphone/dsh-a2a/package.json').version"
-   ```
-   It must be `0.3.7` or newer. Reinstall and restart `dsh web` if not.
-2. Check the task state and status message:
+1. Check the task state and status message:
    ```text
    /a2a task get <taskId>
    ```
    `TASK_STATE_FAILED` carries an error message; `COMPLETED` with an empty
    artifact points back at the model/session layer.
-3. In the panel, open **Connections and tasks → Inbound sessions**, find the
+2. In the panel, open **Connections and tasks → Inbound sessions**, find the
    `contextId`, and check whether the session is running or idle.
-4. Check the model provider for the preset: an unauthenticated or misconfigured
+3. Check the model provider for the preset: an unauthenticated or misconfigured
    provider can produce an empty assistant message. Verify the same preset in a
    normal DSH session.
-5. Look for `a2a` warnings in the DSH host log and in
+4. Look for `a2a` warnings in the DSH host log and in
    `$DSH_HOME/sessions/...` for the `a2a-<contextId>` session.
 
 If the task is `CANCELED`, the caller or the panel canceled it; start a new
@@ -155,26 +143,22 @@ ports for two-instance tests. This is exactly what the hermetic e2e does.
   server handles the request as non-streaming JSON-RPC.
 - Only `SendStreamingMessage` and `SubscribeToTask` are valid on the streaming
   path; other methods return a method-not-found error frame.
-- Frames are unnamed `data:` lines; use `curl -N` and do not buffer.
-- `SendMessage` remains blocking even if the caller expects streaming; choose
-  the streaming method explicitly.
-- `returnImmediately` and `historyLength` are implemented; history is reconstructed from the durable task input/output.
+- `SendMessage` stays blocking even if the caller expects streaming; choose the
+  streaming method explicitly. Frames are `data:` lines, so use `curl -N`.
+
+The frame vocabulary and reconnect rules are in
+[HTTP API: streaming](../reference/http-api.md#24-streaming).
 
 ## 10. Known limits
 
-- No push notifications, gRPC, HTTP+JSON binding, OAuth, or mTLS.
-- Rate limiting is process-local and per source; there is no distributed quota.
-- `GetTask` returns no history array.
-- Live sessions and peers are memory-only; only tasks, bindings, and instances
-  survive a restart.
-- The `subagent` executor is not selected by the default skill map.
-- Outbound `preset` is metadata; there is no local hand-off session yet.
+The protocol and feature limits are collected in
+[HTTP API: current limits](../reference/http-api.md#4-current-limits).
 
 ## 11. What to include in a bug report
 
 Please attach:
 
-- plugin version (`0.4.0`), harness version, and OS;
+- plugin version (`0.5.0`), harness version, and OS;
 - the exact command or panel action;
 - the task JSON (`/a2a task get <id>`) and the AgentCard;
 - whether the inbound instance has auth, and whether the request carried the

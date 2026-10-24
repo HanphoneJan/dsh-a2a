@@ -2,8 +2,8 @@
 name: HTTP API 与 A2A 协议
 description: 仅回环面板动作、入站 JSON-RPC 端点、SSE 流式、任务状态、错误码、AgentCard 与出站工具契约
 create-time: 2026-10-19
-update-time: 2026-10-19
-version: v0.4.0
+update-time: 2026-10-24
+version: v0.5.0
 relative-docs:
   - docs/guide/getting-started.zh.md
   - docs/guide/concepts.zh.md
@@ -14,7 +14,7 @@ relative-docs:
 
 [English](http-api.md) · **中文**
 
-本页是 `0.4.0` 的线上参考，分两部分：
+本页是 `0.5.0` 的线上参考，分两部分：
 
 1. 面板使用的**仅回环控制 API**（`/a2a/api`）；
 2. 入站 server 发布的 **A2A 端点**（`/a2a/<id>`）。
@@ -31,13 +31,24 @@ relative-docs:
 
 | 方法与路径 | 返回 |
 |---|---|
-| `GET /a2a/api` | 快照：`{ inbounds, outbounds, tasks, peers, sessions }` |
+| `GET /a2a/api` | 快照：`{ version, inbounds, outbounds, tasks, peers, sessions }` |
 | `GET /a2a/api/presets` | Agent preset 名单：`[{ id, name?, description?, isDefault? }]` |
+| `GET /a2a/api/update` | 插件版本与更新检查结果（见下）；`?refresh=1` 绕过缓存 |
+| `GET /a2a/api/card?id=<inbound>` | 单个入站 AgentCard |
+| `GET /a2a/api/task?id=<task>` | 单条任务 |
+| `GET /a2a/api/session?contextId=<id>&serverId=<instance>` | 单个会话视图 |
+| `GET /a2a/api/metrics` | 指标快照 |
+
+`version` 是已安装的插件版本，随快照返回，因此面板在第一次网络请求之前就能显示它。
+`outbounds[].agentVersion` 是连接存活时远端 AgentCard 宣告的版本。`GET /a2a/api`
+还接受 `taskLimit`、`taskOffset`、`taskState`、`taskContextId`、`taskServerId`
+控制任务页。
 
 快照样例（值已缩写）：
 
 ```json
 {
+  "version": "0.5.0",
   "inbounds": [
     {
       "id": "e2e-b-ade6a7ad",
@@ -61,7 +72,8 @@ relative-docs:
       "timeoutMs": 60000,
       "state": "connected",
       "skillCount": 1,
-      "toolCount": 1
+      "toolCount": 1,
+      "agentVersion": "1.0.0"
     }
   ],
   "tasks": [],
@@ -69,6 +81,31 @@ relative-docs:
   "sessions": []
 }
 ```
+
+`GET /a2a/api/update` 返回：
+
+```json
+{
+  "ok": true,
+  "current": "0.5.0",
+  "latest": "0.5.1",
+  "hasUpdate": true,
+  "ahead": false,
+  "error": null,
+  "source": "npm",
+  "repoUrl": "https://github.com/HanphoneJan/dsh-a2a",
+  "checkedAt": 1790000000000,
+  "cached": false,
+  "runtime": { "node": "24.20.0", "platform": "linux", "arch": "x64", "profile": "web" }
+}
+```
+
+它同时查询 npm registry 的 `latest` 标签与插件 manifest 中 GitHub 仓库的
+`package.json`，取其中更高的版本。结果缓存 6 小时；`?refresh=1` 绕过缓存。
+`runtime` 带 Node 版本、平台/架构，以及宿主 export 的 `DSH_PROFILE`（当前
+profile），面板据此生成对应 profile 的更新命令。两条源都查不到时仍返回
+`200`，但 `ok: false`、`latest: null` 并带 `error`——查询失败绝不会显示成
+「已是最新」。检查是只读的：不安装、不重启、不改 profile。
 
 ### 1.2 控制动作
 
@@ -126,8 +163,6 @@ relative-docs:
 | `405` | 方法不是 `GET`/`POST` |
 | `413` | 请求体超过配置上限 |
 | `409` | 动作失败（如未知 id、连接失败） |
-
-只读端点：`GET /a2a/api/card?id=<inbound>`、`GET /a2a/api/task?id=<task>`、`GET /a2a/api/session?contextId=<id>&serverId=<instance>`、`GET /a2a/api/metrics`。`GET /a2a/api` 接受 `taskLimit`、`taskOffset`、`taskState`、`taskContextId`、`taskServerId` 控制任务页。
 
 ### 1.4 示例
 
@@ -393,7 +428,7 @@ a2a__<连接名>__<技能 id>
 
 ## 4. 当前限制
 
-这些是 `0.4.0` 的已知或有意行为，不要假设相反：
+这些是 `0.5.0` 的已知或有意行为，不要假设相反：
 
 - `SendMessage` 默认阻塞；`configuration.returnImmediately: true` 会在启动任务后立即返回。`historyLength` 已应用于 `GetTask`、`SendMessage` 和 `ListTasks`（history 从持久化任务输入/输出重建，不是逐轮完整 transcript）。
 - `acceptedOutputModes` 只接受文本模式；排除文本的请求返回 `CONTENT_TYPE_NOT_SUPPORTED`。

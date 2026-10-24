@@ -2,8 +2,8 @@
 name: 排障
 description: 空回复、401、卡片不可达、出站连接失败、工具缺失、版本预检与存储冲突的排查
 create-time: 2026-10-19
-update-time: 2026-10-19
-version: v0.4.0
+update-time: 2026-10-24
+version: v0.5.0
 relative-docs:
   - docs/guide/getting-started.zh.md
   - docs/reference/http-api.zh.md
@@ -27,27 +27,17 @@ relative-docs:
 ## 1. `(no reply)` 或空 artifact
 
 任务 `COMPLETED` 但 artifact 是 `(no reply)`，表示入站 session 执行器结束时没有 assistant 消息。
-`0.3.6` 里这是已知 bug：执行器交给 agent 的消息 source 是
-`{ kind: 'plugin', plugin: 'a2a' }`。JSONL v4 session codec 拒绝 `kind: 'plugin'`；
-写入在 session handle 的后台 flush 中失败，agent loop 吞掉错误，任务以 `COMPLETED` 落定但没有回复。
-**`0.3.7` 已修复**，改用生产者自己的 `{ kind: 'a2a' }`。
+逐层缩小：
 
-如果 `0.3.7` 或更新版本仍然空回复：
-
-1. 确认已安装版本：
-   ```sh
-   node -p "require('/path/to/profile/node_modules/@hanphone/dsh-a2a/package.json').version"
-   ```
-   必须是 `0.3.7` 或更新。不是的话重装并重启 `dsh web`。
-2. 看任务状态与状态消息：
+1. 看任务状态与状态消息：
    ```text
    /a2a task get <taskId>
    ```
    `TASK_STATE_FAILED` 会带错误消息；`COMPLETED` 但 artifact 为空，问题更可能在模型/会话层。
-3. 面板 **连接与任务 → 入站会话**，找到对应 `contextId`，看是运行中还是空闲。
-4. 检查 preset 的模型 provider：未认证或配错的 provider 可能产生空的 assistant 消息。
+2. 面板 **连接与任务 → 入站会话**，找到对应 `contextId`，看是运行中还是空闲。
+3. 检查 preset 的模型 provider：未认证或配错的 provider 可能产生空的 assistant 消息。
    用同一个 preset 在普通 DSH 会话里试一下。
-5. 查 DSH 宿主日志里的 `a2a` 警告，以及 `$DSH_HOME/sessions/...` 下
+4. 查 DSH 宿主日志里的 `a2a` 警告，以及 `$DSH_HOME/sessions/...` 下
    `a2a-<contextId>` 的会话日志。
 
 如果任务是 `CANCELED`，说明调用方或面板取消了它；在同一 `contextId` 上发新任务即可重开会话。
@@ -130,25 +120,22 @@ hermetic e2e 就是这么做的。
 ## 9. 流式行为异常
 
 - 流式要求 `POST` 带 `Accept: text/event-stream`。不带就按非流式 JSON-RPC 处理。
-- 流式路径只接受 `SendStreamingMessage` 与 `SubscribeToTask`；其他方法返回 method-not-found 错误帧。
-- 帧是未命名的 `data:` 行；用 `curl -N`，不要缓冲。
-- `SendMessage` 即使调用方期待流式也仍然阻塞；要流式就显式选流式方法。
-- `returnImmediately` 与 `historyLength` 已实现；history 从持久化任务输入/输出重建。
+- 流式路径只接受 `SendStreamingMessage` 与 `SubscribeToTask`；其他方法返回
+  method-not-found 错误帧。
+- `SendMessage` 即使调用方期待流式也仍然阻塞；要流式就显式选流式方法。帧是
+  `data:` 行，用 `curl -N`，不要缓冲。
+
+帧的完整口径与重连规则见[协议参考：流式](../reference/http-api.zh.md#24-流式)。
 
 ## 10. 已知限制
 
-- 没有 push notifications、gRPC、HTTP+JSON 绑定、OAuth 或 mTLS。
-- 限流是进程内、按来源的；没有分布式配额。
-- `GetTask` 不返回 history 数组。
-- 活跃会话与对端只在内存；只有任务、绑定、实例跨重启保留。
-- `subagent` 执行器不会被默认技能表选中。
-- 出站 `preset` 只是元数据；还没有本地衔接会话。
+协议与功能限制统一收集在[协议参考：当前限制](../reference/http-api.zh.md#4-当前限制)。
 
 ## 11. bug 报告里带什么
 
 请附上：
 
-- 插件版本（`0.4.0`）、harness 版本、操作系统；
+- 插件版本（`0.5.0`）、harness 版本、操作系统；
 - 精确的命令或面板操作；
 - 任务 JSON（`/a2a task get <id>`）与 AgentCard；
 - 入站是否配置鉴权、请求是否带 header（**不要贴 token**）；
