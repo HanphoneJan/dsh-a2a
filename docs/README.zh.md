@@ -32,6 +32,8 @@ update-time: 2026-10-25
 | [测试](testing.zh.md) | 测试分层、hermetic e2e，以及 stub 测试看不见什么 |
 | [Trace 扩展](extensions/dsh-trace/v1.zh.md) | 可选的 `dsh-trace/v1` metadata 契约 |
 
+另有一份按实现链路展开的中文深度手册：[dsh-a2a 中文深度手册](manual-zh/README.md)。
+
 ## 版本与事实来源
 
 - 插件：`@hanphone/dsh-a2a` `0.5.1`
