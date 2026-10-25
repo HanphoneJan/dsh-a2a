@@ -9,10 +9,11 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Part } from '../../protocol.ts'
+import { previewArguments, type TraceCall } from '../trace.ts'
 
 /** The slice of a live DSH `Agent` this runtime drives (structural mirror). */
 export interface LiveAgent {
-  readonly session: { deriveMessages(): readonly AgentMessage[] }
+  readonly session: { readonly id?: string; deriveMessages(): readonly AgentMessage[] }
   send(message: AgentUserMessage, target: 'next-turn', wakeup: boolean): void
   whenIdle(): Promise<void>
   cancel(cause: string): void
@@ -26,12 +27,12 @@ export interface LiveAgent {
 
 /** The slice of an agent-scoped Cordis context used for live notifications. */
 export interface AgentContextLike {
-  on(name: string, listener: (payload: unknown) => void): (() => void) | void
+  on(name: string, listener: (...args: unknown[]) => void): (() => void) | void
 }
 
 /** One derived history message. */
 export interface AgentMessage {
-  readonly role: 'user' | 'assistant'
+  readonly role: 'system' | 'developer' | 'user' | 'assistant' | 'tool'
   readonly content: readonly { readonly type: string; readonly text?: string }[]
 }
 
@@ -64,14 +65,15 @@ export interface AgentUserMessage {
   readonly source: { readonly kind: 'a2a' }
 }
 
-/** One text/tool delta observed on the live assistant stream. */
+/** One text delta observed on the live assistant stream. */
 export type TurnStreamEvent =
   | { readonly type: 'text-delta'; readonly text: string }
-  | { readonly type: 'tool-call-delta'; readonly id: string; readonly name?: string; readonly argumentsDelta: string }
 
 /** Per-turn options: live observation only; the turn's result remains the return value. */
 export interface RunTurnOptions {
   readonly onEvent?: (event: TurnStreamEvent) => void
+  /** Receives redacted tool lifecycle observations when trace is activated. */
+  readonly onTrace?: (call: TraceCall) => void
 }
 
 /** Structural slice of the attachment store used to admit A2A file parts. */
@@ -371,7 +373,7 @@ export class ContextSessionPool {
 
     let failure: unknown
     const disposers: Array<() => void> = []
-    const listen = (name: string, listener: (payload: unknown) => void): void => {
+    const listen = (name: string, listener: (...args: unknown[]) => void): void => {
       try {
         const dispose = agent.ctx?.on(name, listener)
         if (typeof dispose === 'function') disposers.push(dispose)
@@ -392,15 +394,54 @@ export class ContextSessionPool {
       const chunk = frame.chunk
       if (chunk?.type === 'text-delta' && typeof chunk.text === 'string' && chunk.text.length > 0) {
         options.onEvent?.({ type: 'text-delta', text: chunk.text })
-      } else if (chunk?.type === 'tool-call-delta') {
-        options.onEvent?.({
-          type: 'tool-call-delta',
-          id: typeof chunk.id === 'string' ? chunk.id : '',
-          ...(typeof chunk.name === 'string' ? { name: chunk.name } : {}),
-          argumentsDelta: typeof chunk.argumentsDelta === 'string' ? chunk.argumentsDelta : '',
-        })
       }
     })
+
+    // Trace is metadata-only: observe tool lifecycle, never the result content.
+    const openCalls = new Map<string, { readonly tool: string; readonly startedAt: number }>()
+    const emitTrace = (call: TraceCall): void => options.onTrace?.(call)
+    if (options.onTrace !== undefined) {
+      listen('session/event', (...args) => {
+        const [session, event] = args as [ { readonly id?: string } | undefined, SessionEventLike | undefined ]
+        if (session?.id !== undefined && session.id !== sessionId) return
+        if (event === undefined) return
+        const at = typeof event.time === 'number' ? event.time : Date.now()
+        if (event.type === 'tool/call') {
+          const data = event.data as ToolCallData | undefined
+          const callId = typeof data?.callId === 'string' ? data.callId : ''
+          if (callId.length === 0) return
+          const tool = typeof data?.name === 'string' && data.name.length > 0 ? data.name : 'tool'
+          const argsPreview = previewArguments(data?.arguments)
+          openCalls.set(callId, { tool, startedAt: at })
+          emitTrace({
+            callId,
+            tool,
+            phase: 'start',
+            status: 'running',
+            ...(argsPreview !== undefined ? { argsPreview } : {}),
+            timestamp: new Date(at).toISOString(),
+          })
+          return
+        }
+        if (event.type === 'tool/result') {
+          const data = event.data as ToolResultData | undefined
+          const callId = typeof data?.message?.toolCallId === 'string' ? data.message.toolCallId : ''
+          if (callId.length === 0) return
+          const started = openCalls.get(callId)
+          openCalls.delete(callId)
+          const tool = started?.tool ?? 'tool'
+          const durationMs = started === undefined ? undefined : Math.max(0, at - started.startedAt)
+          emitTrace({
+            callId,
+            tool,
+            phase: 'end',
+            status: data?.message?.isError === true ? 'error' : 'ok',
+            ...(durationMs !== undefined ? { durationMs } : {}),
+            timestamp: new Date(at).toISOString(),
+          })
+        }
+      })
+    }
 
     const baseline = agent.session.deriveMessages().length
     const userMessage: AgentUserMessage = {
@@ -428,6 +469,17 @@ export class ContextSessionPool {
       if (signal.aborted && reply.length === 0) throw new AgentTurnCanceled()
       return reply
     } finally {
+      for (const [callId, started] of openCalls) {
+        emitTrace({
+          callId,
+          tool: started.tool,
+          phase: 'end',
+          status: 'unknown',
+          durationMs: Math.max(0, Date.now() - started.startedAt),
+          timestamp: new Date().toISOString(),
+        })
+      }
+      openCalls.clear()
       for (const dispose of disposers.splice(0)) {
         try { dispose() } catch { /* listener already gone */ }
       }
@@ -454,10 +506,24 @@ interface AssistantStreamPayload {
   readonly chunk?: {
     readonly type?: string
     readonly text?: string
-    readonly id?: unknown
-    readonly name?: string
-    readonly argumentsDelta?: string
   }
+}
+
+/** Structural slice of one session event used for trace observation. */
+interface SessionEventLike {
+  readonly type?: string
+  readonly time?: number
+  readonly data?: unknown
+}
+
+interface ToolCallData {
+  readonly callId?: unknown
+  readonly name?: unknown
+  readonly arguments?: unknown
+}
+
+interface ToolResultData {
+  readonly message?: { readonly toolCallId?: unknown; readonly isError?: unknown }
 }
 
 /** Read the last assistant message's text off a derived-history slice. */
@@ -467,7 +533,8 @@ function lastAssistantText(history: readonly AgentMessage[]): string {
     if (message === undefined) continue
     if (message.role === 'assistant') {
       return message.content
-        .map((b) => ('text' in b && typeof b.text === 'string' ? (b.text ?? '') : ''))
+        .filter((b) => b.type === 'text')
+        .map((b) => (typeof b.text === 'string' ? b.text : ''))
         .filter(Boolean)
         .join('\n')
         .trim()

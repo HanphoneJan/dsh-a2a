@@ -156,6 +156,7 @@ HTTP API。
     maxConcurrentTasks: 32
     maxBodyBytes: 1048576
     outboundRefreshMs: 300000
+    inboundTrace: false
 ```
 
 | 字段 | 默认 | 含义 |
@@ -168,6 +169,7 @@ HTTP API。
 | `maxConcurrentTasks` | `32` | 每个入站实例的并发任务上限；超限任务可读地失败；`0` 关闭 |
 | `maxBodyBytes` | `1048576` | 入站 A2A 请求体上限 |
 | `outboundRefreshMs` | `300000` | 启用中的出站连接自动刷新 AgentCard 的间隔；`0` 关闭 |
+| `inboundTrace` | `false` | 可选入站 trace 扩展的部署总开关/默认值；为 false 时任何实例都不能激活 |
 
 入站会话工作目录是 `$DSH_HOME/a2a-sessions`（启动时创建）。`DSH_HOME` 默认
 `~/.dsh`。
@@ -227,6 +229,9 @@ HTTP API。
 - **一个 `DSH_HOME` 只允许一个写者。** 两个 DSH 进程共享 home 会写同一个 JSON 域；
   双实例测试请用独立 home 与端口。
 - **任务与实例持久化。** 活跃会话、流订阅、对端注册表都在内存里，重启即清空。
+- **任务记录会随 history 与 trace 增长。** 每条已接受输入都会为 `Task.history`
+  保留；可选 trace 摘要最多 64 条观察。大附件与长续接会放大域记录体积，需相应规划
+  保留与备份策略。
 - **域里存的是 JSON 字符串。** 格式变化由域的 `version` 字段守护。升级前备份
   JSON/SQLite 文件。
 - **会话日志**由 DSH 正常的 session persistence 写到 `$DSH_HOME/sessions/...`；
@@ -249,6 +254,10 @@ HTTP API。
 - 每个入站实例用不同 token，避免一次泄露就拿到所有已发布 agent 的访问权。在面板里改
   token 会立即重建该实例；外部 export 的变量在下一次组装实例时生效。
 - 没有 OAuth、mTLS 或按客户端凭据模型。
+- **trace 是可选的、仅 metadata 的。** `inboundTrace: true` 是部署总开关；实例还要
+  允许该扩展，调用方还要用 `A2A-Extensions` 请求。任何能读任务的调用方都能看到
+  `Task.metadata` 里的有界摘要，所以只对可信对端开启。原始工具参数、工具结果和
+  reasoning 永不包含；参数摘要会脱敏并截断。关闭部署总开关并重载后，所有卡片都会移除该扩展。
 
 ## 升级与卸载
 

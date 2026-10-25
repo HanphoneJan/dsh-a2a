@@ -61,6 +61,8 @@ export interface A2AConfig {
   maxBodyBytes: number
   /** Automatic outbound AgentCard refresh interval (ms); 0 disables it. */
   outboundRefreshMs: number
+  /** Deployment gate/default for the optional inbound trace extension. */
+  inboundTrace: boolean
 }
 
 /** Loader-validated config schema (defaults applied by the Loader). */
@@ -73,6 +75,7 @@ export const Config: z<A2AConfig> = z.object({
   maxConcurrentTasks: z.number().default(32),
   maxBodyBytes: z.number().default(1_048_576),
   outboundRefreshMs: z.number().default(300_000),
+  inboundTrace: z.boolean().default(false),
 })
 
 export function apply(ctx: Context, config: A2AConfig) {
@@ -131,6 +134,7 @@ export function apply(ctx: Context, config: A2AConfig) {
         sessionCwd: inboundCwd,
         defaultBaseUrl: baseUrl,
         subagentProvider,
+        inboundTrace: config.inboundTrace,
         newId: () => crypto.randomUUID().slice(0, 8),
       }
       const inboundManager = new InboundServerManager(inboundHost, new DomainInboundStore(domain.inbound_servers))
@@ -209,6 +213,7 @@ function makeFacade(host: FacadeHost): A2AServiceImpl {
       cardPath: live.cardPath,
       ...(live.card.supportedInterfaces?.[0]?.url !== undefined ? { cardUrl: live.card.supportedInterfaces[0].url } : {}),
       enabled: live.routes.active,
+      trace: live.traceEnabled,
       skills: live.skills.map((s): SkillView => ({ id: s.id, name: s.name, ...(s.description != null ? { description: s.description } : {}) })),
     }
   }
@@ -290,6 +295,7 @@ function makeFacade(host: FacadeHost): A2AServiceImpl {
         ...(input.endpointPath !== undefined ? { endpointPath: input.endpointPath } : {}),
         ...(input.preset !== undefined ? { preset: input.preset } : {}),
         ...(input.authTokenEnv !== undefined ? { authTokenEnv: input.authTokenEnv } : {}),
+        ...(input.trace !== undefined ? { trace: input.trace } : {}),
         ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
       })
       host.logger(`[a2a] inbound created: ${result.message}`)
@@ -306,7 +312,7 @@ function makeFacade(host: FacadeHost): A2AServiceImpl {
       audit('inbound.enable', result.message, id)
       return result
     },
-    async updateInboundServer(id: string, patch: { name?: string; description?: string; version?: string; endpointPath?: string; preset?: string; authTokenEnv?: string }): Promise<OpResult> {
+    async updateInboundServer(id: string, patch: { name?: string; description?: string; version?: string; endpointPath?: string; preset?: string; authTokenEnv?: string; trace?: boolean }): Promise<OpResult> {
       const result = await host.inboundManager.update(id, patch)
       audit('inbound.update', result.message, id)
       return result

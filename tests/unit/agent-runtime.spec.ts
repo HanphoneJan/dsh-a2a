@@ -198,3 +198,69 @@ describe('ContextSessionPool concurrency and content', () => {
     ])
   })
 })
+
+describe('ContextSessionPool visibility and trace', () => {
+  it('never falls back to reasoning when a turn has no visible text', async () => {
+    const agent: LiveAgent = {
+      session: {
+        deriveMessages: () => [{
+          role: 'assistant',
+          content: [
+            { type: 'reasoning', text: 'private chain of thought' },
+            { type: 'tool-call', text: undefined },
+          ],
+        }],
+      },
+      send: () => {},
+      whenIdle: async () => {},
+      cancel: () => {},
+    }
+    const create = vi.fn(async () => ({ agent, dispose: async () => {} }))
+    const pool = new ContextSessionPool({ create } as unknown as AgentRegistryLike, { cwd: '/tmp' })
+    expect(await pool.runTurn('ctx-hidden', 'hi', new AbortController().signal)).toBe('')
+  })
+
+  it('observes redacted tool start/end lifecycle through session events', async () => {
+    const listeners = new Map<string, (...args: unknown[]) => void>()
+    const agent: LiveAgent = {
+      session: {
+        id: 'a2a-ctx-trace',
+        deriveMessages: () => [{ role: 'assistant', content: [{ type: 'text', text: 'done' }] }],
+      },
+      send: () => {
+        const notify = listeners.get('session/event')
+        notify?.({ id: 'a2a-ctx-trace' }, {
+          type: 'tool/call',
+          time: 1_000,
+          data: { callId: 'c1', name: 'read_file', arguments: '{"path":"a.txt","token":"super-secret"}' },
+        })
+        notify?.({ id: 'a2a-ctx-trace' }, {
+          type: 'tool/result',
+          time: 1_250,
+          data: { message: { toolCallId: 'c1', isError: false, content: [{ type: 'text', text: 'secret file body' }] } },
+        })
+      },
+      whenIdle: async () => {},
+      cancel: () => {},
+      ctx: {
+        on: (name, handler) => {
+          listeners.set(name, handler)
+          return () => { listeners.delete(name) }
+        },
+      },
+    }
+    const create = vi.fn(async () => ({ agent, dispose: async () => {} }))
+    const pool = new ContextSessionPool({ create } as unknown as AgentRegistryLike, { cwd: '/tmp' })
+    const calls: Array<{ phase: string; tool: string; status: string; durationMs?: number; argsPreview?: string }> = []
+    await pool.runTurn('ctx-trace', 'hi', new AbortController().signal, {
+      onTrace: (call) => { calls.push(call) },
+    })
+    expect(calls).toHaveLength(2)
+    expect(calls[0]).toMatchObject({ phase: 'start', tool: 'read_file', status: 'running' })
+    expect(calls[0]?.argsPreview).toContain('a.txt')
+    expect(calls[0]?.argsPreview).not.toContain('super-secret')
+    expect(calls[0]?.argsPreview).toContain('[redacted]')
+    expect(calls[1]).toMatchObject({ phase: 'end', tool: 'read_file', status: 'ok', durationMs: 250 })
+    expect(JSON.stringify(calls)).not.toContain('secret file body')
+  })
+})

@@ -100,6 +100,7 @@ export class A2aRoutes {
           connection: 'keep-alive',
           'x-accel-buffering': 'no',
           'a2a-version': PROTOCOL_VERSION,
+          ...this.server.responseHeaders(toServerReq(req)),
         })
         const outcome = await this.server.handleStream(toServerReq(req), body, (frame) => res.write(frame), { preflighted: true })
         if (outcome.status !== 200) {

@@ -55,6 +55,7 @@ update-time: 2026-10-25
 | `src/server/routes.ts` | HTTP 绑定：卡片与端点路由、请求体上限、启停 |
 | `src/server/card.ts` | 纯函数式 AgentCard 组装 |
 | `src/server/store.ts` | `a2a` 域定义、`DomainTaskStore`、`MemoryTaskStore`、`ScopedTaskStore` |
+| `src/server/trace.ts` | 可选 trace 扩展 URI、schema 类型、脱敏与边界 |
 | `src/server/exec/` | 会话池、session/subagent 执行器、附件准入 |
 | `src/server/executor.ts` | 执行器契约与技能→执行器解析 |
 | `src/server/session-registry.ts` | 按上下文的会话视图与 SSE 流计数 |
@@ -116,11 +117,11 @@ POST /a2a/<id> (SendMessage)
   → ensureTask
       contextId + skill（metadata.skill ?? 'chat'）
       messageId 重放 → 返回原任务
-      taskId 续接 → 在非终态且空闲的任务上替换 parts
+      taskId 续接 → 追加可见输入，更新当前 parts
       否则 store.create → taskId a2a-<uuid>、SUBMITTED
   → runTask
       WORKING → executor.execute → 事件写入 store 与 SSE
-      成功 → COMPLETED 带 'result' artifact；失败 → FAILED
+      成功 → COMPLETED 带可见 'result' artifact；无可见输出时 COMPLETED + 状态文本；失败 → FAILED
       INPUT_REQUIRED / AUTH_REQUIRED 让任务保持中断
   → 取消：CancelTask 或 facade abort → CANCELED
 ```
@@ -144,6 +145,11 @@ id 命名空间，因此两个实例可以复用同一个客户端 `contextId` �
 持久任务存储；流式来自每实例的 SSE 计数；`live` 来自会话池句柄。因此重启后行以降级
 形态保留，没有 agent 循环时也能渲染。`closeSession` 中止该上下文的非终态任务并释放
 句柄；下一个任务会重新打开。关闭不是墓碑。
+
+当实例允许可选的 trace 扩展且请求激活它时，会话运行时观察 `session/event` 的
+`tool/call` 与 `tool/result`。它只发出 metadata：工具名、阶段、状态、耗时和脱敏后的
+参数摘要。摘要写入任务且有界；它永远不会变成 artifact、history 或出站工具输出。
+`subagent` 执行器不观察子工具事件。
 
 每个 A2A server 给自己创建的任务盖上实例 id，会话与任务视图因此能把一行归到某个
 入站实例。

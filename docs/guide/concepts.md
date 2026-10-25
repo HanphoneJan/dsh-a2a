@@ -93,8 +93,10 @@ An inbound `SendMessage` creates a **task**:
 
 - the task id is `a2a-<uuid>`;
 - the context id comes from the caller or is generated;
-- the task records its skill, input parts, state, artifacts, timestamps and the
-  inbound instance it arrived through.
+- the task records its skill, every accepted input message, state, artifacts,
+  timestamps and the inbound instance it arrived through;
+- `Task.history` returns those A2A-visible input messages plus the final output
+  (or status text), not the internal DSH transcript.
 
 States follow the A2A vocabulary (`TASK_STATE_*`); the table, including which
 states are terminal, is in
@@ -116,7 +118,9 @@ keeps task history but does not resurrect sessions.
 The inbound half has one executor seam with two implementations:
 
 - **session** — run one turn on the context's DSH session and return the last
-  assistant text. This is the default for every skill.
+  visible assistant text. This is the default for every skill. Text deltas are
+  streamed; tool calls, tool results and reasoning stay internal. A turn with no
+  visible text completes with a status message and no result artifact.
 - **subagent** — delegate the task to `ctx.subagents`. It is wired when
   `agents` and `ctx.subagents` are mounted, but the current skill→executor map
   binds only `chat` to `session`, and unknown skills also default to `session`.

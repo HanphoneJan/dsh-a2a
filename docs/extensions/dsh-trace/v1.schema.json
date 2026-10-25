@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/hanphone/dsh-a2a/blob/main/docs/extensions/dsh-trace/v1.schema.json",
+  "title": "dsh-trace/v1 metadata",
+  "oneOf": [
+    { "$ref": "#/$defs/live" },
+    { "$ref": "#/$defs/summary" }
+  ],
+  "$defs": {
+    "call": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["callId", "tool", "phase", "status", "timestamp"],
+      "properties": {
+        "callId": { "type": "string", "minLength": 1 },
+        "tool": { "type": "string", "minLength": 1 },
+        "phase": { "enum": ["start", "end"] },
+        "status": { "enum": ["running", "ok", "error", "unknown"] },
+        "durationMs": { "type": "integer", "minimum": 0 },
+        "argsPreview": { "type": "string", "maxLength": 200 },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "phase": { "const": "start" } }, "required": ["phase"] },
+          "then": { "properties": { "status": { "const": "running" } } }
+        },
+        {
+          "if": { "properties": { "phase": { "const": "end" } }, "required": ["phase"] },
+          "then": { "properties": { "status": { "enum": ["ok", "error", "unknown"] } } }
+        }
+      ]
+    },
+    "live": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event"],
+      "properties": {
+        "event": { "$ref": "#/$defs/call" }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["calls"],
+      "properties": {
+        "calls": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/call" }
+        },
+        "truncated": { "type": "boolean" }
+      }
+    }
+  }
+}

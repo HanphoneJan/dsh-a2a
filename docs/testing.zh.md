@@ -18,13 +18,18 @@ update-time: 2026-10-25
 | 镜像检查 | `tests/types/mirrors.typecheck.ts` | 结构化镜像与真实 `@deepseek-ai/dsh-*` 类型漂移 | 是（`lib/types`） |
 | 单元 / 组合 | `tests/unit`、`tests/composition` | 协议帧、路由、存储、registry、stub 宿主服务上的 `apply()` 接线 | 否 |
 | 真实持久化集成 | `tests/integration/persistence.spec.ts` | 持久会话编解码、agent 循环契约、inbox 来源 | 是（JSONL addon） |
-| Profile e2e | `scripts/e2e-a2a.mjs` | 已发布产物对两个真实 harness 实例：manifest/挂载、路由、发现、JSON-RPC、工具注册、模型 → 工具 → 远端 agent | 是（宿主 + 插件） |
+| Profile e2e | `scripts/e2e-a2a.mjs` | 已发布产物对两个真实 harness 实例：manifest/挂载、路由、发现、JSON-RPC、工具注册、模型 → 工具 → 远端 agent、trace 卡片/header 激活 | 是（宿主 + 插件） |
+
+可见性相关的覆盖在 `tests/unit/agent-runtime.spec.ts`（reasoning 回退与工具 trace
+生命周期）、`tests/unit/a2a-server.spec.ts`（history、空输出、扩展激活）和
+`tests/unit/outbound-tools.spec.ts`（出站结果选取）与
+`tests/unit/subagent.spec.ts`（subagent reasoning 过滤）。
 
 ## 命令
 
 ```sh
 pnpm typecheck        # 宿主（tsc -b）+ 客户端 + 镜像检查
-pnpm test             # vitest run：单元 + 组合 + 集成（178 项）
+pnpm test             # vitest run：单元 + 组合 + 集成（196 项）
 pnpm test:integration # 只跑真实持久化套件
 pnpm build            # tsc + tsdown + 浏览器 bundle -> lib/
 pnpm test:e2e         # 双实例 A2A hermetic 冒烟（需要已构建插件）
@@ -78,8 +83,8 @@ pnpm test:all         # typecheck + test + build + test:e2e
 ## CI
 
 `.github/workflows/ci.yml` 在每次 push 与 pull request 跑 `check`（类型检查、单元、
-组合、真实持久化测试），以及针对 `dsh-v0.2.1-rc.2` 的 `e2e-pinned`。夜间定时与手动
-触发会跑 e2e 矩阵，覆盖 peer 范围声明的每个 harness 版本（`0.2.1-rc.2`、
+组合、真实持久化测试），以及针对 `dsh-v0.2.1-rc.3` 的 `e2e-pinned`。夜间定时与手动
+触发会跑 e2e 矩阵，覆盖支持的 harness 版本（`0.2.1-rc.3`、`0.2.1-rc.2`、
 `0.2.1-alpha.2`、`0.1.7-rc.2`）。
 
 放宽 `peerDependencies` 的同一次改动里同步放宽矩阵，并把结果记到

@@ -34,6 +34,10 @@ loopback peers (`127.0.0.1`, `::1`, `::ffff:127.0.0.1`); any other peer gets
 | `GET /a2a/api/session?contextId=<id>&serverId=<instance>` | Derived conversation messages of one live context session; `409` when the context is ambiguous without `serverId` |
 | `GET /a2a/api/metrics` | Metrics snapshot |
 
+`GET /a2a/api/session` is a loopback-only debugging view. It returns the raw
+derived DSH messages, which may include reasoning blocks; it is not part of the
+A2A wire protocol and no reasoning is exposed there.
+
 `GET /a2a/api` accepts `taskLimit` (default 50), `taskOffset`, `taskState`,
 `taskContextId` and `taskServerId` to page the task list.
 
@@ -47,7 +51,7 @@ Snapshot example (values abbreviated):
 
 ```json
 {
-  "version": "0.5.0",
+  "version": "0.5.1",
   "inbounds": [
     {
       "id": "e2e-b-ade6a7ad",
@@ -59,6 +63,7 @@ Snapshot example (values abbreviated):
       "cardPath": "/a2a/e2e-b-ade6a7ad/agent-card.json",
       "cardUrl": "http://127.0.0.1:3081/a2a/e2e-b-ade6a7ad",
       "enabled": true,
+      "trace": false,
       "skills": [{ "id": "chat", "name": "chat", "description": "..." }]
     }
   ],
@@ -89,8 +94,8 @@ Snapshot example (values abbreviated):
 ```json
 {
   "ok": true,
-  "current": "0.5.0",
-  "latest": "0.5.1",
+  "current": "0.5.1",
+  "latest": "0.5.2",
   "hasUpdate": true,
   "ahead": false,
   "error": null,
@@ -118,8 +123,8 @@ host exports `DSH_PROFILE`. When no source answers, the endpoint still returns
 
 | Action | Required fields | Optional fields |
 |---|---|---|
-| `inbound.create` | `name`, `description`, `version` | `endpointPath`, `preset`, `authTokenEnv`, `enabled` |
-| `inbound.update` | `id` | `name`, `description`, `version`, `endpointPath`, `preset`, `authTokenEnv` |
+| `inbound.create` | `name`, `description`, `version` | `endpointPath`, `preset`, `authTokenEnv`, `trace`, `enabled` |
+| `inbound.update` | `id` | `name`, `description`, `version`, `endpointPath`, `preset`, `authTokenEnv`, `trace` |
 | `inbound.remove` | `id` | — |
 | `inbound.enable` / `inbound.disable` | `id` | — |
 | `inbound.setAuth` | `id` | `token` (omit or empty to clear) |
@@ -303,7 +308,9 @@ advertises `capabilities.pushNotifications: false`.
   still-running task is rejected with `UNSUPPORTED_OPERATION`.
 - `configuration.returnImmediately: true` returns after starting the task;
   otherwise `SendMessage` blocks. `configuration.historyLength` trims the
-  returned history.
+  returned history in both `SendMessage` and `SendStreamingMessage`: `0` returns
+  none, unset means no limit. `Task.history` is the task's A2A-visible input and
+  output messages, not the internal DSH transcript.
 - `configuration.acceptedOutputModes` accepts text modes only; a request that
   excludes text gets `CONTENT_TYPE_NOT_SUPPORTED`.
 - Every request may carry `A2A-Version` (header or query parameter). A major or
@@ -348,18 +355,42 @@ applied twice.
 #### 2.4.1 What the stream contains
 
 The default `session` executor projects live assistant text deltas as
-`artifactUpdate` chunks (`lastChunk: false`) and closes with `lastChunk: true`.
-Tool-call deltas are structured `data` parts under a `tool-call-<id>` artifact.
-The stream shape is:
+`artifactUpdate` chunks under the `result` artifact (`lastChunk: false`) and
+closes it with `lastChunk: true`. Tool activity is **not** an artifact. The
+stream shape is:
 
-- an initial `task` with the current state and task id;
-- zero or more `artifactUpdate` frames carrying assistant/tool progress;
-- the final `task` with the complete artifact set.
+- an initial `task` with the current state, task id and available history;
+- zero or more `artifactUpdate` frames carrying visible assistant text;
+- zero or more `statusUpdate` frames, optionally carrying trace metadata when
+  the optional extension is active;
+- the final `task` with the complete artifact set and settled history.
 
-Reasoning deltas are intentionally not projected. The settled task is the source
-of truth.
+Reasoning deltas are never projected. Tool results are never projected. The
+settled task is the source of truth.
 
-#### 2.4.2 Disconnect and reconnect
+Only text/plain output is advertised and produced by default. A turn that ends
+without visible text settles `TASK_STATE_COMPLETED` with no `result` artifact
+and a status message explaining that there was no visible output; it is not a
+failure and it does not fall back to reasoning.
+
+#### 2.4.2 Trace extension (opt-in)
+
+`AgentCard.capabilities.extensions` may advertise the optional `dsh-trace/v1`
+extension. It is **off** unless the instance policy allows it and the client
+activates it with the standard request header:
+
+```http
+A2A-Extensions: https://github.com/hanphone/dsh-a2a/blob/main/docs/extensions/dsh-trace/v1.md
+```
+
+The response echoes the activated URI in `A2A-Extensions`. Trace data lives only
+in `TaskStatusUpdateEvent.metadata` (live) and `Task.metadata` (bounded durable
+summary); it never enters an artifact or history. It contains the tool name,
+phase, status, duration and a redacted argument preview — never raw arguments,
+tool results or reasoning. Clients that do not request the extension see no
+change.
+
+#### 2.4.3 Disconnect and reconnect
 
 A client disconnect does **not** cancel the task. The executor runs to
 completion and persists the task; the SSE subscription is only delivery.
@@ -387,7 +418,7 @@ completion and persists the task; the SSE subscription is only delivery.
 | `TASK_STATE_WORKING` | No | Executor running |
 | `TASK_STATE_INPUT_REQUIRED` | No (interrupted) | Agent needs more input |
 | `TASK_STATE_AUTH_REQUIRED` | No (interrupted) | Agent needs authentication |
-| `TASK_STATE_COMPLETED` | Yes | Finished with artifacts |
+| `TASK_STATE_COMPLETED` | Yes | Finished; may carry artifacts, or no artifact when there was no visible output |
 | `TASK_STATE_FAILED` | Yes | Execution failed; the status message carries the error |
 | `TASK_STATE_CANCELED` | Yes | Canceled by the caller or the session panel |
 | `TASK_STATE_REJECTED` | Yes | Rejected before execution |
@@ -438,7 +469,14 @@ of the protocol table but are not emitted by the inbound dispatcher.
     "streaming": true,
     "pushNotifications": false,
     "extendedAgentCard": true,
-    "stateTransitionHistory": false
+    "stateTransitionHistory": false,
+    "extensions": [
+      {
+        "uri": "https://github.com/hanphone/dsh-a2a/blob/main/docs/extensions/dsh-trace/v1.md",
+        "description": "Optional tool-call trace metadata.",
+        "required": false
+      }
+    ]
   },
   "defaultInputModes": ["text/plain"],
   "defaultOutputModes": ["text/plain"],
@@ -457,6 +495,10 @@ When the `attachments` service is mounted, `defaultInputModes` also advertises
 the image types and `application/octet-stream`. With a bearer token the card
 adds a `bearer` security scheme and requirement; it never carries the token
 value.
+
+The trace extension appears in `capabilities.extensions` only when the instance
+policy allows it. It is optional (`required: false`), so generic clients can
+ignore it.
 
 ## 3. Outbound tool contract
 
@@ -488,16 +530,22 @@ Interrupted states are returned as text that includes the remote task id:
 [remote agent TASK_STATE_INPUT_REQUIRED task=<id>] <message>
 ```
 
-so the model can call again with `taskId`. An empty result renders as
+so the model can call again with `taskId`. The tool renders the designated
+`result` artifact when present; otherwise it takes **text parts only** from the
+remaining non-diagnostic artifacts. Data parts from tool-call or trace artifacts
+are never concatenated into the model-facing result. An empty result renders as
 `(remote agent returned no output)`.
 
 ## 4. Current limits
 
-These are intentional or known at `0.5.0`:
+These are intentional or known at `0.5.1`:
 
 - `SendMessage` blocks by default; `configuration.returnImmediately: true`
-  returns after starting the task. History is reconstructed from the durable
-  task input/output, not from a full turn-by-turn transcript.
+  returns after starting the task. History is the task's A2A-visible input and
+  output messages, not a full DSH turn-by-turn transcript.
+- The trace extension is opt-in, metadata-only and bounded (64 observations per
+  task, 200-character redacted argument preview). It is unavailable on the
+  `subagent` executor's child tools.
 - `acceptedOutputModes` accepts text modes only; a request that excludes text
   gets `CONTENT_TYPE_NOT_SUPPORTED`.
 - Push notifications are not implemented; the push-config methods return

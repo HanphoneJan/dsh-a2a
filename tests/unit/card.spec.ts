@@ -122,4 +122,13 @@ describe('buildCard', () => {
     const card = buildCard({ ...base, skills })
     expect(card.skills).toEqual(skills)
   })
+
+  it('advertises the optional trace extension only when enabled', () => {
+    expect(buildCard(base).capabilities.extensions).toBeUndefined()
+    const card = buildCard({ ...base, trace: true })
+    expect(card.capabilities.extensions?.[0]).toMatchObject({
+      uri: expect.stringContaining('dsh-trace'),
+      required: false,
+    })
+  })
 })

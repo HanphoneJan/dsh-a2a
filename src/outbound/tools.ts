@@ -12,6 +12,7 @@
 import { Role, partsToText, type AgentSkill, type Message, type Part, type StreamResponse, type Task } from '../protocol.ts'
 import { A2AError, type A2AClient } from './calls.ts'
 import type { A2aMetrics } from '../server/metrics.ts'
+import { TRACE_EXTENSION_URI } from '../server/trace.ts'
 
 /** Structural slice of `ctx.tools` used for registration. */
 export interface ToolRegistrar {
@@ -139,7 +140,7 @@ function makeTool(
 
 /** Render a settled/interrupted task as tool text (INPUT_REQUIRED surfaced, not thrown). */
 function textOf(task: Task): string {
-  const output = partsToText(task.artifacts?.flatMap((a) => a.parts ?? []))
+  const output = taskOutputText(task)
   if (task.status.state === 'TASK_STATE_FAILED') {
     throw new A2AError(-32000, `Remote agent task failed: ${output || partsToText(task.status.message?.parts) || 'no detail'}`)
   }
@@ -148,6 +149,27 @@ function textOf(task: Task): string {
     return `[remote agent ${task.status.state} task=${task.id}] ${ask}`
   }
   return output || '(remote agent returned no output)'
+}
+
+/**
+ * Select model-facing output from a remote task. The designated `result`
+ * artifact wins (structured `data` parts there are a legitimate result); any
+ * other artifact contributes text parts only, so tool-call or diagnostic data
+ * can never be spliced into the local tool result.
+ */
+export function taskOutputText(task: Task): string {
+  const artifacts = task.artifacts ?? []
+  const visible = artifacts.filter((artifact) => artifact.metadata?.[TRACE_EXTENSION_URI] === undefined && artifact.artifactId !== 'dsh-a2a/trace')
+  const result = visible.filter((artifact) => artifact.artifactId === 'result')
+  if (result.length > 0) {
+    return result.flatMap((artifact) => artifact.parts ?? []).map((part) => partsToText([part])).filter(Boolean).join('\n').trim()
+  }
+  return visible
+    .flatMap((artifact) => artifact.parts ?? [])
+    .map((part) => ('text' in part && typeof part.text === 'string' ? part.text : ''))
+    .filter((text) => text.length > 0)
+    .join('\n')
+    .trim()
 }
 
 export type { Part }

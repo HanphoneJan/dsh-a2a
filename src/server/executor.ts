@@ -8,11 +8,13 @@
  */
 
 import type { Part, TaskState } from '../protocol.ts'
+import type { TraceCall } from './trace.ts'
 
 /** One update from a running executor. */
 export type A2aExecutorEvent =
   | { readonly type: 'status'; readonly state: TaskState; readonly message?: string }
   | { readonly type: 'artifact'; readonly artifactId: string; readonly parts: readonly Part[]; readonly name?: string; readonly append?: boolean; readonly lastChunk?: boolean }
+  | { readonly type: 'trace'; readonly call: TraceCall }
 
 /** Input a task executor receives. */
 export interface A2aExecutorInput {
@@ -22,6 +24,8 @@ export interface A2aExecutorInput {
   readonly parts: readonly Part[]
   readonly prompt: string
   readonly signal: AbortSignal
+  /** True when this request activated the optional trace extension. */
+  readonly trace?: boolean
 }
 
 /** Output contract of one executor run. */
@@ -31,7 +35,7 @@ export interface A2aExecutorOutput {
   readonly appendResult?: boolean
   /** Leave the task interrupted instead of completing it (INPUT_REQUIRED/AUTH_REQUIRED). */
   readonly state?: TaskState.INPUT_REQUIRED | TaskState.AUTH_REQUIRED
-  /** Human-readable status for an interrupted task. */
+  /** Status text for an interrupted or completed-without-output task. */
   readonly statusMessage?: string
 }
 

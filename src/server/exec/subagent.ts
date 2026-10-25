@@ -49,19 +49,26 @@ export function createSubagentExecutor(opts: SubagentExecutorOptions): A2aExecut
       })
       const result = await run.result
       const text = result.output
-        .filter((b): b is { readonly type: string; readonly text: string } => typeof b.text === 'string')
+        .filter((b): b is { readonly type: string; readonly text: string } => b.type === 'text' && typeof b.text === 'string')
         .map((b) => b.text)
         .filter(Boolean)
         .join('\n')
         .trim()
+      if (text.length === 0) {
+        return {
+          parts: [],
+          appendResult: false,
+          statusMessage: 'The agent completed without visible output.',
+        }
+      }
       execCtx.onEvent({
         type: 'artifact',
         artifactId: 'result',
-        parts: [{ text: text || '(subagent returned no output)' }],
+        parts: [{ text }],
         name: input.skill,
         lastChunk: true,
       })
-      return { parts: [{ text: text || '(subagent returned no output)' }], appendResult: false }
+      return { parts: [{ text }], appendResult: false }
     },
     disposeAll: () => pool.disposeAll(),
   }

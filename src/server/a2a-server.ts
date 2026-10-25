@@ -8,6 +8,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import {
   A2A_ERROR_CODES,
+  A2A_EXTENSIONS_HEADER,
   A2A_METHODS,
   INTERRUPTED_STATES,
   PROTOCOL_VERSION,
@@ -26,9 +27,10 @@ import {
 import { parseRpc, rpcError, rpcSuccess } from '../jsonrpc.ts'
 import type { TaskStore, TaskRecord } from './store.ts'
 import { ScopedTaskStore } from './store.ts'
-import type { ExecutorSet } from './executor.ts'
+import type { A2aExecutorEvent, ExecutorSet } from './executor.ts'
 import { SlidingWindowLimiter } from './rate-limit.ts'
 import type { A2aMetrics } from './metrics.ts'
+import { TRACE_EXTENSION_URI } from './trace.ts'
 
 /** What the policy gate sees for one inbound task. */
 export interface GateInput {
@@ -79,6 +81,8 @@ export interface A2AServerOptions {
   readonly maxConcurrentTasks?: number
   /** In-memory SSE event log size per task (reconnect replay). */
   readonly maxEventLog?: number
+  /** When true, this instance may activate the optional trace extension. */
+  readonly traceEnabled?: boolean
   readonly metrics?: A2aMetrics
 }
 
@@ -141,6 +145,21 @@ export class A2AServer {
   /** The AgentCard route path for this instance. */
   cardPath(): string {
     return this.opts.cardPath ?? '/.well-known/agent-card.json'
+  }
+
+  /** Extensions this request successfully activates (only optional trace today). */
+  activatedExtensions(req: ServerRequest): readonly string[] {
+    if (this.opts.traceEnabled !== true) return []
+    const raw = headerValue(req, A2A_EXTENSIONS_HEADER)
+    if (raw === undefined) return []
+    const requested = raw.split(',').map((value) => value.trim()).filter((value) => value.length > 0)
+    return requested.includes(TRACE_EXTENSION_URI) ? [TRACE_EXTENSION_URI] : []
+  }
+
+  /** Response headers that acknowledge activated extensions. */
+  responseHeaders(req: ServerRequest): Record<string, string> {
+    const activated = this.activatedExtensions(req)
+    return activated.length > 0 ? { [A2A_EXTENSIONS_HEADER]: activated.join(', ') } : {}
   }
 
   /**
@@ -222,8 +241,10 @@ export class A2AServer {
       }
     }
     this.opts.metrics?.recordRequest(this.opts.serverId, rpc.method, sourceOf(req))
+    const activated = this.activatedExtensions(req)
+    const responseHeaders = { ...this.responseHeaders(req), 'A2A-Version': PROTOCOL_VERSION }
     try {
-      const result = await this.dispatch(rpc)
+      const result = await this.dispatch(rpc, activated)
       const source = sourceOf(req)
       this.opts.onInbound?.({
         method: rpc.method,
@@ -235,7 +256,7 @@ export class A2AServer {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify(rpcSuccess(rpc.id, result)),
-        headers: { 'A2A-Version': PROTOCOL_VERSION },
+        headers: responseHeaders,
       }
     } catch (err) {
       const e = err as { code?: number; message?: string; data?: unknown }
@@ -243,7 +264,7 @@ export class A2AServer {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify(rpcError(rpc.id, typeof e.code === 'number' ? e.code : A2A_ERROR_CODES.INTERNAL_ERROR, e.message ?? String(err), e.data)),
-        headers: { 'A2A-Version': PROTOCOL_VERSION },
+        headers: responseHeaders,
       }
     }
   }
@@ -279,7 +300,9 @@ export class A2AServer {
     }
     this.opts.metrics?.recordRequest(this.opts.serverId, rpc.method, sourceOf(req))
 
-    const params = (rpc.params ?? {}) as { message?: Message; id?: string }
+    const params = (rpc.params ?? {}) as { message?: Message; id: string | undefined; configuration?: { acceptedOutputModes?: readonly string[]; historyLength?: number } }
+    const historyLength = typeof params.configuration?.historyLength === 'number' ? params.configuration.historyLength : undefined
+    const trace = this.activatedExtensions(req).includes(TRACE_EXTENSION_URI)
     let record: TaskRecord | undefined
     let shouldRun = false
     if (rpc.method === A2A_METHODS.sendStreamingMessage) {
@@ -288,7 +311,7 @@ export class A2AServer {
           onEvent(formatError(rpcId, A2A_ERROR_CODES.INVALID_PARAMS, 'Missing message'))
           return { status: 200 }
         }
-        const configuration = (rpc.params as { configuration?: { acceptedOutputModes?: readonly string[] } } | undefined)?.configuration
+        const configuration = params.configuration
         if (!acceptsText(configuration?.acceptedOutputModes)) {
           onEvent(formatError(rpcId, A2A_ERROR_CODES.CONTENT_TYPE_NOT_SUPPORTED, 'This agent produces text/plain output'))
           return { status: 200 }
@@ -340,19 +363,19 @@ export class A2AServer {
       // The spec requires the first streamed event to be the current Task;
       // status/artifact frames follow it (or replay after a cursor).
       const current = this.opts.store.get(record.taskId)
-      if (current !== undefined) sub({ task: toTask(current) })
-      if (shouldRun) void this.runTask(record)
+      if (current !== undefined) sub({ task: toTask(current, true, historyLength, true) })
+      if (shouldRun) void this.runTask(record, trace, historyLength)
       const lastEventId = parseEventId(req.headers?.['last-event-id'])
       if (lastEventId !== undefined) this.replay(record.taskId, lastEventId, replayCeiling, sub)
       await this.waitTerminal(record.taskId)
       const finalRecord = this.opts.store.get(record.taskId)
-      if (finalRecord !== undefined) sub({ task: toTask(finalRecord) })
+      if (finalRecord !== undefined) sub({ task: toTask(finalRecord, true, historyLength, true) })
     } finally {
       listeners.delete(sub)
       if (listeners.size === 0) this.listeners.delete(record.taskId)
       this.opts.onStreamClose?.(record.taskId)
     }
-    return { status: 200, headers: { 'A2A-Version': PROTOCOL_VERSION } }
+    return { status: 200, headers: { 'A2A-Version': PROTOCOL_VERSION, ...this.responseHeaders(req) } }
   }
 
   /**
@@ -364,13 +387,13 @@ export class A2AServer {
     const gateOutcome = await this.opts.gate(this.gateInputFor(message, null))
     if (!gateOutcome.ok) throw rpcFault(A2A_ERROR_CODES.INVALID_PARAMS, gateOutcome.reason)
     const ensured = this.ensureTask(message, null)
-    if (!ensured.replay) await this.runTask(ensured.record)
+    if (!ensured.replay) await this.runTask(ensured.record, false)
     else await this.waitTerminal(ensured.record.taskId)
-    return toTask(this.opts.store.get(ensured.record.taskId) ?? ensured.record)
+    return toTask(this.opts.store.get(ensured.record.taskId) ?? ensured.record, true, undefined, true)
   }
 
   /** Dispatch one JSON-RPC request; throws {code, message} on errors. */
-  private async dispatch(rpc: JsonRpcRequest): Promise<unknown> {
+  private async dispatch(rpc: JsonRpcRequest, activated: readonly string[]): Promise<unknown> {
     const method = rpc.method
     const params = (rpc.params ?? {}) as Record<string, unknown>
     switch (method) {
@@ -384,14 +407,15 @@ export class A2AServer {
         const gateOutcome = await this.opts.gate(this.gateInputFor(message, null))
         if (!gateOutcome.ok) throw rpcFault(A2A_ERROR_CODES.INVALID_PARAMS, gateOutcome.reason)
         const ensured = this.ensureTask(message, null)
+        const trace = activated.includes(TRACE_EXTENSION_URI)
         // handle() records this inbound after dispatch with the real source.
         if (!ensured.replay) {
           if (configuration?.returnImmediately === true) {
-            void this.runTask(ensured.record)
+            void this.runTask(ensured.record, trace, configuration.historyLength)
             const current = this.opts.store.get(ensured.record.taskId) ?? ensured.record
             return { task: toTask(current, true, configuration.historyLength, true) }
           }
-          await this.runTask(ensured.record)
+          await this.runTask(ensured.record, trace, configuration?.historyLength)
         } else if (configuration?.returnImmediately !== true) {
           await this.waitTerminal(ensured.record.taskId)
         }
@@ -476,6 +500,9 @@ export class A2AServer {
       if (this.running.has(existing.taskId)) {
         throw rpcFault(A2A_ERROR_CODES.UNSUPPORTED_OPERATION, `Task ${existing.taskId} is still running; wait for it to settle or cancel it before continuing`)
       }
+      // Record the visible continuation input before replacing `parts`; the
+      // store seeds a legacy record's current input when `inputs` is absent.
+      this.opts.store.appendInput(existing.taskId, message)
       const updated = this.opts.store.setParts(existing.taskId, message.parts)
       const withMessage = messageId !== undefined ? this.opts.store.appendMessageId(existing.taskId, messageId) : updated
       return { record: withMessage, replay: false, created: false, continuation: true }
@@ -493,6 +520,7 @@ export class A2AServer {
       remotePeerId,
       ...(serverId !== undefined ? { serverId } : {}),
       ...(messageId !== undefined ? { messageId } : {}),
+      message: { ...message, contextId },
     })
     this.opts.metrics?.recordTaskCreated(serverId, record.taskId)
     this.opts.onTaskCreated?.(record.taskId)
@@ -500,12 +528,12 @@ export class A2AServer {
   }
 
   /** Run one task to a terminal or interrupted state, emitting status/artifact frames. */
-  private async runTask(record: TaskRecord): Promise<void> {
+  private async runTask(record: TaskRecord, trace = false, historyLength?: number): Promise<void> {
     if (this.running.has(record.taskId)) return
     if (this.opts.maxConcurrentTasks !== undefined && this.opts.maxConcurrentTasks > 0 && this.running.size >= this.opts.maxConcurrentTasks) {
       this.opts.store.setState(record.taskId, TaskState.FAILED, { code: 'quota', text: 'Inbound task concurrency quota exceeded' })
       const failed = this.opts.store.get(record.taskId)
-      if (failed !== undefined) this.emit(record.taskId, { task: toTask(failed) })
+      if (failed !== undefined) this.emit(record.taskId, { task: toTask(failed, true, historyLength, true) })
       this.opts.metrics?.recordTaskSettled(this.opts.serverId, record.taskId, TaskState.FAILED, 0)
       this.settle(record.taskId)
       this.opts.onTaskSettled?.(record.taskId)
@@ -518,7 +546,7 @@ export class A2AServer {
     let timer: ReturnType<typeof setTimeout> | undefined
     this.opts.store.setState(record.taskId, TaskState.WORKING)
     this.emit(record.taskId, { statusUpdate: { taskId: record.taskId, contextId: record.contextId, status: statusOf(this.opts.store.get(record.taskId)!) } })
-    const onEvent = this.eventSink(record.taskId, record.contextId)
+    const onEvent = this.eventSink(record.taskId, record.contextId, trace)
     try {
       const executor = this.opts.executors.resolve(record.skill)
       const execution = executor.execute(
@@ -529,6 +557,7 @@ export class A2AServer {
           parts: record.parts,
           prompt: partsToText(record.parts),
           signal: controller.signal,
+          ...(trace ? { trace: true } : {}),
         },
         { onEvent },
       )
@@ -565,6 +594,9 @@ export class A2AServer {
         // The executor already transitioned to an interrupted state; do not
         // clobber it with COMPLETED when the turn returns.
       } else {
+        if (output.statusMessage !== undefined && output.statusMessage.length > 0) {
+          this.opts.store.setStatusText(record.taskId, output.statusMessage)
+        }
         this.opts.store.setState(record.taskId, TaskState.COMPLETED)
       }
     } catch (err) {
@@ -584,7 +616,7 @@ export class A2AServer {
       this.running.delete(record.taskId)
       const terminal = this.opts.store.get(record.taskId)
       if (terminal !== undefined) {
-        this.emit(record.taskId, { task: toTask(terminal) })
+        this.emit(record.taskId, { task: toTask(terminal, true, historyLength, true) })
         this.opts.metrics?.recordTaskSettled(this.opts.serverId, record.taskId, terminal.state, Date.now() - startedAt)
       }
       this.settle(record.taskId)
@@ -593,14 +625,25 @@ export class A2AServer {
   }
 
   /** Build the event sink that folds executor events into store + frames. */
-  private eventSink(taskId: string, contextId: string): (ev: { readonly type: 'status' | 'artifact'; readonly state?: TaskState; readonly message?: string; readonly artifactId?: string; readonly parts?: readonly Part[]; readonly name?: string; readonly append?: boolean; readonly lastChunk?: boolean }) => void {
+  private eventSink(taskId: string, contextId: string, trace: boolean): (ev: A2aExecutorEvent) => void {
     return (ev) => {
       const current = this.opts.store.get(taskId)
       if (current === undefined || isTerminal(current.state)) return
       if (ev.type === 'status') {
-        this.opts.store.setState(taskId, ev.state ?? TaskState.WORKING)
+        this.opts.store.setState(taskId, ev.state)
         this.emit(taskId, { statusUpdate: { taskId, contextId, status: statusOf(this.opts.store.get(taskId)!) } })
-      } else if (ev.type === 'artifact' && ev.artifactId !== undefined && ev.parts !== undefined) {
+      } else if (ev.type === 'trace') {
+        if (!trace) return
+        const record = this.opts.store.appendTrace(taskId, ev.call)
+        this.emit(taskId, {
+          statusUpdate: {
+            taskId,
+            contextId,
+            status: statusOf(record),
+            metadata: { [TRACE_EXTENSION_URI]: { event: ev.call } },
+          },
+        })
+      } else if (ev.artifactId !== undefined && ev.parts !== undefined) {
         const record = this.opts.store.appendArtifact(taskId, {
           artifactId: ev.artifactId,
           ...(ev.name !== undefined ? { name: ev.name } : {}),
@@ -767,6 +810,17 @@ function sourceOf(req: ServerRequest): string | undefined {
   return `${s.remoteAddress}:${s.remotePort ?? ''}`
 }
 
+/** Case-tolerant header lookup for structural requests and Node's lowercase map. */
+function headerValue(req: ServerRequest, name: string): string | undefined {
+  const headers = req.headers
+  if (headers === undefined) return undefined
+  const lower = name.toLowerCase()
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === lower && typeof value === 'string') return value
+  }
+  return undefined
+}
+
 /** Rate-limit key: one client address, not one TCP connection. */
 function addressOf(req: ServerRequest): string {
   return req.socket?.remoteAddress ?? 'unknown'
@@ -815,10 +869,20 @@ function rpcFault(code: number, message: string): { code: number; message: strin
 }
 
 function statusOf(record: TaskRecord): Task['status'] {
+  const text = record.error?.message ?? record.statusText
   return {
     state: record.state,
     timestamp: record.updatedAt,
-    ...(record.error ? { message: { messageId: `a2a-status-${record.taskId}`, role: Role.AGENT, parts: [{ text: record.error.message }] } } : {}),
+    ...(text !== undefined
+      ? {
+        message: {
+          messageId: `a2a-status-${record.taskId}`,
+          role: Role.AGENT,
+          parts: [{ text }],
+          ...(record.error === undefined ? { metadata: { reason: 'no-visible-output' } } : {}),
+        },
+      }
+      : {}),
   }
 }
 
@@ -830,36 +894,54 @@ function toTask(record: TaskRecord, includeArtifacts = true, historyLength?: num
     status: statusOf(record),
     ...(includeArtifacts ? { artifacts: record.artifacts } : {}),
     ...(history !== undefined && history.length > 0 ? { history } : {}),
-    metadata: { skill: record.skill, ...(record.serverId !== undefined ? { serverId: record.serverId } : {}) },
+    metadata: {
+      skill: record.skill,
+      ...(record.serverId !== undefined ? { serverId: record.serverId } : {}),
+      ...(record.trace !== undefined ? { [TRACE_EXTENSION_URI]: record.trace } : {}),
+    },
   }
 }
 
-/** Best-effort history from the current durable task fields (input + output). */
+/** Best-effort history from the durable task inputs and visible output. */
 function taskHistory(record: TaskRecord, historyLength: number | undefined): readonly Message[] {
   const messages: Message[] = []
-  const inputId = record.messageIds?.at(-1) ?? `a2a-input-${record.taskId}`
-  if (record.parts.length > 0) {
+  if (record.inputs !== undefined && record.inputs.length > 0) {
+    messages.push(...record.inputs)
+  } else if (record.parts.length > 0) {
     messages.push({
-      messageId: inputId,
+      messageId: record.messageIds?.at(-1) ?? `a2a-input-${record.taskId}`,
       ...(record.contextId !== undefined ? { contextId: record.contextId } : {}),
       taskId: record.taskId,
       role: Role.USER,
       parts: record.parts,
     })
   }
-  const output = record.artifacts.flatMap((artifact) => artifact.parts)
-  if (output.length > 0 || record.error !== undefined) {
+  const output = resultTextOf(record.artifacts)
+  const statusText = record.error?.message ?? record.statusText
+  if (output.length > 0 || statusText !== undefined) {
     messages.push({
       messageId: `a2a-output-${record.taskId}`,
       ...(record.contextId !== undefined ? { contextId: record.contextId } : {}),
       taskId: record.taskId,
       role: Role.AGENT,
-      parts: output.length > 0 ? output : [{ text: record.error?.message ?? '' }],
+      parts: output.length > 0 ? [{ text: output }] : [{ text: statusText ?? '' }],
+      ...(output.length === 0 && statusText !== undefined ? { metadata: { reason: 'no-visible-output' } } : {}),
     })
   }
   if (historyLength === undefined) return messages
   if (historyLength <= 0) return []
   return messages.slice(-historyLength)
+}
+
+/** Visible delivery text: only the designated `result` artifact, text parts only. */
+function resultTextOf(artifacts: TaskRecord['artifacts']): string {
+  return artifacts
+    .filter((artifact) => artifact.artifactId === 'result')
+    .flatMap((artifact) => artifact.parts)
+    .map((part) => ('text' in part && typeof part.text === 'string' ? part.text : ''))
+    .filter((text) => text.length > 0)
+    .join('\n')
+    .trim()
 }
 
 function extractTaskIds(result: unknown): readonly string[] {

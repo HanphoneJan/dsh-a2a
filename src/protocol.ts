@@ -226,6 +226,17 @@ export interface AgentSkill {
   readonly outputModes?: readonly string[] | null
 }
 
+/** One optional extension declared by an agent (spec `AgentExtension`). */
+export interface AgentExtension {
+  /** Stable extension identifier; SHOULD carry a version in the URI. */
+  readonly uri: string
+  readonly description?: string
+  /** When true, a client that does not support the extension must be rejected. */
+  readonly required?: boolean
+  /** Extension-defined discovery parameters. */
+  readonly params?: Record<string, unknown>
+}
+
 /** Optional A2A protocol features (spec `AgentCapabilities`). */
 export interface AgentCapabilities {
   /** `SendStreamingMessage` + `SubscribeToTask` support. */
@@ -235,6 +246,8 @@ export interface AgentCapabilities {
   /** Extended Agent Card support. */
   readonly extendedAgentCard?: boolean
   readonly stateTransitionHistory?: boolean
+  /** Optional extensions this agent can activate for a request. */
+  readonly extensions?: readonly AgentExtension[]
 }
 
 /** Information about the providing organization (spec `AgentProvider`). */
@@ -312,6 +325,9 @@ export const A2A_METHODS = {
 
 /** The A2A protocol version this plugin implements (header + interface). */
 export const PROTOCOL_VERSION = '1.0'
+
+/** HTTP header used to request and acknowledge A2A extensions. */
+export const A2A_EXTENSIONS_HEADER = 'A2A-Extensions'
 
 /** The well-known AgentCard content type (spec §14.1). */
 export const A2A_JSON_MEDIA_TYPE = 'application/a2a+json'

@@ -15,9 +15,10 @@ is in the [HTTP API reference](../reference/http-api.md).
 
 ## Before you start
 
-You need DeepSeek Harness `0.2.1-rc.2` (the version this release is verified
-against) and a running web app, normally at `http://127.0.0.1:3080/`. The base
-`web` profile mounts every service the plugin uses; for a custom composition see
+You need DeepSeek Harness `0.2.1-rc.3` (the verified version; other supported
+0.2.x releases remain in the compatibility matrix) and a running web app,
+normally at `http://127.0.0.1:3080/`. The base `web` profile mounts every service
+the plugin uses; for a custom composition see
 [host services](operations.md#host-services).
 
 ## Install and verify
@@ -90,7 +91,8 @@ curl -sS http://127.0.0.1:3080/a2a/<id> \
 ```
 
 `SendMessage` blocks until the task settles. A successful response carries a
-task in `TASK_STATE_COMPLETED` whose `artifacts` hold the reply. Reuse the same
+task in `TASK_STATE_COMPLETED`; the visible reply is the `result` artifact.
+Tool calls, tool results and reasoning are not artifacts. Reuse the same
 `contextId` to continue one conversation; reuse the same `messageId` to retry
 idempotently.
 

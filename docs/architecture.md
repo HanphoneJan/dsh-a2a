@@ -57,6 +57,7 @@ are listed in [Operations: host services](guide/operations.md#host-services).
 | `src/server/routes.ts` | HTTP binding: card and endpoint routes, body cap, enable/disable |
 | `src/server/card.ts` | Pure AgentCard assembly |
 | `src/server/store.ts` | `a2a` domain spec, `DomainTaskStore`, `MemoryTaskStore`, `ScopedTaskStore` |
+| `src/server/trace.ts` | Optional trace extension URI, schema types, redaction and bounds |
 | `src/server/exec/` | Session pool, session/subagent executors, attachment admission |
 | `src/server/executor.ts` | Executor contract and skill→executor resolution |
 | `src/server/session-registry.ts` | Per-context session views and SSE stream counts |
@@ -124,11 +125,12 @@ POST /a2a/<id> (SendMessage)
   → ensureTask
       contextId + skill (metadata.skill ?? 'chat')
       messageId replay → original task
-      taskId continuation → new parts on a non-terminal, idle task
+      taskId continuation → append the visible input, update current parts
       otherwise store.create → taskId a2a-<uuid>, SUBMITTED
   → runTask
       WORKING → executor.execute → events to store and SSE
-      COMPLETED with a 'result' artifact, or FAILED
+      COMPLETED with a visible 'result' artifact, or COMPLETED with a status text
+      when the turn produced no visible output, or FAILED
       INPUT_REQUIRED / AUTH_REQUIRED leave the task interrupted
   → cancel: CancelTask or facade abort → CANCELED
 ```
@@ -159,6 +161,13 @@ from per-instance SSE counts; `live` comes from pool handle presence. Rows
 therefore survive restarts in a degraded form and still render without an agent
 loop. `closeSession` aborts the context's non-terminal tasks and disposes its
 handle; the next task re-opens one. Close is not a tombstone.
+
+When an instance allows the optional trace extension and a request activates it,
+the session runtime observes `session/event` for `tool/call` and `tool/result`.
+It emits only metadata: tool name, phase, status, duration and a redacted
+argument preview. The summary is bounded and stored on the task; it never becomes
+an artifact, history or outbound tool output. The `subagent` executor does not
+observe child tool events.
 
 Each A2A server stamps its instance id on the tasks it creates, which is what
 lets the session and task views attribute a row to an inbound instance.

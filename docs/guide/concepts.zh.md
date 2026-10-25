@@ -85,7 +85,8 @@ preset 或 skills 服务不可用，或目录为空时，卡片回退到内置�
 
 - 任务 id 为 `a2a-<uuid>`；
 - 上下文 id 由调用方提供或自动生成；
-- 任务记录技能、输入 parts、状态、artifacts、时间戳，以及接收它的入站实例。
+- 任务记录技能、每条已接受的输入消息、状态、artifacts、时间戳，以及接收它的入站实例；
+- `Task.history` 返回这些 A2A 可见输入消息加最终输出（或状态文本），不是 DSH 内部 transcript。
 
 状态使用 A2A 词汇（`TASK_STATE_*`）；完整状态表（含哪些是终态）见
 [协议参考](../reference/http-api.zh.md#25-任务状态)。
@@ -102,7 +103,9 @@ preset 或 skills 服务不可用，或目录为空时，卡片回退到内置�
 
 入站侧有一层执行器接缝，两个实现：
 
-- **session**——在上下文的 DSH 会话上跑一轮，返回最后一条 assistant 文本。
+- **session**——在上下文的 DSH 会话上跑一轮，返回最后一条可见 assistant 文本。
+  这是每个技能的默认执行器。文本增量会流式投影；工具调用、工具结果与 reasoning
+  留在内部。没有可见文本的一轮以状态消息结束，且不产生 result artifact。
   这是所有技能的默认路径。
 - **subagent**——把任务委托给 `ctx.subagents`。只有挂载 `agents` 与
   `ctx.subagents` 时才会接线，但当前技能→执行器表只把 `chat` 绑到 `session`，

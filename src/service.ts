@@ -44,6 +44,8 @@ export interface InboundServerView {
   readonly cardPath: string
   readonly cardUrl?: string
   readonly enabled: boolean
+  /** Effective trace-extension policy for this instance. */
+  readonly trace: boolean
   readonly skills: readonly SkillView[]
 }
 
@@ -74,6 +76,8 @@ export interface InboundCreateInput {
   /** Preset id; absent = the deployment default. Skills derive from it. */
   readonly preset?: string
   readonly authTokenEnv?: string
+  /** Allow the optional trace extension on this instance. */
+  readonly trace?: boolean
   readonly enabled?: boolean
 }
 
@@ -123,7 +127,7 @@ export interface A2AServiceImpl {
   createInboundServer(input: InboundCreateInput): Promise<OpResult>
   removeInboundServer(id: string): Promise<OpResult>
   setInboundServerEnabled(id: string, enabled: boolean): Promise<OpResult>
-  updateInboundServer(id: string, patch: { name?: string; description?: string; version?: string; endpointPath?: string; preset?: string; authTokenEnv?: string }): Promise<OpResult>
+  updateInboundServer(id: string, patch: { name?: string; description?: string; version?: string; endpointPath?: string; preset?: string; authTokenEnv?: string; trace?: boolean }): Promise<OpResult>
   /** Set (or clear, when token is undefined) an inbound instance's bearer token. */
   setInboundAuth(id: string, token: string | undefined): Promise<OpResult>
   /** Read an inbound instance's current AgentCard (dashboard viewer). */
@@ -199,7 +203,7 @@ export class A2AService extends Service {
     return this.impl.setInboundServerEnabled(id, enabled)
   }
 
-  async updateInboundServer(id: string, patch: { name?: string; description?: string; version?: string; endpointPath?: string; preset?: string; authTokenEnv?: string }): Promise<OpResult> {
+  async updateInboundServer(id: string, patch: { name?: string; description?: string; version?: string; endpointPath?: string; preset?: string; authTokenEnv?: string; trace?: boolean }): Promise<OpResult> {
     return this.impl.updateInboundServer(id, patch)
   }
 

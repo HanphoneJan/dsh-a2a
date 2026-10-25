@@ -26,6 +26,7 @@ update-time: 2026-10-25
 | 构建布局 | `tsconfig.json`、`tsconfig.client.json`、`tsconfig.types.json` 的 `references` | 被引用的包拆分、改名或不再是 composite；`tsc -b` 在读源码前就失败 |
 | 挂载与 manifest 契约 | `cordis.patch.yml`、`dsh.bundle.patch`、`dsh.client.inject`、`scripts/build-client.mjs` | `- insert:` patch 形式、客户端注入列表或 `window.__ModuleLoader__.load({ id, factory })` 契约变化 |
 | 运行时 API | `ctx.a2a`、`ctx.slots.inject('settings.section', …)`、存储 `KvTable`、commands、preset/skill/subagent 数据 | 被消费的服务签名或数据结构移动 |
+| 会话事件流 | `src/server/exec/agent-runtime.ts` 对 `session/event` 的 `tool/call` / `tool/result` 监听 | trace 观察丢失 call id、错误标志或事件时序；只有真实 harness 证据能抓到 |
 
 四者按检查成本排序：版本与构建布局失败得早且响；运行时 API 由消费方类型检查、真实
 持久化套件与 e2e 冒烟覆盖。
@@ -124,10 +125,11 @@ pnpm pack --pack-destination <dir>
 
 ## 当前状态
 
-`0.5.0` 已对 harness `0.2.1-rc.2` 验证：`pnpm typecheck`（宿主 + 客户端 + 镜像
-检查）、`pnpm test`（178/178）、`pnpm build` 产出 `lib/index.js` 与
-`lib/client.js`、`pnpm test:e2e` 在两个真实实例间跑通入站与出站往返。CI 的 e2e
-矩阵还覆盖 `0.2.1-alpha.2` 与 `0.1.7-rc.2`。
+`0.5.1` 已对 harness `0.2.1-rc.3` 验证：`pnpm typecheck`（宿主 + 客户端 + 镜像
+检查）、`pnpm test`（196/196）、`pnpm test:integration`（6/6）、`pnpm build` 产出
+`lib/index.js` 与 `lib/client.js`、`pnpm test:e2e` 在两个真实实例间跑通入站与出站
+往返，并验证可选 trace 扩展的卡片宣告与 header 回显。`0.2.1-rc.2` 仍在矩阵中；
+`0.2.1-alpha.2` 与 `0.1.7-rc.2` 由定时矩阵覆盖。
 
 ## 已知陷阱
 

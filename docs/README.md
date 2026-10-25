@@ -12,7 +12,7 @@ update-time: 2026-10-25
 Inbound servers publish DSH agents; outbound connections expose remote A2A
 skills as model tools.
 
-The manual describes plugin `0.5.0` on DeepSeek Harness `0.2.1-rc.2`.
+The manual describes plugin `0.5.1` on DeepSeek Harness `0.2.1-rc.3`.
 
 ## Read this first
 
@@ -31,12 +31,13 @@ The manual describes plugin `0.5.0` on DeepSeek Harness `0.2.1-rc.2`.
 | [Architecture](architecture.md) | How the host half, managers, stores and browser half fit together |
 | [Harness compatibility](harness-compatibility.md) | Moving the plugin to another DSH release |
 | [Testing](testing.md) | Test layers, the hermetic e2e, and what stubs cannot see |
+| [Trace extension](extensions/dsh-trace/v1.md) | The opt-in `dsh-trace/v1` metadata contract |
 
 ## Versions and source of truth
 
-- Plugin: `@hanphone/dsh-a2a` `0.5.0`
-- Verified against: DeepSeek Harness `0.2.1-rc.2`; the e2e matrix also covers
-  `0.2.1-alpha.2` and `0.1.7-rc.2`
+- Plugin: `@hanphone/dsh-a2a` `0.5.1`
+- Verified against: DeepSeek Harness `0.2.1-rc.3`; the e2e matrix also covers
+  `0.2.1-rc.2`, `0.2.1-alpha.2` and `0.1.7-rc.2`
 - Protocol: A2A `1.0.1` JSON-RPC binding; the declared protocol version is `1.0`
 
 When this manual and the code disagree, `src/` and `tests/` win. Each page is

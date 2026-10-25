@@ -21,7 +21,8 @@
  */
 
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
-import type { AgentUserMessage } from '../../src/server/exec/agent-runtime.ts'
+import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
+import type { AgentUserMessage, LiveAgent } from '../../src/server/exec/agent-runtime.ts'
 
 // The plugin owns its source kind. The harness's `MessageSourceMap` is
 // merge-extensible, so a producer declares its own member here rather than
@@ -37,3 +38,17 @@ declare module '@deepseek-ai/dsh-llm' {
  * the harness no longer accepts), this assignment stops compiling.
  */
 export const mirroredSource: UserMessage['source'] = null as unknown as AgentUserMessage['source']
+
+/**
+ * The mirror's session slice (including `id`) must accept a real Session.
+ * `deriveMessages` is widened to plain-string block types, which a real
+ * Message[] satisfies.
+ */
+export const mirroredSession: LiveAgent['session'] = null as unknown as Pick<Session, 'id' | 'deriveMessages'>
+
+/** The trace listener consumes these exact fields from real session events. */
+export const mirroredToolCall: { readonly callId: unknown; readonly name: unknown; readonly arguments: unknown } =
+  null as unknown as Extract<SessionEvent, { type: 'tool/call' }>['data']
+
+export const mirroredToolResult: { readonly message?: { readonly toolCallId?: unknown; readonly isError?: unknown } } =
+  null as unknown as Pick<Extract<SessionEvent, { type: 'tool/result' }>['data'], 'message'>

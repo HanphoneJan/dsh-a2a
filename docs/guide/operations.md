@@ -181,6 +181,7 @@ defaults, set through the profile's user patch layer
     maxConcurrentTasks: 32
     maxBodyBytes: 1048576
     outboundRefreshMs: 300000
+    inboundTrace: false
 ```
 
 | Field | Default | Meaning |
@@ -193,6 +194,7 @@ defaults, set through the profile's user patch layer
 | `maxConcurrentTasks` | `32` | Concurrent task cap per inbound instance; over-quota tasks fail readably; `0` disables it |
 | `maxBodyBytes` | `1048576` | Maximum inbound A2A request body |
 | `outboundRefreshMs` | `300000` | Automatic AgentCard refresh interval for enabled outbound connections; `0` disables it |
+| `inboundTrace` | `false` | Deployment gate/default for the optional inbound trace extension; when false no instance can activate it |
 
 The inbound session working directory is `$DSH_HOME/a2a-sessions` (created at
 startup). `DSH_HOME` defaults to `~/.dsh`.
@@ -255,6 +257,10 @@ Operational notes:
   JSON domain; use separate homes and ports for two-instance tests.
 - **Tasks and instances persist.** Live sessions, stream subscriptions and peer
   registries are in memory and reset on restart.
+- **Task records grow with history and trace.** Each accepted input message is
+  retained for `Task.history`; the optional trace summary keeps at most 64
+  observations. Large attachments and long continuations therefore increase the
+  domain record size; plan retention/backup accordingly.
 - **The domain stores JSON strings.** Schema changes are guarded by the domain's
   `version` field. Back up the JSON/SQLite file before upgrades.
 - **Session logs** are written under `$DSH_HOME/sessions/...` by the normal DSH
@@ -285,6 +291,13 @@ Operational notes:
   immediately; an externally exported variable is read the next time the
   instance is assembled.
 - There is no OAuth, mTLS or per-client credential model.
+- **Trace is opt-in and metadata-only.** `inboundTrace: true` is a deployment
+  gate; an instance must also allow the extension, and a caller must request it
+  with `A2A-Extensions`. Any caller that can read the task can see the bounded
+  summary in `Task.metadata`, so enable it only for trusted peers. Raw tool
+  arguments, tool results and reasoning are never included; argument previews
+  are redacted and truncated. Disable the deployment gate and reload to
+  remove the extension from every card.
 
 ## Upgrade and uninstall
 

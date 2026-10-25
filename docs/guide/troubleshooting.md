@@ -18,23 +18,30 @@ Work through these in order; each step narrows the layer:
 6. **Logs?** The DSH host log and, for the conversation, `$DSH_HOME/sessions`.
 7. **Version mismatch?** See §7.
 
-## A task fails with "agent produced no reply"
+## A task completes without a visible reply
 
-A `TASK_STATE_FAILED` task whose status message is
-`a2a: agent produced no reply` means the session executor finished without an
-assistant message. Narrow it down:
+A `TASK_STATE_COMPLETED` task with the status message
+`The agent completed without visible output.` means the turn ended normally but
+produced no visible assistant text (for example, it only called tools). This is
+not a failure, it has no `result` artifact, and it never falls back to
+reasoning. Read the task and its status message:
 
-1. Read the task and its status message:
-   ```text
-   /a2a task get <taskId>
-   ```
-2. In **连接与任务 → 入站会话**, find the `contextId` and check whether it is
-   running or idle.
-3. Check the preset's model provider: an unauthenticated or misconfigured
-   provider can produce an empty assistant message. Verify the same preset in a
-   normal DSH session.
-4. Look for `a2a` warnings in the host log and in
-   `$DSH_HOME/sessions/...` for the `a2a-<instanceId>-<contextId>` session.
+```text
+/a2a task get <taskId>
+```
+
+If you expected text, check:
+
+1. In **连接与任务 → 入站会话**, find the `contextId` and whether it is running
+   or idle.
+2. The preset's model provider: an unauthenticated or misconfigured provider can
+   produce an empty assistant message. Verify the same preset in a normal DSH
+   session.
+3. `a2a` warnings in the host log and `$DSH_HOME/sessions/...` for the
+   `a2a-<instanceId>-<contextId>` session.
+
+A genuine provider or executor error still settles `TASK_STATE_FAILED`; its
+status message carries the error.
 
 If the task is `TASK_STATE_CANCELED`, the caller or the panel canceled it; start
 a new task on the same context to reopen the session.
@@ -147,7 +154,7 @@ for two-instance tests.
 
 ## What to include in a bug report
 
-- Plugin version (`0.5.0`), harness version and OS.
+- Plugin version (`0.5.1`), harness version and OS.
 - The exact command or panel action.
 - The task JSON (`/a2a task get <id>`) and the AgentCard.
 - Whether the inbound instance has auth, and whether the request carried the

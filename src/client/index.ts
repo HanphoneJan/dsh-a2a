@@ -62,6 +62,7 @@ export interface InboundServerView {
   readonly cardPath: string
   readonly cardUrl?: string
   readonly enabled: boolean
+  readonly trace: boolean
   readonly skills: readonly SkillView[]
 }
 
@@ -270,6 +271,7 @@ export function A2aSection(_props: SectionProps): ReactElement {
   const [inPreset, setInPreset] = useState('')
   const [inToken, setInToken] = useState('')
   const [inClearAuth, setInClearAuth] = useState(false)
+  const [inTrace, setInTrace] = useState(false)
 
   // Outbound add/edit form (two-phase).
   const [editingOut, setEditingOut] = useState<string | null>(null)
@@ -404,6 +406,7 @@ export function A2aSection(_props: SectionProps): ReactElement {
     setInPreset(presets.find((p) => p.isDefault)?.id ?? '')
     setInToken('')
     setInClearAuth(false)
+    setInTrace(false)
   }
 
   const beginEditInbound = (v: InboundServerView): void => {
@@ -414,6 +417,7 @@ export function A2aSection(_props: SectionProps): ReactElement {
     setInPreset(v.preset ?? presets.find((p) => p.isDefault)?.id ?? '')
     setInToken('')
     setInClearAuth(false)
+    setInTrace(v.trace)
   }
 
   const submitInbound = async (): Promise<void> => {
@@ -423,6 +427,7 @@ export function A2aSection(_props: SectionProps): ReactElement {
       description: inDesc.trim() || 'An A2A inbound server',
       version: inVersion.trim() || '1.0.0',
       ...(inPreset !== '' ? { preset: inPreset } : {}),
+      trace: inTrace,
     }
     const done = editingIn === null
       ? await control({ action: 'inbound.create', ...base })
@@ -617,6 +622,7 @@ export function A2aSection(_props: SectionProps): ReactElement {
                           createElement('span', { className: 'dsh-a2a-card-name' }, v.name),
                           createElement('span', { className: 'dsh-a2a-badge' }, presetLabel(presets, v.preset)),
                           createElement('span', { className: 'dsh-a2a-badge dsh-a2a-mono' }, `v${v.version}`),
+                          ...(v.trace ? [createElement('span', { className: 'dsh-a2a-badge', key: 'trace' }, 'trace')] : []),
                           createElement('span', { className: 'dsh-a2a-auth' }, v.authTokenEnv !== undefined ? '· 已配置鉴权' : '· 匿名'),
                         ),
                         createElement('div', { className: 'dsh-a2a-card-sub dsh-a2a-mono' }, `${v.endpointPath} · ${v.cardUrl ?? v.cardPath}`),
@@ -643,6 +649,10 @@ export function A2aSection(_props: SectionProps): ReactElement {
                   ...presets.map((p) => createElement('option', { value: p.id, key: p.id, title: p.description ?? p.id }, p.name ?? p.id)),
                 ),
                 createElement('input', { className: 'dsh-a2a-input', type: 'password', value: inToken, placeholder: editingIn !== null ? 'Bearer Token（留空不改，填写则更新）' : 'Bearer Token（可选）', onChange: (e: { target: { value: string } }) => setInToken(e.target.value) }),
+                createElement('label', { className: 'dsh-a2a-hint' },
+                  createElement('input', { type: 'checkbox', checked: inTrace, onChange: (e: { target: { checked: boolean } }) => setInTrace(e.target.checked) }),
+                  ' 允许 trace 扩展（工具名/脱敏摘要，默认关闭）',
+                ),
                 createElement('button', { className: 'dsh-a2a-btn dsh-a2a-btn-primary', type: 'submit', disabled: busy || !inName.trim() }, editingIn !== null ? '保存修改' : '创建 Server'),
                 editingIn !== null ? createElement('button', { className: 'dsh-a2a-btn', type: 'button', disabled: busy, onClick: () => beginCreateInbound() }, '取消') : null,
               ),

@@ -23,11 +23,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it } from 'vitest'
-import LlmRuntime, { LlmAdapter, type GenerateOptions, type LlmResolvedModelInfo, type StreamChunk } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { LlmAdapter, ToolCallId, type GenerateOptions, type LlmResolvedModelInfo, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
-import ToolRuntime from '@deepseek-ai/dsh-tools'
+import ToolRuntime, { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
@@ -41,6 +41,16 @@ function textResponse(text: string): StreamChunk[] {
     { type: 'block-end', index: 0, block: { type: 'text', text } },
     { type: 'usage', usage: { inputTokens: 10, outputTokens: text.length } },
     { type: 'finish', reason: { kind: 'stop' } },
+  ]
+}
+
+/** One assistant tool call, followed by the model's finish reason. */
+function toolCallResponse(id: string, name: string, args: Record<string, unknown>): StreamChunk[] {
+  return [
+    { type: 'block-start', index: 0, blockType: 'tool-call' },
+    { type: 'block-end', index: 0, block: { type: 'tool-call', id: ToolCallId(id), name, arguments: JSON.stringify(args) } },
+    { type: 'usage', usage: { inputTokens: 10, outputTokens: 5 } },
+    { type: 'finish', reason: { kind: 'tool-calls' } },
   ]
 }
 
@@ -176,5 +186,37 @@ describe('ContextSessionPool over real session persistence', () => {
     })
     expect(reply).toBe('OK')
     expect(deltas.join('')).toBe('OK')
+  })
+
+  it('observes a real tool/call and tool/result lifecycle for trace', async () => {
+    const { ctx, pool } = await poolHarness([
+      toolCallResponse('call-1', 'echo', { value: 'hi', token: 'super-secret' }),
+      textResponse('done'),
+    ])
+    ctx.tools.register(defineContentToolFixture({
+      name: 'echo',
+      description: 'echo one value',
+      parameters: {
+        value: { type: 'string', required: true },
+        token: { type: 'string' },
+      },
+      async execute(args) {
+        return [{ type: 'text', text: `echo:${String(args.value)}` }]
+      },
+    }))
+    const calls: Array<{ phase: string; tool: string; status: string; durationMs?: number; argsPreview?: string }> = []
+    const reply = await pool.runTurn('ctx-real-trace', 'use the tool', new AbortController().signal, {
+      onTrace: (call) => { calls.push(call) },
+    })
+    expect(reply).toBe('done')
+    expect(calls.map((call) => [call.phase, call.tool, call.status])).toEqual([
+      ['start', 'echo', 'running'],
+      ['end', 'echo', 'ok'],
+    ])
+    expect(calls[0]?.argsPreview).toContain('hi')
+    expect(calls[0]?.argsPreview).toContain('[redacted]')
+    expect(calls[0]?.argsPreview).not.toContain('super-secret')
+    expect(calls[1]?.durationMs).toBeGreaterThanOrEqual(0)
+    expect(JSON.stringify(calls)).not.toContain('echo:hi')
   })
 })

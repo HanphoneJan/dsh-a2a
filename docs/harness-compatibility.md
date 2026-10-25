@@ -29,6 +29,7 @@ for that coupling. Component design is in [Architecture](architecture.md).
 | Build layout | `references` in `tsconfig.json`, `tsconfig.client.json`, `tsconfig.types.json` | A referenced package splits, renames or stops being composite; `tsc -b` fails before source is read |
 | Mount and manifest contract | `cordis.patch.yml`, `dsh.bundle.patch`, `dsh.client.inject`, `scripts/build-client.mjs` | The `- insert:` patch form, client injection list or `window.__ModuleLoader__.load({ id, factory })` contract changes |
 | Runtime APIs | `ctx.a2a`, `ctx.slots.inject('settings.section', …)`, storage `KvTable`, commands, preset/skill/subagent data | A consumed service signature or data structure moves |
+| Session event feed | `session/event` listeners for `tool/call` / `tool/result` in `src/server/exec/agent-runtime.ts` | Trace observation loses call ids, error flags or event timing; only real harness evidence catches it |
 
 The surfaces are ordered by how cheaply they can be checked: versions and build
 layout fail loudly and early; runtime APIs are covered by the consumer
@@ -136,11 +137,13 @@ not published without an explicit request.
 
 ## Current status
 
-`0.5.0` is verified against harness `0.2.1-rc.2`: `pnpm typecheck` (host +
-client + mirror check), `pnpm test` (178/178), `pnpm build` producing
-`lib/index.js` and `lib/client.js`, and `pnpm test:e2e` passing an inbound and
-outbound round trip against two real instances. The CI e2e matrix also covers
-`0.2.1-alpha.2` and `0.1.7-rc.2`.
+`0.5.1` is verified against harness `0.2.1-rc.3`: `pnpm typecheck` (host +
+client + mirror check), `pnpm test` (196/196), `pnpm test:integration` (6/6),
+`pnpm build` producing `lib/index.js` and `lib/client.js`, and `pnpm test:e2e`
+passing an inbound and outbound round trip against two real instances, including
+the optional trace extension's card declaration and header acknowledgement.
+`0.2.1-rc.2` remains in the matrix; `0.2.1-alpha.2` and `0.1.7-rc.2` are also
+covered by the scheduled matrix.
 
 ## Known traps
 

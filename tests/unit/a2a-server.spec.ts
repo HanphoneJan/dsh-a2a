@@ -12,6 +12,7 @@ import { MemoryTaskStore } from '../../src/server/store.ts'
 import { A2aMetrics } from '../../src/server/metrics.ts'
 import { A2A_ERROR_CODES, A2A_METHODS, Role, TaskState, type AgentCard, type Part } from '../../src/protocol.ts'
 import { A2AClient } from '../../src/outbound/calls.ts'
+import { TRACE_EXTENSION_URI } from '../../src/server/trace.ts'
 
 /** AgentCard with a stable JSON-RPC endpoint. */
 const card: AgentCard = {
@@ -51,6 +52,7 @@ function makeServer(opts: Partial<A2AServerOptions> = {}): A2AServer {
     ...(opts.taskTimeoutMs !== undefined ? { taskTimeoutMs: opts.taskTimeoutMs } : {}),
     ...(opts.requestsPerMinute !== undefined ? { requestsPerMinute: opts.requestsPerMinute } : {}),
     ...(opts.maxConcurrentTasks !== undefined ? { maxConcurrentTasks: opts.maxConcurrentTasks } : {}),
+    ...(opts.traceEnabled !== undefined ? { traceEnabled: opts.traceEnabled } : {}),
     ...(opts.metrics !== undefined ? { metrics: opts.metrics } : {}),
   })
 }
@@ -515,6 +517,144 @@ describe('SendMessage configuration and history', () => {
     }))).body).result
     expect(one.history).toHaveLength(1)
     expect(one.history[0].role).toBe('ROLE_AGENT')
+  })
+
+  it('keeps every accepted input in task history across a continuation', async () => {
+    let turn = 0
+    const executor: A2aExecutor = {
+      name: 'session',
+      execute: async () => {
+        turn += 1
+        return turn === 1
+          ? { parts: [], appendResult: false, state: TaskState.INPUT_REQUIRED, statusMessage: 'more input' }
+          : { parts: [{ text: 'final answer' }] }
+      },
+    }
+    const server = makeServer({ executors: fakeExecutorSet(executor) })
+    const first = JSON.parse((await server.handle({ method: 'POST', url: '/a2a' }, JSON.stringify(sendMessage))).body).result.task
+    const second = JSON.parse((await server.handle({ method: 'POST', url: '/a2a' }, JSON.stringify({
+      jsonrpc: '2.0',
+      id: 2,
+      method: A2A_METHODS.sendMessage,
+      params: { message: { messageId: 'm2', taskId: first.id, role: 'user', parts: [{ text: 'second input' }] } },
+    }))).body).result.task
+    expect(second.history?.slice(0, 2)).toMatchObject([
+      { role: 'ROLE_USER', parts: [{ text: 'hello' }] },
+      { role: 'ROLE_USER', parts: [{ text: 'second input' }] },
+    ])
+    expect(second.history?.at(-1)).toMatchObject({ role: 'ROLE_AGENT', parts: [{ text: 'final answer' }] })
+  })
+
+  it('returns the same history shape from the streaming terminal task', async () => {
+    const server = makeServer()
+    const frames: string[] = []
+    await server.handleStream(
+      { method: 'POST', url: '/a2a', headers: { accept: 'text/event-stream' } },
+      JSON.stringify({
+        jsonrpc: '2.0', id: 3, method: A2A_METHODS.sendStreamingMessage,
+        params: { message: sendMessage.params.message, configuration: { historyLength: 1 } },
+      }),
+      (frame) => frames.push(frame),
+    )
+    const tasks = frames
+      .map((frame) => /^data: (.*)$/m.exec(frame)?.[1])
+      .filter((value): value is string => value !== undefined)
+      .map((value) => JSON.parse(value) as { result?: { task?: { status?: { state?: string }; history?: unknown[] } } })
+      .filter((value) => value.result?.task !== undefined)
+    const final = tasks.at(-1)?.result?.task
+    expect(final?.status?.state).toBe(TaskState.COMPLETED)
+    expect(final?.history).toHaveLength(1)
+    expect(final?.history?.[0]).toMatchObject({ role: 'ROLE_AGENT' })
+  })
+
+  it('completes without a result artifact and explains a no-visible-output turn', async () => {
+    const executor: A2aExecutor = {
+      name: 'session',
+      execute: async () => ({ parts: [], appendResult: false, statusMessage: 'The agent completed without visible output.' }),
+    }
+    const server = makeServer({ executors: fakeExecutorSet(executor) })
+    const task = JSON.parse((await server.handle({ method: 'POST', url: '/a2a' }, JSON.stringify(sendMessage))).body).result.task
+    expect(task.status.state).toBe(TaskState.COMPLETED)
+    expect(task.artifacts ?? []).toEqual([])
+    expect(task.status.message.parts[0].text).toMatch(/without visible output/)
+    expect(task.history?.at(-1)).toMatchObject({ role: 'ROLE_AGENT', metadata: { reason: 'no-visible-output' } })
+  })
+
+  it('activates the trace extension only when the instance allows it', async () => {
+    const calls: Array<{ callId: string; tool: string; phase: string; status: string; durationMs?: number; argsPreview?: string; timestamp: string }> = []
+    const executor: A2aExecutor = {
+      name: 'session',
+      execute: async (_input, { onEvent }) => {
+        const call = { callId: 'c1', tool: 'read', phase: 'start' as const, status: 'running' as const, argsPreview: '{"path":"a.txt"}', timestamp: '2026-01-01T00:00:00.000Z' }
+        calls.push(call)
+        onEvent({ type: 'trace', call })
+        onEvent({ type: 'trace', call: { ...call, phase: 'end', status: 'ok', durationMs: 12 } })
+        return { parts: [{ text: 'done' }] }
+      },
+    }
+    const server = makeServer({ executors: fakeExecutorSet(executor), traceEnabled: true })
+    const res = await server.handle(
+      { method: 'POST', url: '/a2a', headers: { 'a2a-extensions': TRACE_EXTENSION_URI } },
+      JSON.stringify(sendMessage),
+    )
+    expect(res.headers?.['A2A-Extensions']).toBe(TRACE_EXTENSION_URI)
+    const task = JSON.parse(res.body).result.task
+    expect(task.artifacts?.some((artifact: { artifactId?: string }) => artifact.artifactId === 'result')).toBe(true)
+    expect(task.artifacts?.some((artifact: { artifactId?: string }) => artifact.artifactId.startsWith('tool-call-'))).toBe(false)
+    expect(task.metadata?.[TRACE_EXTENSION_URI]?.calls).toHaveLength(2)
+    expect(JSON.stringify(task)).not.toContain('secret')
+  })
+
+  it('does not activate trace when the instance policy is off', async () => {
+    const executor: A2aExecutor = {
+      name: 'session',
+      execute: async (_input, { onEvent }) => {
+        onEvent({
+          type: 'trace',
+          call: { callId: 'c1', tool: 'read', phase: 'start', status: 'running', timestamp: '2026-01-01T00:00:00.000Z' },
+        })
+        return { parts: [{ text: 'done' }] }
+      },
+    }
+    const server = makeServer({ executors: fakeExecutorSet(executor), traceEnabled: false })
+    const res = await server.handle(
+      { method: 'POST', url: '/a2a', headers: { 'a2a-extensions': TRACE_EXTENSION_URI } },
+      JSON.stringify(sendMessage),
+    )
+    expect(res.headers?.['A2A-Extensions']).toBeUndefined()
+    expect(JSON.parse(res.body).result.task.metadata?.[TRACE_EXTENSION_URI]).toBeUndefined()
+  })
+
+  it('carries trace only in status metadata on the streaming path', async () => {
+    const executor: A2aExecutor = {
+      name: 'session',
+      execute: async (_input, { onEvent }) => {
+        onEvent({
+          type: 'trace',
+          call: { callId: 'c1', tool: 'read', phase: 'start', status: 'running', timestamp: '2026-01-01T00:00:00.000Z' },
+        })
+        onEvent({
+          type: 'trace',
+          call: { callId: 'c1', tool: 'read', phase: 'end', status: 'ok', durationMs: 3, timestamp: '2026-01-01T00:00:00.003Z' },
+        })
+        onEvent({ type: 'artifact', artifactId: 'result', parts: [{ text: 'streamed' }], lastChunk: true })
+        return { parts: [], appendResult: false }
+      },
+    }
+    const server = makeServer({ executors: fakeExecutorSet(executor), traceEnabled: true })
+    const frames: string[] = []
+    const outcome = await server.handleStream(
+      { method: 'POST', url: '/a2a', headers: { accept: 'text/event-stream', 'a2a-extensions': TRACE_EXTENSION_URI } },
+      JSON.stringify({
+        jsonrpc: '2.0', id: 4, method: A2A_METHODS.sendStreamingMessage,
+        params: { message: { messageId: 'm-trace', role: 'user', parts: [{ text: 'go' }] } },
+      }),
+      (frame) => frames.push(frame),
+    )
+    expect(outcome.headers?.['A2A-Extensions']).toBe(TRACE_EXTENSION_URI)
+    const traceFrames = frames.filter((frame) => frame.includes('"metadata"') && frame.includes(TRACE_EXTENSION_URI))
+    expect(traceFrames.length).toBeGreaterThanOrEqual(2)
+    expect(frames.some((frame) => frame.includes('tool-call-'))).toBe(false)
   })
 })
 

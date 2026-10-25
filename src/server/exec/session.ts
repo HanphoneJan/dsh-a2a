@@ -1,9 +1,10 @@
 /**
  * The `session` executor: one inbound task is one turn on the context's DSH
  * agent session; reply text becomes the task's output part. Live assistant
- * deltas are projected as artifact chunks so SendStreamingMessage carries real
- * progress before the terminal task. Works on any composition with an agent
- * loop (the `chat` skill and the default path).
+ * text deltas are projected as `result` artifact chunks so
+ * SendStreamingMessage carries real progress before the terminal task. Tool
+ * lifecycle is exposed only through the opt-in trace metadata channel; it is
+ * never modelled as an artifact.
  * @module dsh-a2a/server/exec/session
  */
 
@@ -24,21 +25,11 @@ export function createSessionExecutor(pool: ContextSessionPool): A2aExecutor {
           if (event.type === 'text-delta') {
             streamed = true
             execCtx.onEvent({ type: 'artifact', artifactId: 'result', parts: [{ text: event.text }], append: true, lastChunk: false })
-            return
-          }
-          // Tool deltas are structured data parts; they let a streaming client
-          // observe tool activity without pretending it is assistant text.
-          if (event.id.length > 0) {
-            execCtx.onEvent({
-              type: 'artifact',
-              artifactId: `tool-call-${event.id}`,
-              name: event.name ?? 'tool-call',
-              parts: [{ data: { toolCallId: event.id, name: event.name ?? null, argumentsDelta: event.argumentsDelta } }],
-              append: true,
-              lastChunk: false,
-            })
           }
         },
+        ...(input.trace === true
+          ? { onTrace: (call) => execCtx.onEvent({ type: 'trace', call }) }
+          : {}),
       })
       if (streamed) {
         // Close the incremental artifact without appending another copy of the
@@ -50,7 +41,11 @@ export function createSessionExecutor(pool: ContextSessionPool): A2aExecutor {
         return { parts: [{ text: '(canceled)' }] }
       }
       if (reply.length === 0) {
-        throw new Error('a2a: agent produced no reply')
+        return {
+          parts: [],
+          appendResult: false,
+          statusMessage: 'The agent completed without visible output.',
+        }
       }
       return { parts: [{ text: reply }] }
     },

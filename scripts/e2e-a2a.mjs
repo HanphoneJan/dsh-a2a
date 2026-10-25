@@ -41,6 +41,7 @@ const HARNESS = resolve(process.env.DSH_A2A_HARNESS_DIR ?? join(REPO, '..', 'dee
 const PLUGIN_DIR = REPO
 const PLUGIN_LIB = join(REPO, 'lib', 'index.js')
 const PKG_NAME = '@hanphone/dsh-a2a'
+const TRACE_URI = 'https://github.com/hanphone/dsh-a2a/blob/main/docs/extensions/dsh-trace/v1.md'
 const KEEP = process.env.DSH_A2A_KEEP === '1'
 
 /** Child processes to tear down (process groups). */
@@ -210,11 +211,11 @@ async function snapshot(base) {
   return response.json()
 }
 
-/** Send one inbound message and return the settled artifact text. */
-async function sendMessage(base, endpointPath, text) {
+/** Send one inbound message and return the settled task plus visible result text. */
+async function sendMessage(base, endpointPath, text, options = {}) {
   const response = await fetch(new URL(endpointPath, base), {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...(options.headers ?? {}) },
     body: JSON.stringify({
       jsonrpc: '2.0',
       id: 'e2e',
@@ -228,11 +229,18 @@ async function sendMessage(base, endpointPath, text) {
   const task = payload.result.task
   const state = task?.status?.state
   if (state !== 'TASK_STATE_COMPLETED') throw new Error(`task did not complete: ${state}`)
-  return (task?.artifacts ?? [])
+  const artifacts = task?.artifacts ?? []
+  if (artifacts.some((artifact) => String(artifact.artifactId ?? '').startsWith('tool-call-'))) {
+    throw new Error(`default task leaked a tool-call artifact: ${JSON.stringify(artifacts)}`)
+  }
+  const result = artifacts
+    .filter((artifact) => artifact.artifactId === 'result')
     .flatMap((artifact) => artifact.parts ?? [])
-    .map((part) => part.text ?? '')
-    .join('')
-    .trim()
+  if (result.some((part) => part.data !== undefined)) {
+    throw new Error(`default result artifact contains a data part: ${JSON.stringify(result)}`)
+  }
+  const textOut = result.map((part) => part.text ?? '').join('').trim()
+  return { task, text: textOut, headers: response.headers }
 }
 
 async function main() {
@@ -252,6 +260,9 @@ async function main() {
   await writeHomeProfile(homeA, 'web', ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', PKG_NAME])
   await writeHomeProfile(homeA, 'headless', ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless', PKG_NAME])
   await writeHomeProfile(homeB, 'web', ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', PKG_NAME])
+  // Deployment gate for the optional trace extension; the instance below also
+  // opts in. Without this the instance flag can never activate it.
+  await writeFile(join(homeB, 'profiles', 'web', 'cordis.patch.yml'), '- id: a2a\n  config:\n    inboundTrace: true\n')
 
   const portMockB = await freePort()
   const portMockA = await freePort()
@@ -279,6 +290,7 @@ async function main() {
     description: 'e2e inbound',
     version: '0.1.0',
     preset: 'standard',
+    trace: true,
     enabled: true,
   })
   if (!created.ok) fail('inbound.create failed', JSON.stringify(created))
@@ -287,9 +299,17 @@ async function main() {
   if (!cardResponse.ok) fail(`AgentCard fetch failed: HTTP ${cardResponse.status}`)
   const card = await cardResponse.json()
   if (!Array.isArray(card.skills) || card.skills.length === 0) fail('AgentCard advertises no skills', JSON.stringify(card))
-  const inboundReply = await sendMessage(baseB, inbound.endpointPath, 'Reply with exactly OK')
-  if (inboundReply !== 'OK') fail(`inbound reply was ${JSON.stringify(inboundReply)}, expected "OK"`)
-  log('inbound: AgentCard + SendMessage -> OK')
+  if (!card.capabilities?.extensions?.some((extension) => extension.uri === TRACE_URI)) {
+    fail('AgentCard does not advertise the enabled trace extension', JSON.stringify(card.capabilities))
+  }
+  const inboundReply = await sendMessage(baseB, inbound.endpointPath, 'Reply with exactly OK', {
+    headers: { 'a2a-extensions': TRACE_URI },
+  })
+  if (inboundReply.text !== 'OK') fail(`inbound reply was ${JSON.stringify(inboundReply.text)}, expected "OK"`)
+  if (inboundReply.headers.get('a2a-extensions') !== TRACE_URI) {
+    fail(`trace activation was not acknowledged: ${inboundReply.headers.get('a2a-extensions')}`)
+  }
+  log('inbound: AgentCard + SendMessage -> OK; trace extension advertised and acknowledged')
 
   // ---- 2. outbound registration ------------------------------------------
   const connected = await control(baseA, {
@@ -329,6 +349,9 @@ async function main() {
   const remoteTask = (await snapshot(baseB)).tasks.find((task) => String(task.contextId).startsWith('a2a-out-'))
   if (remoteTask === undefined) fail('remote instance recorded no outbound-context task')
   if (remoteTask.state !== 'TASK_STATE_COMPLETED') fail(`remote task is ${remoteTask.state}`)
+  if ((remoteTask.artifacts ?? []).some((artifact) => String(artifact.artifactId ?? '').startsWith('tool-call-'))) {
+    fail('remote task leaked a tool-call artifact', JSON.stringify(remoteTask.artifacts))
+  }
   log('outbound: model -> a2a__b__chat -> remote agent -> OK')
 
   log('all e2e checks passed')

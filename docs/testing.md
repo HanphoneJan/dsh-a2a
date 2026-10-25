@@ -20,13 +20,19 @@ this page.
 | Mirror check | `tests/types/mirrors.typecheck.ts` | Structural mirrors drifting from real `@deepseek-ai/dsh-*` types | yes (`lib/types`) |
 | Unit / composition | `tests/unit`, `tests/composition` | Protocol framing, routes, stores, registries, `apply()` wiring over stub host services | no |
 | Real-persistence integration | `tests/integration/persistence.spec.ts` | Durable session codec, agent-loop contract, inbox sources | yes (JSONL addon) |
-| Profile e2e | `scripts/e2e-a2a.mjs` | A released artifact against two real harness instances: manifest/mount, routes, discovery, JSON-RPC, tool registration, model → tool → remote agent | yes (host + plugin) |
+| Profile e2e | `scripts/e2e-a2a.mjs` | A released artifact against two real harness instances: manifest/mount, routes, discovery, JSON-RPC, tool registration, model → tool → remote agent, trace card/header activation | yes (host + plugin) |
+
+Visibility-specific coverage lives in `tests/unit/agent-runtime.spec.ts` (reasoning
+fallback and tool trace lifecycle), `tests/unit/a2a-server.spec.ts` (history,
+empty output, extension activation), `tests/unit/outbound-tools.spec.ts`
+(outbound result selection) and `tests/unit/subagent.spec.ts` (subagent reasoning
+filter).
 
 ## Commands
 
 ```sh
 pnpm typecheck        # host (tsc -b) + client + mirror check
-pnpm test             # vitest run: unit + composition + integration (178 tests)
+pnpm test             # vitest run: unit + composition + integration (196 tests)
 pnpm test:integration # only the real-persistence suite
 pnpm build            # tsc + tsdown + browser bundle -> lib/
 pnpm test:e2e         # hermetic two-instance A2A smoke (needs a built plugin)
@@ -88,8 +94,8 @@ manual inspection, not a CI gate. `Ctrl+C` tears down every child and temp home.
 
 `.github/workflows/ci.yml` runs `check` (typecheck, unit, composition and
 real-persistence tests) on every push and pull request, and `e2e-pinned`
-against `dsh-v0.2.1-rc.2`. The nightly schedule and manual dispatch run the e2e
-matrix over every harness version the peer ranges claim (`0.2.1-rc.2`,
+against `dsh-v0.2.1-rc.3`. The nightly schedule and manual dispatch run the e2e
+matrix over the supported harness versions (`0.2.1-rc.3`, `0.2.1-rc.2`,
 `0.2.1-alpha.2`, `0.1.7-rc.2`).
 
 Widen the matrix in the same change that widens `peerDependencies`, and record

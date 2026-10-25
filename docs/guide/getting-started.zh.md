@@ -14,7 +14,7 @@ update-time: 2026-10-25
 
 ## 开始之前
 
-需要 DeepSeek Harness `0.2.1-rc.2`（本版本核对所用的版本）和运行中的 web 应用，
+需要 DeepSeek Harness `0.2.1-rc.3`（已核对版本；其他受支持的 0.2.x 仍在兼容矩阵中）和运行中的 web 应用，
 默认地址为 `http://127.0.0.1:3080/`。基础 `web` profile 已挂载插件用到的全部服务；
 自定义组合见[宿主服务](operations.zh.md#宿主服务)。
 
@@ -85,9 +85,9 @@ curl -sS http://127.0.0.1:3080/a2a/<id> \
   }'
 ```
 
-`SendMessage` 阻塞到任务落定。成功响应的任务处于 `TASK_STATE_COMPLETED`，
-`artifacts` 里是回复。复用同一个 `contextId` 可继续同一段对话；复用同一个
-`messageId` 可幂等重试。
+`SendMessage` 阻塞到任务落定。成功响应的任务处于 `TASK_STATE_COMPLETED`；
+可见回复是 `result` artifact。工具调用、工具结果与 reasoning 不是 artifact。
+复用同一个 `contextId` 可继续同一段对话；复用同一个 `messageId` 可幂等重试。
 
 要接收进度而不是阻塞等待，用 `SendStreamingMessage` 带
 `Accept: text/event-stream` 与 `curl -N`；已创建的任务改用 `SubscribeToTask`。

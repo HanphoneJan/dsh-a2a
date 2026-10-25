@@ -33,6 +33,9 @@ update-time: 2026-10-25
 | `GET /a2a/api/session?contextId=<id>&serverId=<instance>` | 某个活跃上下文会话的派生对话消息；不带 `serverId` 且上下文有歧义时返回 `409` |
 | `GET /a2a/api/metrics` | 指标快照 |
 
+`GET /a2a/api/session` 是仅回环的调试视图。它返回原始派生 DSH 消息，可能包含
+reasoning block；它不是 A2A 线协议的一部分，也不会通过 A2A 暴露 reasoning。
+
 `GET /a2a/api` 接受 `taskLimit`（默认 50）、`taskOffset`、`taskState`、
 `taskContextId`、`taskServerId` 来分页任务列表。
 
@@ -45,7 +48,7 @@ update-time: 2026-10-25
 
 ```json
 {
-  "version": "0.5.0",
+  "version": "0.5.1",
   "inbounds": [
     {
       "id": "e2e-b-ade6a7ad",
@@ -57,6 +60,7 @@ update-time: 2026-10-25
       "cardPath": "/a2a/e2e-b-ade6a7ad/agent-card.json",
       "cardUrl": "http://127.0.0.1:3081/a2a/e2e-b-ade6a7ad",
       "enabled": true,
+      "trace": false,
       "skills": [{ "id": "chat", "name": "chat", "description": "..." }]
     }
   ],
@@ -87,8 +91,8 @@ update-time: 2026-10-25
 ```json
 {
   "ok": true,
-  "current": "0.5.0",
-  "latest": "0.5.1",
+  "current": "0.5.1",
+  "latest": "0.5.2",
   "hasUpdate": true,
   "ahead": false,
   "error": null,
@@ -114,8 +118,8 @@ update-time: 2026-10-25
 
 | 动作 | 必填字段 | 可选字段 |
 |---|---|---|
-| `inbound.create` | `name`、`description`、`version` | `endpointPath`、`preset`、`authTokenEnv`、`enabled` |
-| `inbound.update` | `id` | `name`、`description`、`version`、`endpointPath`、`preset`、`authTokenEnv` |
+| `inbound.create` | `name`、`description`、`version` | `endpointPath`、`preset`、`authTokenEnv`、`trace`、`enabled` |
+| `inbound.update` | `id` | `name`、`description`、`version`、`endpointPath`、`preset`、`authTokenEnv`、`trace` |
 | `inbound.remove` | `id` | — |
 | `inbound.enable` / `inbound.disable` | `id` | — |
 | `inbound.setAuth` | `id` | `token`（省略或空串即清除） |
@@ -286,7 +290,9 @@ token 在实例组装时解析；凭据模型见[运维指南](../guide/operatio
 - `messageId` 是幂等键：重发同一个 id 返回原任务，不再跑一轮。`taskId` 续接一个
   非终态任务；终态任务拒绝后续消息，仍在运行的任务以 `UNSUPPORTED_OPERATION` 拒绝。
 - `configuration.returnImmediately: true` 在启动任务后立即返回；否则 `SendMessage`
-  阻塞。`configuration.historyLength` 裁剪返回的历史。
+  阻塞。`configuration.historyLength` 同时裁剪 `SendMessage` 与
+  `SendStreamingMessage` 返回的历史：`0` 不返回，未设置表示不限制。
+  `Task.history` 是该任务的 A2A 可见输入/输出消息，不是 DSH 内部 transcript。
 - `configuration.acceptedOutputModes` 只接受文本模式；排除文本的请求得到
   `CONTENT_TYPE_NOT_SUPPORTED`。
 - 每个请求都可带 `A2A-Version`（头或查询参数）。主/次版本不匹配返回
@@ -326,17 +332,36 @@ data: {"jsonrpc":"2.0","id":2,"result":{"artifactUpdate":{...}}}
 
 #### 2.4.1 流里有什么
 
-默认 `session` 执行器把实时 assistant 文本增量投影成 `artifactUpdate` 分片
-（`lastChunk: false`），最后以 `lastChunk: true` 收尾。工具调用增量是
-`tool-call-<id>` artifact 下的结构化 `data` part。流的形状是：
+默认 `session` 执行器把实时 assistant 文本增量投影成 `result` artifact 下的
+`artifactUpdate` 分片（`lastChunk: false`），最后以 `lastChunk: true` 收尾。
+工具活动**不是** artifact。流的形状是：
 
-- 一个初始 `task`，带当前状态与任务 id；
-- 零个或多个携带 assistant/工具进度的 `artifactUpdate` 帧；
-- 一个带完整 artifact 集合的最终 `task`。
+- 一个初始 `task`，带当前状态、任务 id 与可用历史；
+- 零个或多个只携带可见 assistant 文本的 `artifactUpdate` 帧；
+- 零个或多个 `statusUpdate` 帧；激活可选扩展时可携带 trace metadata；
+- 一个带完整 artifact 集合与落定历史的最终 `task`。
 
-推理增量故意不投影。落定后的任务才是事实来源。
+推理增量永不投影。工具结果永不投影。落定后的任务才是事实来源。
 
-#### 2.4.2 断线与重连
+默认只宣告并产生 text/plain 输出。没有可见文本的一轮以 `TASK_STATE_COMPLETED`
+结束，不产生 `result` artifact，并用状态消息说明“无可见输出”；它不是失败，
+也不会回退到 reasoning。
+
+#### 2.4.2 trace 扩展（可选）
+
+`AgentCard.capabilities.extensions` 可以宣告可选的 `dsh-trace/v1` 扩展。只有实例
+策略允许、且客户端用标准请求头激活时才生效：
+
+```http
+A2A-Extensions: https://github.com/hanphone/dsh-a2a/blob/main/docs/extensions/dsh-trace/v1.md
+```
+
+响应在 `A2A-Extensions` 中回显已激活的 URI。trace 数据只放在
+`TaskStatusUpdateEvent.metadata`（实时）与 `Task.metadata`（有界持久摘要），
+永远不会进入 artifact 或 history。它包含工具名、阶段、状态、耗时和脱敏后的参数
+摘要，绝不包含原始参数、工具结果或 reasoning。未请求扩展的客户端看不到任何变化。
+
+#### 2.4.3 断线与重连
 
 客户端断线**不会**取消任务。执行器跑完并持久化任务，SSE 订阅只负责投递。
 
@@ -359,7 +384,7 @@ data: {"jsonrpc":"2.0","id":2,"result":{"artifactUpdate":{...}}}
 | `TASK_STATE_WORKING` | 否 | 执行器运行中 |
 | `TASK_STATE_INPUT_REQUIRED` | 否（中断） | agent 需要更多输入 |
 | `TASK_STATE_AUTH_REQUIRED` | 否（中断） | agent 需要鉴权 |
-| `TASK_STATE_COMPLETED` | 是 | 完成，带 artifacts |
+| `TASK_STATE_COMPLETED` | 是 | 完成；可能有 artifacts，也可能因无可见输出而没有 artifact |
 | `TASK_STATE_FAILED` | 是 | 执行失败；状态消息带错误 |
 | `TASK_STATE_CANCELED` | 是 | 被调用方或会话面板取消 |
 | `TASK_STATE_REJECTED` | 是 | 执行前被拒绝 |
@@ -408,7 +433,14 @@ data: {"jsonrpc":"2.0","id":2,"result":{"artifactUpdate":{...}}}
     "streaming": true,
     "pushNotifications": false,
     "extendedAgentCard": true,
-    "stateTransitionHistory": false
+    "stateTransitionHistory": false,
+    "extensions": [
+      {
+        "uri": "https://github.com/hanphone/dsh-a2a/blob/main/docs/extensions/dsh-trace/v1.md",
+        "description": "可选工具调用 trace metadata。",
+        "required": false
+      }
+    ]
   },
   "defaultInputModes": ["text/plain"],
   "defaultOutputModes": ["text/plain"],
@@ -426,6 +458,9 @@ data: {"jsonrpc":"2.0","id":2,"result":{"artifactUpdate":{...}}}
 挂载 `attachments` 服务时，`defaultInputModes` 还会宣告图片类型与
 `application/octet-stream`。配置 Bearer Token 时，卡片增加 `bearer` 安全方案与要求；
 它绝不含 token 值。
+
+只有实例策略允许 trace 时，`capabilities.extensions` 才出现该扩展。它是可选的
+（`required: false`），通用客户端可以忽略。
 
 ## 3. 出站工具契约
 
@@ -454,14 +489,18 @@ a2a__<连接名>__<技能 id>
 [remote agent TASK_STATE_INPUT_REQUIRED task=<id>] <message>
 ```
 
-模型可以用该 id 再次调用。空结果渲染为 `(remote agent returned no output)`。
+模型可以用该 id 再次调用。工具优先渲染指定的 `result` artifact；没有时只取其余
+非诊断 artifact 的 **文本 part**。工具调用或 trace artifact 的 data part 绝不会被
+拼进模型可见结果。空结果渲染为 `(remote agent returned no output)`。
 
 ## 4. 当前限制
 
-以下行为在 `0.5.0` 是有意为之或已知的：
+以下行为在 `0.5.1` 是有意为之或已知的：
 
 - `SendMessage` 默认阻塞；`configuration.returnImmediately: true` 在启动任务后返回。
-  历史由持久任务的输入/输出重建，不是完整的逐轮 transcript。
+  历史是该任务的 A2A 可见输入/输出消息，不是完整的 DSH 逐轮 transcript。
+- trace 扩展是可选的、仅 metadata、并且有界（每任务 64 条观察，参数摘要最多 200
+  字符且脱敏）。`subagent` 执行器的子工具不提供 trace。
 - `acceptedOutputModes` 只接受文本模式；排除文本的请求得到
   `CONTENT_TYPE_NOT_SUPPORTED`。
 - 没有实现 push notification；push 配置方法返回

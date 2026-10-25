@@ -18,20 +18,26 @@ update-time: 2026-10-25
 6. **日志？** DSH 宿主日志；对话本身看 `$DSH_HOME/sessions`。
 7. **版本不匹配？** 见 §7。
 
-## 任务失败，消息为 "agent produced no reply"
+## 任务完成但没有可见回复
 
-`TASK_STATE_FAILED` 任务的状态消息是 `a2a: agent produced no reply`，表示 session
-执行器结束时没有拿到 assistant 消息。逐项排查：
+`TASK_STATE_COMPLETED` 任务的状态消息是
+`The agent completed without visible output.`，表示这一轮正常结束，但没有产生可见的
+assistant 文本（例如只调用了工具）。这不是失败；它没有 `result` artifact，也绝不会
+回退到 reasoning。读取任务与状态消息：
 
-1. 读取任务与状态消息：
-   ```text
-   /a2a task get <taskId>
-   ```
-2. 在 **连接与任务 → 入站会话** 找到该 `contextId`，看它是运行中还是空闲。
-3. 检查该 preset 的模型 provider：未鉴权或配错的 provider 会产出空的 assistant
+```text
+/a2a task get <taskId>
+```
+
+如果预期有文本，逐项排查：
+
+1. 在 **连接与任务 → 入站会话** 找到该 `contextId`，看它是运行中还是空闲。
+2. 检查该 preset 的模型 provider：未鉴权或配错的 provider 会产出空的 assistant
    消息。用同一个 preset 开一个普通 DSH 会话验证。
-4. 查宿主日志里的 `a2a` 警告，以及
+3. 查宿主日志里的 `a2a` 警告，以及
    `$DSH_HOME/sessions/...` 下 `a2a-<实例 id>-<contextId>` 的会话日志。
+
+真正的 provider 或执行器错误仍会落为 `TASK_STATE_FAILED`，状态消息携带错误。
 
 如果任务是 `TASK_STATE_CANCELED`，是调用方或面板取消了它；在同一上下文发新任务即可
 重新打开会话。
@@ -126,7 +132,7 @@ peer 范围。拒绝表示运行中的 harness 不在声明范围内。
 
 ## 提 issue 时带上什么
 
-- 插件版本（`0.5.0`）、harness 版本与操作系统。
+- 插件版本（`0.5.1`）、harness 版本与操作系统。
 - 确切的命令或面板操作。
 - 任务 JSON（`/a2a task get <id>`）与 AgentCard。
 - 入站实例是否配置鉴权，请求是否带了头（不要贴 token）。

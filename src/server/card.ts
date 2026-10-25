@@ -10,9 +10,11 @@
 
 import {
   type AgentCard,
+  type AgentExtension,
   type AgentInterface,
   type AgentSkill,
 } from '../protocol.ts'
+import { traceExtension } from './trace.ts'
 
 /** Identity options for the advertised AgentCard. */
 export interface CardOptions {
@@ -28,6 +30,10 @@ export interface CardOptions {
   readonly inputModes?: readonly string[]
   /** Advertised output media types; defaults to text/plain. */
   readonly outputModes?: readonly string[]
+  /** Advertise the optional trace extension (instance policy allows it). */
+  readonly trace?: boolean
+  /** Extra extensions to advertise alongside the built-in trace extension. */
+  readonly extensions?: readonly AgentExtension[]
 }
 
 /** Assemble the AgentCard advertised by this DSH. */
@@ -37,12 +43,22 @@ export function buildCard(options: CardOptions): AgentCard {
     protocolBinding: 'JSONRPC',
     protocolVersion: '1.0',
   }
+  const extensions = [
+    ...(options.trace === true ? [traceExtension()] : []),
+    ...(options.extensions ?? []),
+  ]
   return {
     name: options.name,
     description: options.description,
     version: options.version,
     provider: { url: 'https://deepseek.com', organization: 'DeepSeek' },
-    capabilities: { streaming: true, pushNotifications: false, extendedAgentCard: true, stateTransitionHistory: false },
+    capabilities: {
+      streaming: true,
+      pushNotifications: false,
+      extendedAgentCard: true,
+      stateTransitionHistory: false,
+      ...(extensions.length > 0 ? { extensions } : {}),
+    },
     defaultInputModes: [...(options.inputModes ?? ['text/plain'])],
     defaultOutputModes: [...(options.outputModes ?? ['text/plain'])],
     skills: options.skills,

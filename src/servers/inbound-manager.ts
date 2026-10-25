@@ -59,6 +59,8 @@ export interface InboundManagerHost {
   readonly sessionCwd: string
   readonly defaultBaseUrl: string
   readonly subagentProvider: string
+  /** Deployment hard gate/default for the optional trace extension. */
+  readonly inboundTrace: boolean
   /** Per-task inbound execution budget (0 = disabled). */
   readonly taskTimeoutMs?: number
   /** Sliding-window request limit per inbound source (0 = disabled). */
@@ -95,6 +97,8 @@ export interface LiveInboundServer {
   readonly sessionPool?: ContextSessionPool
   readonly endpointPath: string
   readonly cardPath: string
+  /** Effective trace policy after the deployment gate. */
+  readonly traceEnabled: boolean
   dispose(): void
 }
 
@@ -107,6 +111,8 @@ export interface InboundCreateInput {
   /** Preset id; absent = the deployment default preset. */
   readonly preset?: string
   readonly authTokenEnv?: string
+  /** Allow the optional trace extension on this instance (default from config). */
+  readonly trace?: boolean
   readonly enabled?: boolean
 }
 
@@ -195,6 +201,7 @@ function assemble(record: InboundServerRecord, skills: readonly AgentSkill[], au
   const endpointPath = record.endpointPath
   const cardPath = `${endpointPath.replace(/\/$/, '')}/agent-card.json`
   const preset = record.preset ?? host.defaultPresetId
+  const traceEnabled = host.inboundTrace && (record.trace ?? host.inboundTrace)
   const tasks = new ScopedTaskStore(host.tasks, record.id)
   const card = buildCard({
     baseUrl: host.defaultBaseUrl,
@@ -203,6 +210,7 @@ function assemble(record: InboundServerRecord, skills: readonly AgentSkill[], au
     description: record.description,
     version: record.version,
     skills,
+    trace: traceEnabled,
     ...(authToken !== undefined ? { authToken } : {}),
     ...(host.attachments !== undefined
       ? { inputModes: ['text/plain', 'image/png', 'image/jpeg', 'image/webp', 'image/gif', 'application/octet-stream'] }
@@ -266,6 +274,7 @@ function assemble(record: InboundServerRecord, skills: readonly AgentSkill[], au
     ...(authToken !== undefined ? { authToken } : {}),
     cardPath,
     gate,
+    traceEnabled,
     // Stamp this instance onto its task records (session views attribute
     // contexts to the inbound instance they arrived through).
     serverId: record.id,
@@ -305,6 +314,7 @@ function assemble(record: InboundServerRecord, skills: readonly AgentSkill[], au
     executors,
     endpointPath,
     cardPath,
+    traceEnabled,
     dispose: () => {
       routes.dispose()
       sessions.clear()
@@ -409,6 +419,7 @@ export class InboundServerManager {
       endpointPath: input.endpointPath ?? `/a2a/${id}`,
       ...(preset !== undefined ? { preset } : {}),
       ...(input.authTokenEnv !== undefined ? { authTokenEnv: input.authTokenEnv } : {}),
+      ...(input.trace !== undefined ? { trace: input.trace } : {}),
       enabled: input.enabled ?? true,
     }
     try {
@@ -425,7 +436,7 @@ export class InboundServerManager {
   }
 
   /** Persist, rebuild (re-deriving skills), and apply a patch onto a live instance. */
-  async update(id: string, patch: Partial<Pick<InboundServerRecord, 'name' | 'description' | 'version' | 'endpointPath' | 'preset' | 'authTokenEnv'>>): Promise<OpResult> {
+  async update(id: string, patch: Partial<Pick<InboundServerRecord, 'name' | 'description' | 'version' | 'endpointPath' | 'preset' | 'authTokenEnv' | 'trace'>>): Promise<OpResult> {
     const live = this.live.get(id)
     const stored = this.store.get(id)
     if (live === undefined || stored === undefined) return { ok: false, message: `inbound server ${id} not found` }
@@ -437,6 +448,7 @@ export class InboundServerManager {
       endpointPath: patch.endpointPath ?? stored.endpointPath,
       ...(patch.preset !== undefined ? { preset: patch.preset } : {}),
       ...(patch.authTokenEnv !== undefined ? { authTokenEnv: patch.authTokenEnv } : {}),
+      ...(patch.trace !== undefined ? { trace: patch.trace } : {}),
       enabled: stored.enabled,
     }
     try {

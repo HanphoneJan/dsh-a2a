@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { DomainTaskStore, MemoryTaskStore } from '../../src/server/store.ts'
-import { TaskState } from '../../src/protocol.ts'
+import { Role, TaskState } from '../../src/protocol.ts'
 
 /** Kv table that updates memory only AFTER the queued write settles (real contract). */
 function chainedTable(seed: Record<string, string> = {}) {
@@ -79,6 +79,26 @@ describe('MemoryTaskStore', () => {
     await store.setContextSession('ctx-1', 'session-9')
     expect(await store.getContextSession('ctx-1')).toBe('session-9')
     expect(await store.getContextSession('ctx-missing')).toBeUndefined()
+  })
+
+  it('keeps visible inputs, status text and a bounded trace summary', () => {
+    const store = new MemoryTaskStore()
+    const record = store.create({
+      contextId: 'c',
+      skill: 'chat',
+      parts: [{ text: 'first' }],
+      remotePeerId: null,
+      message: { messageId: 'm1', role: Role.USER, parts: [{ text: 'first' }] },
+    })
+    expect(record.inputs).toHaveLength(1)
+    const continued = store.appendInput(record.taskId, { messageId: 'm2', role: Role.USER, parts: [{ text: 'second' }] })
+    expect(continued.inputs?.map((message) => message.messageId)).toEqual(['m1', 'm2'])
+    const withStatus = store.setStatusText(record.taskId, 'no visible output')
+    expect(withStatus.statusText).toBe('no visible output')
+    const withTrace = store.appendTrace(record.taskId, {
+      callId: 'c1', tool: 'read', phase: 'start', status: 'running', timestamp: '2026-01-01T00:00:00.000Z',
+    })
+    expect(withTrace.trace?.calls).toHaveLength(1)
   })
 })
 
