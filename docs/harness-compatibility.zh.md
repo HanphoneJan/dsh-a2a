@@ -123,13 +123,28 @@ pnpm pack --pack-destination <dir>
 发布目标是 npmjs 的 `@hanphone/dsh-a2a`（`publishConfig.access: public`）。那里的
 `403` 是 npm 凭据问题，不是包问题。没有明确要求不发布。
 
+`lib/` 被 gitignore，只有构建之后才存在。`prepare` 与 `prepack` 都会调用
+`scripts/ensure-lib.mjs`：当 `lib/` 缺失或比 `src/` 旧时重新构建。没有这个钩子时，
+从全新 clone 发布、或从 git URL 安装，`main` 会指向包里并不存在的文件。脚本在构建前
+还会清掉 TypeScript 增量缓存——残留的 tsbuildinfo 会让 `tsc -b` 空转，而 `lib/` 已
+经不在了。
+
+发布前检查打包产物：
+
+```sh
+tar tzf dsh-a2a-<version>.tgz | grep -E '^package/lib/(index|client)\.js$'
+```
+
 ## 当前状态
 
-`0.5.1` 已对 harness `0.2.1-rc.3` 验证：`pnpm typecheck`（宿主 + 客户端 + 镜像
-检查）、`pnpm test`（196/196）、`pnpm test:integration`（6/6）、`pnpm build` 产出
-`lib/index.js` 与 `lib/client.js`、`pnpm test:e2e` 在两个真实实例间跑通入站与出站
-往返，并验证可选 trace 扩展的卡片宣告与 header 回显。`0.2.1-rc.2` 仍在矩阵中；
-`0.2.1-alpha.2` 与 `0.1.7-rc.2` 由定时矩阵覆盖。
+`0.5.2` 已对 harness `0.2.2-alpha.2` 验证：`pnpm typecheck`（宿主 + 客户端 + 镜像
+检查）零错误、`pnpm test`（196/196）、`pnpm test:integration`（6/6）、`pnpm build`
+产出 `lib/index.js` 与 `lib/client.js`、`pnpm test:e2e` 在两个真实实例间跑通入站与
+出站往返，并验证可选 trace 扩展的卡片宣告与 header 回显。`0.2.2-alpha.2` 把工具执行器
+改成显式的组合条目，并把 `defineContentToolFixture` 移到
+`@deepseek-ai/dsh-tool-testkit`；集成测试的 harness 现在挂载
+`@deepseek-ai/dsh-tool-executor-native`，fixture 从 testkit 导入。`0.2.1-rc.3` 与
+`0.2.1-rc.2` 仍在矩阵中；`0.2.1-alpha.2` 与 `0.1.7-rc.2` 由定时矩阵覆盖。
 
 ## 已知陷阱
 
@@ -158,3 +173,8 @@ pnpm pack --pack-destination <dir>
 - 没有测过正式版；已验证过的 harness 版本全是预发布。
 - 插件通过 `../deepseek-harness` 按路径耦合 harness 包。换到别的相对路径需要更新
   `tsconfig*.json` 的引用。
+- **冷启动时的工具注册。** 出站工具在重连的 AgentCard 抓取完成后才出现，而 profile
+  挂载不会等待这次抓取。任务已经放在命令行上（或 stdin 已关闭）的一次性 headless
+  运行，可能在工具注册前就发出第一次模型请求；harness 会用 `tool-addition`
+  developer 消息在会话中途宣告新增工具，模型可以重试，但第一次调用会以
+  `unknown tool` 失败。e2e 之所以在 profile 挂载后才把任务写进 stdin，正是这个原因。

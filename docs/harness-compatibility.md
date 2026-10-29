@@ -135,15 +135,32 @@ Publishing goes to npmjs as `@hanphone/dsh-a2a` (`publishConfig.access: public`)
 A `403` there is an npm credential problem, not a package problem. A release is
 not published without an explicit request.
 
+`lib/` is gitignored, so the artifact plane exists only after a build. `prepare`
+and `prepack` both run `scripts/ensure-lib.mjs`, which rebuilds `lib/` when it is
+missing or older than `src/`; without that hook a publish from a fresh clone — or
+an install from the git URL — would resolve `main` to a file absent from the
+package. The script also clears the incremental TypeScript cache first, because a
+surviving tsbuildinfo makes `tsc -b` no-op while `lib/` is gone.
+
+Check the packed artifact before publishing:
+
+```sh
+tar tzf dsh-a2a-<version>.tgz | grep -E '^package/lib/(index|client)\.js$'
+```
+
 ## Current status
 
-`0.5.1` is verified against harness `0.2.1-rc.3`: `pnpm typecheck` (host +
-client + mirror check), `pnpm test` (196/196), `pnpm test:integration` (6/6),
-`pnpm build` producing `lib/index.js` and `lib/client.js`, and `pnpm test:e2e`
-passing an inbound and outbound round trip against two real instances, including
-the optional trace extension's card declaration and header acknowledgement.
-`0.2.1-rc.2` remains in the matrix; `0.2.1-alpha.2` and `0.1.7-rc.2` are also
-covered by the scheduled matrix.
+`0.5.2` is verified against harness `0.2.2-alpha.2`: `pnpm typecheck` (host +
+client + mirror check) with zero errors, `pnpm test` (196/196),
+`pnpm test:integration` (6/6), `pnpm build` producing `lib/index.js` and
+`lib/client.js`, and `pnpm test:e2e` passing an inbound and outbound round trip
+against two real instances, including the optional trace extension's card
+declaration and header acknowledgement. `0.2.2-alpha.2` moved the tool executor
+to an explicit composition entry and moved `defineContentToolFixture` to
+`@deepseek-ai/dsh-tool-testkit`; the integration harness now mounts
+`@deepseek-ai/dsh-tool-executor-native` and imports the fixture from the testkit.
+`0.2.1-rc.3` and `0.2.1-rc.2` remain in the matrix; `0.2.1-alpha.2` and
+`0.1.7-rc.2` are also covered by the scheduled matrix.
 
 ## Known traps
 
@@ -179,3 +196,11 @@ covered by the scheduled matrix.
 - The plugin couples to harness packages by path through `../deepseek-harness`.
   A checkout at a different relative path needs the `tsconfig*.json` references
   updated.
+- **Cold-start tool registration.** Outbound tools appear when the reconnect's
+  AgentCard fetch resolves, and profile mounts do not wait for that fetch. A
+  one-shot headless run whose task is already on the command line (or on a
+  closed stdin) can therefore issue its first model request before those tools
+  register; the harness then announces them mid-session with a `tool-addition`
+  developer message, so the model can retry, but the first attempt fails with
+  `unknown tool`. The e2e writes the task to stdin after the profile has
+  mounted for exactly this reason.
