@@ -98,9 +98,9 @@ manual inspection, not a CI gate. `Ctrl+C` tears down every child and temp home.
 
 `.github/workflows/ci.yml` runs `check` (typecheck, unit, composition and
 real-persistence tests) on every push and pull request, and `e2e-pinned`
-against `dsh-v0.2.2-alpha.2`. The nightly schedule and manual dispatch run the e2e
-matrix over the supported harness versions (`0.2.2-alpha.2`, `0.2.1-rc.3`,
-`0.2.1-rc.2`, `0.2.1-alpha.2`, `0.1.7-rc.2`).
+against `dsh-v0.2.2-rc.1`. The nightly schedule and manual dispatch run the e2e
+matrix over the supported harness versions (`0.2.2-rc.1`, `0.2.2-alpha.2`,
+`0.2.1-rc.3`, `0.2.1-rc.2`, `0.2.1-alpha.2`, `0.1.7-rc.2`).
 
 Widen the matrix in the same change that widens `peerDependencies`, and record
 the result in [Harness compatibility](harness-compatibility.md).

@@ -95,7 +95,7 @@ Snapshot example (values abbreviated):
 {
   "ok": true,
   "current": "0.5.1",
-  "latest": "0.5.2",
+  "latest": "0.5.3",
   "hasUpdate": true,
   "ahead": false,
   "error": null,

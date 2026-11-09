@@ -85,9 +85,9 @@ pnpm test:all         # typecheck + test + build + test:e2e
 ## CI
 
 `.github/workflows/ci.yml` 在每次 push 与 pull request 跑 `check`（类型检查、单元、
-组合、真实持久化测试），以及针对 `dsh-v0.2.2-alpha.2` 的 `e2e-pinned`。夜间定时与手动
-触发会跑 e2e 矩阵，覆盖支持的 harness 版本（`0.2.2-alpha.2`、`0.2.1-rc.3`、
-`0.2.1-rc.2`、`0.2.1-alpha.2`、`0.1.7-rc.2`）。
+组合、真实持久化测试），以及针对 `dsh-v0.2.2-rc.1` 的 `e2e-pinned`。夜间定时与手动
+触发会跑 e2e 矩阵，覆盖支持的 harness 版本（`0.2.2-rc.1`、`0.2.2-alpha.2`、
+`0.2.1-rc.3`、`0.2.1-rc.2`、`0.2.1-alpha.2`、`0.1.7-rc.2`）。
 
 放宽 `peerDependencies` 的同一次改动里同步放宽矩阵，并把结果记到
 [Harness 兼容性](harness-compatibility.zh.md)。

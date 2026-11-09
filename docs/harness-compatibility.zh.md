@@ -137,14 +137,18 @@ tar tzf dsh-a2a-<version>.tgz | grep -E '^package/lib/(index|client)\.js$'
 
 ## 当前状态
 
-`0.5.2` 已对 harness `0.2.2-alpha.2` 验证：`pnpm typecheck`（宿主 + 客户端 + 镜像
+`0.5.3` 已对 harness `0.2.2-rc.1` 验证：`pnpm typecheck`（宿主 + 客户端 + 镜像
 检查）零错误、`pnpm test`（196/196）、`pnpm test:integration`（6/6）、`pnpm build`
 产出 `lib/index.js` 与 `lib/client.js`、`pnpm test:e2e` 在两个真实实例间跑通入站与
-出站往返，并验证可选 trace 扩展的卡片宣告与 header 回显。`0.2.2-alpha.2` 把工具执行器
-改成显式的组合条目，并把 `defineContentToolFixture` 移到
-`@deepseek-ai/dsh-tool-testkit`；集成测试的 harness 现在挂载
-`@deepseek-ai/dsh-tool-executor-native`，fixture 从 testkit 导入。`0.2.1-rc.3` 与
-`0.2.1-rc.2` 仍在矩阵中；`0.2.1-alpha.2` 与 `0.1.7-rc.2` 由定时矩阵覆盖。
+出站往返，并验证可选 trace 扩展的卡片宣告与 header 回显。`0.2.2-rc.1` vendor 了
+cordis `4.1.0` 与 schemastery `3.19.0`，cordis peer 范围因此放宽到
+`>=4.0.2 <4.2`；它的 waterfall 把续延改成无参 thunk：`next()` 不再接收参数，
+`a2a/inbound-task` 监听者通过就地修改 decision 传递改动，插件的末端回调改为闭包。
+`0.2.2-alpha.2` 把工具执行器改成显式的组合条目，并把
+`defineContentToolFixture` 移到 `@deepseek-ai/dsh-tool-testkit`；集成测试的 harness
+现在挂载 `@deepseek-ai/dsh-tool-executor-native`，fixture 从 testkit 导入。
+`0.2.2-alpha.2`、`0.2.1-rc.3` 与 `0.2.1-rc.2` 仍在矩阵中；`0.2.1-alpha.2` 与
+`0.1.7-rc.2` 由定时矩阵覆盖。
 
 ## 已知陷阱
 

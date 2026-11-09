@@ -150,17 +150,22 @@ tar tzf dsh-a2a-<version>.tgz | grep -E '^package/lib/(index|client)\.js$'
 
 ## Current status
 
-`0.5.2` is verified against harness `0.2.2-alpha.2`: `pnpm typecheck` (host +
+`0.5.3` is verified against harness `0.2.2-rc.1`: `pnpm typecheck` (host +
 client + mirror check) with zero errors, `pnpm test` (196/196),
 `pnpm test:integration` (6/6), `pnpm build` producing `lib/index.js` and
 `lib/client.js`, and `pnpm test:e2e` passing an inbound and outbound round trip
 against two real instances, including the optional trace extension's card
-declaration and header acknowledgement. `0.2.2-alpha.2` moved the tool executor
-to an explicit composition entry and moved `defineContentToolFixture` to
-`@deepseek-ai/dsh-tool-testkit`; the integration harness now mounts
-`@deepseek-ai/dsh-tool-executor-native` and imports the fixture from the testkit.
-`0.2.1-rc.3` and `0.2.1-rc.2` remain in the matrix; `0.2.1-alpha.2` and
-`0.1.7-rc.2` are also covered by the scheduled matrix.
+declaration and header acknowledgement. `0.2.2-rc.1` vendors cordis `4.1.0` and
+schemastery `3.19.0`, so the cordis peer range admits `>=4.0.2 <4.2`, and its
+waterfall makes the continuation a thunk: `next()` takes no arguments, so an
+`a2a/inbound-task` listener passes changes by mutating the decision and the
+plugin's terminal callback closes over it. `0.2.2-alpha.2` moved the tool
+executor to an explicit composition entry and moved
+`defineContentToolFixture` to `@deepseek-ai/dsh-tool-testkit`; the integration
+harness now mounts `@deepseek-ai/dsh-tool-executor-native` and imports the
+fixture from the testkit. `0.2.2-alpha.2`, `0.2.1-rc.3` and `0.2.1-rc.2` remain
+in the matrix; `0.2.1-alpha.2` and `0.1.7-rc.2` are also covered by the
+scheduled matrix.
 
 ## Known traps
 
