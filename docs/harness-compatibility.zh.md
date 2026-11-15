@@ -1,7 +1,7 @@
 ---
 name: Harness 兼容性
 description: 耦合面、迁移到另一个 DeepSeek Harness 版本的流程、当前状态与已知陷阱
-update-time: 2026-10-25
+update-time: 2026-11-16
 ---
 
 # Harness 兼容性
@@ -137,18 +137,28 @@ tar tzf dsh-a2a-<version>.tgz | grep -E '^package/lib/(index|client)\.js$'
 
 ## 当前状态
 
-`0.5.3` 已对 harness `0.2.2-rc.1` 验证：`pnpm typecheck`（宿主 + 客户端 + 镜像
+`0.5.4` 已对 harness `0.2.2-rc.3` 验证：`pnpm typecheck`（宿主 + 客户端 + 镜像
 检查）零错误、`pnpm test`（196/196）、`pnpm test:integration`（6/6）、`pnpm build`
 产出 `lib/index.js` 与 `lib/client.js`、`pnpm test:e2e` 在两个真实实例间跑通入站与
-出站往返，并验证可选 trace 扩展的卡片宣告与 header 回显。`0.2.2-rc.1` vendor 了
-cordis `4.1.0` 与 schemastery `3.19.0`，cordis peer 范围因此放宽到
-`>=4.0.2 <4.2`；它的 waterfall 把续延改成无参 thunk：`next()` 不再接收参数，
-`a2a/inbound-task` 监听者通过就地修改 decision 传递改动，插件的末端回调改为闭包。
+出站往返，并验证可选 trace 扩展的卡片宣告与 header 回显。`0.2.2-rc.1` 至
+`0.2.2-rc.3` vendor 了 cordis `4.1.0` 与 schemastery `3.19.0`，cordis peer 范围
+因此放宽到 `>=4.0.2 <4.2`；它们的 waterfall 把续延改成无参 thunk：`next()` 不再
+接收参数，`a2a/inbound-task` 监听者通过就地修改 decision 传递改动，插件的末端回调
+改为闭包。
 `0.2.2-alpha.2` 把工具执行器改成显式的组合条目，并把
 `defineContentToolFixture` 移到 `@deepseek-ai/dsh-tool-testkit`；集成测试的 harness
 现在挂载 `@deepseek-ai/dsh-tool-executor-native`，fixture 从 testkit 导入。
 `0.2.2-alpha.2`、`0.2.1-rc.3` 与 `0.2.1-rc.2` 仍在矩阵中；`0.2.1-alpha.2` 与
 `0.1.7-rc.2` 由定时矩阵覆盖。
+
+`0.2.2-rc.2` 把 harness 自身的 `zod` 从 `4.4.3` 升到 `4.6.6`，本插件不跟随。它让
+`dependencies.zod` 留在 `~4.4.3` 线上，并把 schema 唯一一次进入宿主的地方——
+`src/server/store.ts` 里交给 `domainTable()` 的 `a2aDomainSpec`——按宿主签名
+（`Parameters<typeof domainTable<string, V>>[0]`）声明，而不是按自己那份 zod。
+宿主用 `parse` 校验记录，运行时契约与 patch 版本无关；真实持久化与 e2e 套件会在
+运行中的宿主上走这条路径。这样源码对矩阵里的每一代 harness 都能构建，而不是只对
+zod patch 号刚好一致的那一代。将来若要在边界上使用更新的 zod 类型特性，必须重新
+审视这处断言。
 
 ## 已知陷阱
 
@@ -159,8 +169,10 @@ cordis `4.1.0` 与 schemastery `3.19.0`，cordis peer 范围因此放宽到
 - **没有 manifest 的 harness 包残留。** 重建前在 harness 跑 `pnpm run clean`；
   否则 tsdown 的 `packages/*/*` glob 会打包遗留的 `lib/types` 输出，以
   `MISSING_EXPORT` 失败。
-- **两份 zod。** 把 `dependencies.zod` 钉在 harness 的线上（`~4.4.3`）；浮动的
-  `^4.4.3` 在 `exactOptionalPropertyTypes` 下给出互不兼容的 `Config` 类型。
+- **两份 zod。** 宿主用自己那份 zod 给存储 API 标注类型，因此来自另一份副本的
+  schema 即使同为 `4.x` 也不可赋值。把这个边界按宿主签名声明
+  （`src/server/store.ts` 的 `a2aDomainSpec`），不要把 `dependencies.zod` 钉到宿主的
+  patch 号——那会把构建绑死在单一代 harness 上。
 - **每次跑脚本前 `ERR_PNPM_NO_MATCHING_VERSION`。** harness peer 在其真实范围内没有
   registry 版本。pnpm 11+ 从 `pnpm-workspace.yaml` 读 `autoInstallPeers: false` 与
   `verifyDepsBeforeRun: false`；只写 `.npmrc` 不够。
