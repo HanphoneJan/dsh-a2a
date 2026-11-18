@@ -1,7 +1,7 @@
 ---
 name: 测试
 description: 测试分层、命令、hermetic e2e 流程、可视化测试与 CI
-update-time: 2026-11-16
+update-time: 2026-11-18
 ---
 
 # 测试
@@ -29,7 +29,7 @@ update-time: 2026-11-16
 
 ```sh
 pnpm typecheck        # 宿主（tsc -b）+ 客户端 + 镜像检查
-pnpm test             # vitest run：单元 + 组合 + 集成（196 项）
+pnpm test             # vitest run：单元 + 组合 + 集成（199 项）
 pnpm test:integration # 只跑真实持久化套件
 pnpm build            # tsc + tsdown + 浏览器 bundle -> lib/
 pnpm test:e2e         # 双实例 A2A hermetic 冒烟（需要已构建插件）

@@ -1,7 +1,7 @@
 ---
 name: Harness compatibility
 description: Coupling surfaces, the procedure for moving to another DeepSeek Harness release, current status and known traps
-update-time: 2026-11-16
+update-time: 2026-11-18
 ---
 
 # Harness compatibility
@@ -151,7 +151,7 @@ tar tzf dsh-a2a-<version>.tgz | grep -E '^package/lib/(index|client)\.js$'
 ## Current status
 
 `0.5.4` is verified against harness `0.2.2-rc.3`: `pnpm typecheck` (host +
-client + mirror check) with zero errors, `pnpm test` (196/196),
+client + mirror check) with zero errors, `pnpm test` (199/199),
 `pnpm test:integration` (6/6), `pnpm build` producing `lib/index.js` and
 `lib/client.js`, and `pnpm test:e2e` passing an inbound and outbound round trip
 against two real instances, including the optional trace extension's card

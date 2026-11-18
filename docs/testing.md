@@ -1,7 +1,7 @@
 ---
 name: Testing
 description: Test layers, commands, the hermetic e2e flow, the visual harness and CI
-update-time: 2026-11-16
+update-time: 2026-11-18
 ---
 
 # Testing
@@ -32,7 +32,7 @@ filter).
 
 ```sh
 pnpm typecheck        # host (tsc -b) + client + mirror check
-pnpm test             # vitest run: unit + composition + integration (196 tests)
+pnpm test             # vitest run: unit + composition + integration (199 tests)
 pnpm test:integration # only the real-persistence suite
 pnpm build            # tsc + tsdown + browser bundle -> lib/
 pnpm test:e2e         # hermetic two-instance A2A smoke (needs a built plugin)

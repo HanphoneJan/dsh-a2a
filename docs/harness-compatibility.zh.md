@@ -1,7 +1,7 @@
 ---
 name: Harness 兼容性
 description: 耦合面、迁移到另一个 DeepSeek Harness 版本的流程、当前状态与已知陷阱
-update-time: 2026-11-16
+update-time: 2026-11-18
 ---
 
 # Harness 兼容性
@@ -138,7 +138,7 @@ tar tzf dsh-a2a-<version>.tgz | grep -E '^package/lib/(index|client)\.js$'
 ## 当前状态
 
 `0.5.4` 已对 harness `0.2.2-rc.3` 验证：`pnpm typecheck`（宿主 + 客户端 + 镜像
-检查）零错误、`pnpm test`（196/196）、`pnpm test:integration`（6/6）、`pnpm build`
+检查）零错误、`pnpm test`（199/199）、`pnpm test:integration`（6/6）、`pnpm build`
 产出 `lib/index.js` 与 `lib/client.js`、`pnpm test:e2e` 在两个真实实例间跑通入站与
 出站往返，并验证可选 trace 扩展的卡片宣告与 header 回显。`0.2.2-rc.1` 至
 `0.2.2-rc.3` vendor 了 cordis `4.1.0` 与 schemastery `3.19.0`，cordis peer 范围

@@ -1,7 +1,7 @@
 ---
 name: HTTP API 与 A2A 协议
 description: 回环面板动作、入站 JSON-RPC 端点、SSE 流式、任务状态、错误码、AgentCard 与出站工具契约
-update-time: 2026-10-25
+update-time: 2026-11-18
 ---
 
 # HTTP API 与 A2A 协议
@@ -48,7 +48,7 @@ reasoning block；它不是 A2A 线协议的一部分，也不会通过 A2A 暴�
 
 ```json
 {
-  "version": "0.5.1",
+  "version": "0.5.4",
   "inbounds": [
     {
       "id": "e2e-b-ade6a7ad",
@@ -91,7 +91,7 @@ reasoning block；它不是 A2A 线协议的一部分，也不会通过 A2A 暴�
 ```json
 {
   "ok": true,
-  "current": "0.5.1",
+  "current": "0.5.4",
   "latest": "0.5.3",
   "hasUpdate": true,
   "ahead": false,
@@ -495,7 +495,7 @@ a2a__<连接名>__<技能 id>
 
 ## 4. 当前限制
 
-以下行为在 `0.5.1` 是有意为之或已知的：
+以下行为在 `0.5.4` 是有意为之或已知的：
 
 - `SendMessage` 默认阻塞；`configuration.returnImmediately: true` 在启动任务后返回。
   历史是该任务的 A2A 可见输入/输出消息，不是完整的 DSH 逐轮 transcript。
