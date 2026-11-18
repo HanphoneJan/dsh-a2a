@@ -51,7 +51,7 @@ Snapshot example (values abbreviated):
 
 ```json
 {
-  "version": "0.5.4",
+  "version": "0.5.5",
   "inbounds": [
     {
       "id": "e2e-b-ade6a7ad",
@@ -94,7 +94,7 @@ Snapshot example (values abbreviated):
 ```json
 {
   "ok": true,
-  "current": "0.5.4",
+  "current": "0.5.5",
   "latest": "0.5.3",
   "hasUpdate": true,
   "ahead": false,
@@ -538,7 +538,7 @@ are never concatenated into the model-facing result. An empty result renders as
 
 ## 4. Current limits
 
-These are intentional or known at `0.5.4`:
+These are intentional or known at `0.5.5`:
 
 - `SendMessage` blocks by default; `configuration.returnImmediately: true`
   returns after starting the task. History is the task's A2A-visible input and

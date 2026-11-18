@@ -150,7 +150,7 @@ tar tzf dsh-a2a-<version>.tgz | grep -E '^package/lib/(index|client)\.js$'
 
 ## Current status
 
-`0.5.4` is verified against harness `0.2.2-rc.3`: `pnpm typecheck` (host +
+`0.5.5` is verified against harness `0.2.2-rc.3`: `pnpm typecheck` (host +
 client + mirror check) with zero errors, `pnpm test` (199/199),
 `pnpm test:integration` (6/6), `pnpm build` producing `lib/index.js` and
 `lib/client.js`, and `pnpm test:e2e` passing an inbound and outbound round trip

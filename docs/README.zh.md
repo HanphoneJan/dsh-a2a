@@ -11,7 +11,7 @@ update-time: 2026-11-18
 `@hanphone/dsh-a2a` 是 DeepSeek Harness 的 A2A v1.0.1 双端插件：入站 server
 把 DSH agent 发布出去，出站连接把远端 A2A 技能变成模型工具。
 
-手册描述插件 `0.5.4` 在 DeepSeek Harness `0.2.2-rc.3` 上的行为。
+手册描述插件 `0.5.5` 在 DeepSeek Harness `0.2.2-rc.3` 上的行为。
 
 ## 先读这些
 
@@ -36,7 +36,7 @@ update-time: 2026-11-18
 
 ## 版本与事实来源
 
-- 插件：`@hanphone/dsh-a2a` `0.5.4`
+- 插件：`@hanphone/dsh-a2a` `0.5.5`
 - 已核对：DeepSeek Harness `0.2.2-rc.3`；e2e 矩阵同时覆盖
   `0.2.2-rc.1`、`0.2.2-alpha.2`、`0.2.1-rc.3`、`0.2.1-rc.2`、
   `0.2.1-alpha.2` 与 `0.1.7-rc.2`
